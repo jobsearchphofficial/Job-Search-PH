@@ -119,7 +119,7 @@ service cloud.firestore {
       allow create: if signedIn()
                     && appId == request.resource.data.jobId + '_' + me()
                     && request.resource.data.keys().hasOnly([
-                         'jobId','jobTitle','jobCity','jobSchedule','jobArrangement','employerUid','applicantUid','applicant',
+                         'jobId','jobTitle','jobCity','jobSchedule','jobArrangement','employerName','employerUid','applicantUid','applicant',
                          'message','status','createdAt','updatedAt'])
                     && request.resource.data.applicantUid == me()
                     && jobDoc(request.resource.data.jobId).data.status == 'approved'
@@ -134,8 +134,35 @@ service cloud.firestore {
       // Employers update only the status of applications to their jobs.
       allow update: if isAdmin()
                     || (signedIn() && resource.data.employerUid == me()
-                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
-                        && request.resource.data.status in ['new', 'shortlisted', 'not_selected', 'hired']);
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'declinedAt'])
+                        && request.resource.data.status in ['new', 'shortlisted', 'not_selected', 'hired']
+                        && (request.resource.data.status == 'not_selected'
+                              ? request.resource.data.declinedAt == request.time
+                              : request.resource.data.get('declinedAt', null) == null));
+      // Chat bookkeeping: each side updates the last message and when they last read it.
+      allow update: if signedIn() && resource.data.applicantUid == me()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessageAt', 'lastMessageFrom', 'lastMessageText', 'applicantSeenAt'])
+                    && request.resource.data.get('lastMessageFrom', '') in [me(), resource.data.get('lastMessageFrom', '')];
+      allow update: if signedIn() && resource.data.employerUid == me()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessageAt', 'lastMessageFrom', 'lastMessageText', 'employerSeenAt'])
+                    && request.resource.data.get('lastMessageFrom', '') in [me(), resource.data.get('lastMessageFrom', '')];
+
+      // Messages between the applicant and the employer. Closes 48 hours after the applicant is declined.
+      match /messages/{mid} {
+        function app() { return get(/databases/$(database)/documents/applications/$(appId)).data; }
+        function party() { return signedIn() && (app().applicantUid == me() || app().employerUid == me()); }
+        function chatOpen() {
+          return app().status != 'not_selected'
+              || (app().get('declinedAt', null) != null && request.time < app().declinedAt + duration.value(48, 'h'));
+        }
+        allow read: if party() || isAdmin();
+        allow create: if party()
+                      && chatOpen()
+                      && request.resource.data.keys().hasOnly(['fromUid', 'text', 'createdAt'])
+                      && request.resource.data.fromUid == me()
+                      && str(request.resource.data.text, 1, 1000)
+                      && request.resource.data.createdAt == request.time;
+      }
       // Applicants can mark a job they were hired for as ended.
       allow update: if signedIn() && resource.data.applicantUid == me()
                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['employmentEnded', 'updatedAt'])
@@ -167,6 +194,19 @@ service cloud.firestore {
                                  && appDoc(request.resource.data.appId).data.employerUid == request.resource.data.toUid)
                              || (appDoc(request.resource.data.appId).data.employerUid == me()
                                  && appDoc(request.resource.data.appId).data.applicantUid == request.resource.data.toUid))));
+    }
+
+    /* ---------- Support messages ---------- */
+    match /support/{sid} {
+      allow create: if request.resource.data.keys().hasOnly(['topic', 'name', 'reply', 'message', 'page', 'uid', 'createdAt'])
+                    && str(request.resource.data.topic, 1, 60)
+                    && str(request.resource.data.name, 2, 80)
+                    && str(request.resource.data.reply, 5, 120)
+                    && str(request.resource.data.message, 10, 2000)
+                    && str(request.resource.data.page, 0, 200)
+                    && (request.resource.data.uid == '' || (signedIn() && request.resource.data.uid == me()))
+                    && request.resource.data.createdAt == request.time;
+      allow read, delete: if isAdmin();
     }
 
     /* ---------- Reports ---------- */

@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792950452";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792951034";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -26,7 +26,7 @@ const toMs = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : v ??
 const norm = (snap) => {
   const d = snap.data();
   const out = { id: snap.id, ...d };
-  ["createdAt", "approvedAt", "expiresAt", "updatedAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
+  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
   return out;
 };
 const jobsQ = async (...c) => (await F.getDocs(F.query(F.collection(db, "jobs"), ...c))).docs.map(norm);
@@ -149,7 +149,7 @@ export const store = {
     const appId = `${job.id}_${uid()}`;
     await F.setDoc(F.doc(db, "applications", appId), {
       jobId: job.id, jobTitle: job.title, jobCity: job.city, jobSchedule: job.schedule || job.employmentType || "",
-      jobArrangement: job.arrangement || "", employerUid: job.ownerUid, applicantUid: uid(),
+      jobArrangement: job.arrangement || "", employerName: job.employerName || "", employerUid: job.ownerUid, applicantUid: uid(),
       applicant, message: message || "", status: "new", createdAt: F.serverTimestamp(), updatedAt: F.serverTimestamp(),
     });
     await this.notify(job.ownerUid, { type: "application", title: `New applicant for ${job.title}`, body: `${p.fullName} applied.`, link: `#/applicants/${job.id}`, appId, jobId: job.id }).catch(() => {});
@@ -157,17 +157,52 @@ export const store = {
   async myApplications() { return appsQ(F.where("applicantUid", "==", uid())); },
   async applicationsForJob(jobId) { return appsQ(F.where("jobId", "==", jobId), F.where("employerUid", "==", uid())); },
   async applicationsForEmployer() { return appsQ(F.where("employerUid", "==", uid())); },
-  async setApplicationStatus(a, status) {
-    await F.updateDoc(F.doc(db, "applications", a.id), { status, updatedAt: F.serverTimestamp() });
+  async setApplicationStatus(a, status, { silent = false, note } = {}) {
+    await F.updateDoc(F.doc(db, "applications", a.id), { status, updatedAt: F.serverTimestamp(), declinedAt: status === "not_selected" ? F.serverTimestamp() : null });
+    if (silent) return;
+    if (note) return this.notify(a.applicantUid, { ...note, appId: a.id, jobId: a.jobId }).catch(() => {});
     const msg = {
       shortlisted: ["You're shortlisted", `The employer shortlisted you for ${a.jobTitle}. Expect a call or message soon.`],
       hired: ["You got the job!", `You were hired for ${a.jobTitle}. Congratulations!`],
-      not_selected: ["Application update", `The employer chose other applicants for ${a.jobTitle}. Keep applying!`],
+      not_selected: ["Application update", `The employer chose other applicants for ${a.jobTitle}. Your chat with them stays open for 48 hours.`],
     }[status];
-    if (msg) await this.notify(a.applicantUid, { type: `app_${status}`, title: msg[0], body: msg[1], link: `#/job/${a.jobId}`, appId: a.id, jobId: a.jobId }).catch(() => {});
+    if (msg) await this.notify(a.applicantUid, { type: `app_${status}`, title: msg[0], body: msg[1], link: `#/chat/${a.id}`, appId: a.id, jobId: a.jobId }).catch(() => {});
   },
   async endEmployment(id) { await F.updateDoc(F.doc(db, "applications", id), { employmentEnded: true, updatedAt: F.serverTimestamp() }); },
   async withdraw(id) { await F.deleteDoc(F.doc(db, "applications", id)); },
+
+  /* ---- Messages ---- */
+  watchApplications(role, cb) {
+    const field = role === "employer" ? "employerUid" : "applicantUid";
+    return F.onSnapshot(F.query(F.collection(db, "applications"), F.where(field, "==", uid())),
+      (s) => cb(s.docs.map((d) => { const x = norm(d); ["lastMessageAt", "applicantSeenAt", "employerSeenAt", "declinedAt"].forEach((k) => (x[k] = toMs(d.data()[k]))); return x; })), () => cb([]));
+  },
+  async getApplication(id) {
+    try { const s = await F.getDoc(F.doc(db, "applications", id)); if (!s.exists()) return null; const x = norm(s); ["lastMessageAt", "applicantSeenAt", "employerSeenAt", "declinedAt"].forEach((k) => (x[k] = toMs(s.data()[k]))); return x; }
+    catch { return null; }
+  },
+  watchMessages(appId, cb) {
+    return F.onSnapshot(F.query(F.collection(db, "applications", appId, "messages"), F.orderBy("createdAt", "asc"), F.limit(500)),
+      (s) => cb(s.docs.map((d) => ({ id: d.id, ...d.data(), createdAt: toMs(d.data().createdAt) || Date.now(), pending: d.metadata.hasPendingWrites }))), (e) => cb(null, e));
+  },
+  async sendMessage(a, text) {
+    const me = uid(); const iAmEmployer = a.employerUid === me;
+    await F.addDoc(F.collection(db, "applications", a.id, "messages"), { fromUid: me, text, createdAt: F.serverTimestamp() });
+    const otherSeen = iAmEmployer ? a.applicantSeenAt : a.employerSeenAt;
+    const otherCaughtUp = !a.lastMessageAt || a.lastMessageFrom === (iAmEmployer ? a.applicantUid : a.employerUid) || (otherSeen && otherSeen >= a.lastMessageAt);
+    await F.updateDoc(F.doc(db, "applications", a.id), {
+      lastMessageAt: F.serverTimestamp(), lastMessageFrom: me, lastMessageText: text.slice(0, 140),
+      [iAmEmployer ? "employerSeenAt" : "applicantSeenAt"]: F.serverTimestamp(),
+    });
+    if (otherCaughtUp) {
+      const fromName = iAmEmployer ? (a.employerName || "The employer") : (a.applicant?.fullName || "An applicant");
+      await this.notify(iAmEmployer ? a.applicantUid : a.employerUid, { type: "message", title: `New message from ${fromName}`, body: text.slice(0, 120), link: `#/chat/${a.id}`, appId: a.id, jobId: a.jobId }).catch(() => {});
+    }
+  },
+  async markSeen(a) {
+    const field = a.employerUid === uid() ? "employerSeenAt" : "applicantSeenAt";
+    await F.updateDoc(F.doc(db, "applications", a.id), { [field]: F.serverTimestamp() }).catch(() => {});
+  },
 
   /* ---- Notifications ---- */
   async notify(toUid, n) {
@@ -183,6 +218,16 @@ export const store = {
   },
   async markRead(ids) { await Promise.all(ids.map((id) => F.updateDoc(F.doc(db, "notifications", id), { read: true }))); },
   async pendingCount() { try { return (await jobsQ(F.where("status", "==", "pending"))).length; } catch { return 0; } },
+
+  /* ---- Support ---- */
+  async sendSupport(d) {
+    await F.addDoc(F.collection(db, "support"), { ...d, uid: uid() || "", createdAt: F.serverTimestamp() });
+  },
+  async listSupport() {
+    const s = await F.getDocs(F.query(F.collection(db, "support"), F.orderBy("createdAt", "desc"), F.limit(200)));
+    return s.docs.map(norm);
+  },
+  async closeSupport(id) { await F.deleteDoc(F.doc(db, "support", id)); },
 
   /* ---- Reports ---- */
   async report(jobId, reason, details) {

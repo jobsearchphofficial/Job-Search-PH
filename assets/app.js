@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792950452";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792951034";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -267,7 +267,7 @@ function renderBell() {
 }
 document.addEventListener("click", async (e) => {
   const wrap = $("#bell-wrap");
-  if (e.target.closest("#bell-btn")) { wrap.classList.toggle("open"); renderBell(); return; }
+  if (e.target.closest("#bell-btn")) { $("#gear-wrap").classList.remove("open"); renderGear(); wrap.classList.toggle("open"); renderBell(); return; }
   if (e.target.closest("#mark-all")) { await store.markRead(notifs.filter((n) => !n.read).map((n) => n.id)).catch(() => {}); return; }
   const item = e.target.closest(".notif");
   if (item) {
@@ -290,20 +290,69 @@ function renderNav() {
     !user || role === "employer" ? link("#/post", "Post a job") : "",
     role === "employer" ? link("#/my", "My posts") : "",
     role === "jobseeker" ? link("#/applications", "My applications") : "",
-    isAdmin ? link("#/admin", `Admin${pendingForAdmin ? ` <span class="dot">${pendingForAdmin}</span>` : ""}`) : "",
-    user ? link("#/profile", esc(profile ? firstName(profile.fullName) : "Set up profile")) : "",
-    user
-      ? `<button class="btn btn-ghost btn-sm" data-action="signout">Sign out</button>`
-      : `<a class="btn btn-primary btn-sm nav-cta" href="#/signin" data-action="gosignin">Sign in</a>`,
+    user && profile ? link("#/messages", `Messages${unreadMessages() ? ` <span class="dot">${unreadMessages()}</span>` : ""}`) : "",
+    user && !profile ? link("#/profile", "Set up profile") : "",
+    user ? "" : `<a class="btn btn-primary btn-sm nav-cta" href="#/signin" data-action="gosignin">Sign in</a>`,
   ].join("");
+  renderGear();
 }
+
+/* ---------------- Settings menu ---------------- */
+const GI = {
+  gear: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.5-2-3.4-2.3.9a7.5 7.5 0 0 0-2.6-1.5L14.1 2.6h-4.2l-.4 2.4a7.5 7.5 0 0 0-2.6 1.5l-2.3-.9-2 3.4 2 1.5a7.6 7.6 0 0 0 0 3l-2 1.5 2 3.4 2.3-.9a7.5 7.5 0 0 0 2.6 1.5l.4 2.4h4.2l.4-2.4a7.5 7.5 0 0 0 2.6-1.5l2.3.9 2-3.4-2-1.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
+  user: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8.5" r="3.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 20a7 7 0 0 1 14 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  shield: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 8.3 7 10 4-1.7 7-5.5 7-10V6l-7-3Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`,
+  help: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="17" r="1" fill="currentColor"/></svg>`,
+  doc: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14H7V3Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10 12h5M10 16h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  out: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  admin: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="4" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/></svg>`,
+};
+const getTheme = () => { try { return localStorage.getItem("jsph-theme") || "light"; } catch { return "light"; } };
+function setTheme(t) {
+  try { localStorage.setItem("jsph-theme", t); } catch {}
+  if (t === "system") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  const dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#151b31" : "#3d4fd6");
+}
+function renderGear() {
+  const wrap = $("#gear-wrap"); const { user, profile, isAdmin } = getAuthState();
+  if (!user) { wrap.innerHTML = ""; wrap.classList.remove("open"); return; }
+  const open = wrap.classList.contains("open"); const theme = getTheme();
+  const name = profile?.fullName || user.displayName || "Your account";
+  wrap.innerHTML = `
+    <button class="bell" id="gear-btn" aria-label="Settings" aria-expanded="${open}">${GI.gear}</button>
+    <div class="set-panel" ${open ? "" : "hidden"}>
+      <div class="set-user"><span class="avatar sm" aria-hidden="true">${esc(name.trim().charAt(0).toUpperCase())}</span>
+        <div><strong>${esc(name)}</strong><span>${esc(user.email || "")}${profile ? ` · ${profile.role === "employer" ? "Employer" : "Jobseeker"}` : ""}</span></div></div>
+      <div class="set-group">
+        <a class="set-item" href="#/profile">${GI.user}${profile ? "My profile" : "Set up profile"}</a>
+        ${isAdmin ? `<a class="set-item" href="#/admin">${GI.admin}Admin${pendingForAdmin ? `<span class="dot">${pendingForAdmin}</span>` : ""}</a>` : ""}
+      </div>
+      <div class="set-group">
+        <p class="set-label">Appearance</p>
+        <div class="theme-pick" role="radiogroup" aria-label="Appearance">${[["light", "Light"], ["dark", "Dark"], ["system", "Auto"]].map(([k, l]) => `<button role="radio" aria-checked="${theme === k}" class="${theme === k ? "on" : ""}" data-theme-set="${k}">${l}</button>`).join("")}</div>
+      </div>
+      <div class="set-group">
+        <a class="set-item" href="#/support">${GI.help}Contact support</a>
+        <a class="set-item" href="#/safety">${GI.shield}Safety tips</a>
+        <a class="set-item" href="#/terms">${GI.doc}Terms &amp; privacy</a>
+      </div>
+      <div class="set-group"><button class="set-item danger" data-action="signout">${GI.out}Sign out</button></div>
+    </div>`;
+}
+document.addEventListener("click", (e) => {
+  const wrap = $("#gear-wrap"); if (!wrap) return;
+  if (e.target.closest("#gear-btn")) { $("#bell-wrap").classList.remove("open"); renderBell(); wrap.classList.toggle("open"); renderGear(); return; }
+  const th = e.target.closest("[data-theme-set]"); if (th) { setTheme(th.dataset.themeSet); renderGear(); return; }
+  if (wrap.classList.contains("open") && (e.target.closest(".set-item") || !e.target.closest("#gear-wrap"))) { wrap.classList.remove("open"); renderGear(); }
+});
 $("#nav-toggle").addEventListener("click", () => {
   const nav = $("#nav"); const open = nav.classList.toggle("open");
   $("#nav-toggle").setAttribute("aria-expanded", open);
 });
 document.addEventListener("click", async (e) => {
   const a = e.target.closest("[data-action]"); if (!a) return;
-  if (a.dataset.action === "signout") { await store.signOut(); myAppsCache = null; toast("Signed out"); location.hash = "#/"; }
+  if (a.dataset.action === "signout") { $("#gear-wrap").classList.remove("open"); await store.signOut(); myAppsCache = null; toast("Signed out"); location.hash = "#/"; }
   if (a.dataset.action === "gosignin") { e.preventDefault(); goSignIn(a.dataset.purpose, a.dataset.intent); }
 });
 
@@ -554,6 +603,7 @@ async function renderApplyPanel(j, isOwner) {
         <a class="btn btn-primary btn-block" href="${esc(c.href)}" target="_blank" rel="noopener nofollow">${esc(c.label)}</a>
         ${c.extra ? `<a class="btn btn-ghost btn-block" href="${esc(c.extra)}">Send a text</a>` : ""}
         <p class="small muted copyable">${esc(c.text)}</p>` : ""}
+      <a class="btn btn-ghost btn-block" href="#/chat/${encodeURIComponent(mine.id)}">${chatState(mine).open ? "Message the employer" : "View chat"}</a>
       <button class="btn btn-ghost btn-sm" id="withdraw">Withdraw application</button>`;
     $("#withdraw").addEventListener("click", async (e) => {
       if (!confirmInline(e.target, "Click again to withdraw")) return;
@@ -1097,7 +1147,7 @@ function applicantCard(a) {
   const resume = [safeUrl(x.resumeUrl) && `<a href="${esc(safeUrl(x.resumeUrl))}" target="_blank" rel="noopener nofollow">Resume link</a>`,
     safeUrl(x.resumeFileUrl) && `<a href="${esc(safeUrl(x.resumeFileUrl))}" target="_blank" rel="noopener">${esc(x.resumeFileName || "Resume file")}</a>`].filter(Boolean).join(" · ");
   return `
-  <article class="applicant ${a.status === "new" ? "is-new" : ""}">
+  <article class="applicant ${a.status === "new" ? "is-new" : ""} ${a.status === "not_selected" ? "declined" : ""}">
     <header>
       <div><h3>${esc(x.fullName)}${x.age ? `, ${x.age}` : ""}</h3>
         <p class="muted small">${x.gender ? `${esc(x.gender)} · ` : ""}${esc(x.city || "")}${x.experienceYears != null ? ` · ${x.experienceYears} yr${x.experienceYears === 1 ? "" : "s"} experience` : ""}${x.availability ? ` · ${esc(x.availability)}` : ""} · applied ${ago(a.createdAt)}</p></div>
@@ -1105,7 +1155,9 @@ function applicantCard(a) {
     </header>
     ${a.message ? `<blockquote>${nl2br(a.message)}</blockquote>` : ""}
     <div class="contact-row">
-      <a class="btn btn-primary btn-sm" href="tel:${esc(digits(x.phone))}">Call ${esc(x.phone)}</a>
+      ${(() => { const st = chatState(a); return st.open ? `<a class="btn btn-primary btn-sm" href="#/chat/${encodeURIComponent(a.id)}">Message${isUnread(inbox.find((i) => i.id === a.id) || a) ? " · new" : ""}</a>` : `<a class="btn btn-ghost btn-sm" href="#/chat/${encodeURIComponent(a.id)}">View chat</a>`; })()}
+      ${a.status === "not_selected" ? `<span class="closing">${chatClosedText(chatState(a))}</span>` : ""}
+      <a class="btn btn-ghost btn-sm" href="tel:${esc(digits(x.phone))}">Call ${esc(x.phone)}</a>
       ${CAN_SMS ? `<a class="btn btn-ghost btn-sm" href="sms:${esc(digits(x.phone))}">Text</a>` : ""}
       ${m ? `<a class="btn btn-ghost btn-sm" href="${esc(m)}" target="_blank" rel="noopener nofollow">Messenger</a>` : ""}
       ${x.email ? `<a class="btn btn-ghost btn-sm" href="mailto:${esc(x.email)}">Email</a>` : ""}
@@ -1164,7 +1216,7 @@ async function viewApplicants(jobId) {
             await store.updateJob(job.id, { status: "closed" }); job.status = "closed"; jobsCache = null;
             await store.clearReportsFor(job.id).catch(() => {});
             await Promise.all(apps.filter((x) => x.id !== a.id && ["new", "shortlisted"].includes(x.status)).map((x) =>
-              store.notify(x.applicantUid, { type: "job_filled", title: "Position filled", body: `${job.title} has been filled. Keep applying to other jobs!`, link: "#/", appId: x.id, jobId: job.id }).catch(() => {})));
+              store.setApplicationStatus(x, "not_selected", { note: { type: "job_filled", title: "Position filled", body: `${job.title} has been filled. Your chat with the employer stays open for 48 hours.`, link: `#/chat/${x.id}` } }).catch(() => {})));
             toast("Post closed. Applicants have been told.");
           } else toast(`Marked hired (${hired} of ${openings}).`);
         } else toast(`Marked hired${openings > 1 ? ` (${hired} of ${openings})` : ""}. We let them know.`);
@@ -1186,10 +1238,10 @@ async function viewApplications() {
   const apps = (await getMyApps()).sort((a, b) => b.createdAt - a.createdAt);
   if (!$("#apps")) return;
   $("#apps").innerHTML = apps.length ? `<div class="table">${apps.map((a) => `
-    <div class="trow">
-      <div><a href="#/job/${encodeURIComponent(a.jobId)}"><strong>${esc(a.jobTitle)}</strong></a><div class="muted small">${esc(a.jobCity || "")} · applied ${ago(a.createdAt)}</div></div>
+    <div class="trow ${a.status === "not_selected" ? "declined" : ""}">
+      <div><a href="#/job/${encodeURIComponent(a.jobId)}"><strong>${esc(a.jobTitle)}</strong></a><div class="muted small">${esc(a.jobCity || "")} · applied ${ago(a.createdAt)}${a.status === "not_selected" ? ` · ${chatClosedText(chatState(a))}` : ""}</div></div>
       <div>${a.status === "hired" && a.employmentEnded ? `<span class="badge badge-closed">Job ended</span>` : appBadge(a.status)}</div>
-      <div class="actions"><a class="btn btn-ghost btn-sm" href="#/job/${encodeURIComponent(a.jobId)}">View &amp; contact</a>${a.status === "hired" && !a.employmentEnded ? `<button class="btn btn-ghost btn-sm" data-ended="${esc(a.id)}">This job ended</button>` : ""}</div>
+      <div class="actions"><a class="btn btn-ghost btn-sm" href="#/chat/${encodeURIComponent(a.id)}">${chatState(a).open ? "Message" : "View chat"}</a><a class="btn btn-ghost btn-sm" href="#/job/${encodeURIComponent(a.jobId)}">View job</a>${a.status === "hired" && !a.employmentEnded ? `<button class="btn btn-ghost btn-sm" data-ended="${esc(a.id)}">This job ended</button>` : ""}</div>
     </div>`).join("")}</div>`
     : `<div class="empty"><p><strong>No applications yet.</strong></p><p class="muted">Find a job you like and tap Apply.</p><p><a class="btn btn-primary" href="#/">Browse jobs</a></p></div>`;
   const hiredNow = apps.find((a) => a.status === "hired" && !a.employmentEnded && isFullTime(a.jobSchedule, a.jobArrangement));
@@ -1202,6 +1254,142 @@ async function viewApplications() {
   });
 }
 
+/* ---------------- Messages ---------------- */
+const CHAT_GRACE_MS = 48 * 3600000;
+let inbox = [];
+let unwatchInbox = null;
+let inboxRole = null;
+function chatState(a) {
+  if (a.status !== "not_selected") return { open: true, declined: false };
+  const closesAt = (typeof a.declinedAt === "number" ? a.declinedAt : Date.now()) + CHAT_GRACE_MS; // just declined = full 48h
+  const left = closesAt - Date.now();
+  return { open: left > 0, declined: true, closesAt, hoursLeft: Math.max(0, Math.ceil(left / 3600000)) };
+}
+function isUnread(a) {
+  const me = getAuthState().user?.uid;
+  if (!a.lastMessageAt || a.lastMessageFrom === me) return false;
+  const seen = a.employerUid === me ? a.employerSeenAt : a.applicantSeenAt;
+  return !seen || a.lastMessageAt > seen;
+}
+const unreadMessages = () => inbox.filter(isUnread).length;
+function startInbox() {
+  const { user, profile } = getAuthState();
+  const role = user && profile ? profile.role : null;
+  if (role === inboxRole && unwatchInbox) return;
+  if (unwatchInbox) { unwatchInbox(); unwatchInbox = null; }
+  inbox = []; inboxRole = role;
+  if (!role) return;
+  unwatchInbox = store.watchApplications(role, (list) => {
+    inbox = list; myAppsCache = null; renderNav();
+    if ((location.hash || "").startsWith("#/messages")) drawInbox();
+  });
+}
+const otherName = (a) => (getAuthState().user?.uid === a.employerUid ? a.applicant?.fullName || "Applicant" : a.employerName || "Employer");
+const chatClosedText = (st) => st.open ? `Chat closes in ${st.hoursLeft} hour${st.hoursLeft === 1 ? "" : "s"}` : "Chat closed";
+
+function viewMessages() {
+  document.title = "Messages | Job Search PH";
+  const { user, profile } = getAuthState();
+  if (!user) return goSignIn("Sign in to see your messages");
+  if (!profile) { location.hash = "#/profile"; return; }
+  app.innerHTML = `<div class="page-head"><div><h1>Messages</h1><p class="muted">${profile.role === "employer" ? "Chat with people who applied to your jobs." : "Chat with employers you applied to."}</p></div></div><div id="inbox"><p class="muted">Loading…</p></div>`;
+  drawInbox();
+}
+function drawInbox() {
+  const box = $("#inbox"); if (!box) return;
+  const list = [...inbox].sort((a, b) => (b.lastMessageAt || b.updatedAt || b.createdAt || 0) - (a.lastMessageAt || a.updatedAt || a.createdAt || 0));
+  const me = getAuthState().user?.uid;
+  box.innerHTML = list.length ? `<div class="inbox">${list.map((a) => {
+    const st = chatState(a); const unread = isUnread(a);
+    const name = otherName(a);
+    return `<a class="thread ${unread ? "unread" : ""} ${st.declined ? "declined" : ""}" href="#/chat/${encodeURIComponent(a.id)}">
+      <span class="avatar sm" aria-hidden="true">${esc(name.trim().charAt(0).toUpperCase() || "?")}</span>
+      <span class="thread-main">
+        <span class="thread-top"><strong>${esc(name)}</strong><small>${a.lastMessageAt ? ago(a.lastMessageAt) : ""}</small></span>
+        <span class="thread-job">${esc(a.jobTitle)}${a.jobCity ? ` · ${esc(a.jobCity)}` : ""} ${st.declined ? `<em class="closing">${chatClosedText(st)}</em>` : appBadge(a.status, a.employerUid === me)}</span>
+        <span class="thread-last">${a.lastMessageText ? `${a.lastMessageFrom === me ? "You: " : ""}${esc(a.lastMessageText)}` : `<i>No messages yet. Say hello.</i>`}</span>
+      </span>
+      ${unread ? `<span class="unread-dot" aria-label="Unread"></span>` : ""}
+    </a>`; }).join("")}</div>`
+    : `<div class="empty"><p><strong>No conversations yet.</strong></p><p class="muted">${inboxRole === "employer" ? "When someone applies to your job, you can chat with them here." : "Apply to a job to start chatting with the employer."}</p></div>`;
+}
+
+let unwatchChat = null;
+async function viewChat(appId) {
+  document.title = "Chat | Job Search PH";
+  const { user } = getAuthState();
+  if (!user) return goSignIn("Sign in to see your messages");
+  app.innerHTML = `<p class="muted">Loading…</p>`;
+  const here = location.hash;
+  let a = await store.getApplication(appId);
+  if (location.hash !== here) return;
+  if (!a) { app.innerHTML = `<div class="empty"><h1>Conversation not found</h1><p class="muted">It may have been withdrawn.</p><p><a class="btn btn-primary" href="#/messages">Back to Messages</a></p></div>`; return; }
+  const me = user.uid; const iAmEmployer = a.employerUid === me;
+  const name = otherName(a);
+  const x = a.applicant || {};
+  app.innerHTML = `
+    <div class="chat-wrap">
+      <header class="chat-head">
+        <a href="#/messages" class="back" aria-label="Back to messages">←</a>
+        <span class="avatar sm" aria-hidden="true">${esc(name.charAt(0).toUpperCase())}</span>
+        <div class="chat-who"><strong>${esc(name)}</strong>
+          <span class="muted small">${iAmEmployer ? `${x.age ? `${x.age} · ` : ""}${esc(x.city || "")} · ` : ""}<a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a></span></div>
+        <span id="chat-badge"></span>
+      </header>
+      <div id="chat-banner"></div>
+      <div class="chat-body" id="chat-body"><p class="muted center small">Loading messages…</p></div>
+      <form class="chat-form" id="chat-form">
+        <textarea id="chat-input" name="text" rows="1" maxlength="1000" placeholder="Write a message…" aria-label="Message"></textarea>
+        <button class="btn btn-primary" type="submit" aria-label="Send">Send</button>
+      </form>
+      <p class="chat-note small muted">Keep chats about this job. Never send money or ID numbers here.</p>
+    </div>`;
+  const body = $("#chat-body"), form = $("#chat-form"), input = $("#chat-input");
+  const paintState = () => {
+    const st = chatState(a);
+    $("#chat-badge").innerHTML = st.declined ? `<span class="badge badge-app-not_selected">Not selected</span>` : appBadge(a.status, iAmEmployer);
+    $("#chat-banner").innerHTML = st.declined
+      ? `<p class="chat-banner ${st.open ? "" : "closed"}">${st.open
+          ? `${iAmEmployer ? "You marked this applicant as not a fit." : "The employer chose other applicants."} This chat closes in <strong>${st.hoursLeft} hour${st.hoursLeft === 1 ? "" : "s"}</strong>.`
+          : "This chat has closed. You can still read past messages."}</p>` : "";
+    input.disabled = !st.open; form.querySelector("button").disabled = !st.open;
+    input.placeholder = st.open ? "Write a message…" : "Chat closed";
+    form.classList.toggle("closed", !st.open);
+  };
+  paintState();
+  const fmt = (ms) => new Date(ms).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  let lastCount = -1;
+  if (unwatchChat) unwatchChat();
+  unwatchChat = store.watchMessages(a.id, (msgs, err) => {
+    if (!$("#chat-body")) { unwatchChat?.(); unwatchChat = null; return; }
+    if (!msgs) { body.innerHTML = `<p class="error small">Could not load messages (${esc(err?.code || "error")}).</p>`; return; }
+    const intro = `<div class="chat-intro">${iAmEmployer ? `${esc(name)} applied for <strong>${esc(a.jobTitle)}</strong> ${ago(a.createdAt)}.` : `You applied for <strong>${esc(a.jobTitle)}</strong> ${ago(a.createdAt)}.`}${a.message ? `<blockquote>${nl2br(a.message)}</blockquote>` : ""}</div>`;
+    let lastDay = "";
+    body.innerHTML = intro + msgs.map((m) => {
+      const day = new Date(m.createdAt).toDateString(); const sep = day !== lastDay ? `<p class="day">${new Date(m.createdAt).toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric" })}</p>` : ""; lastDay = day;
+      return `${sep}<div class="msg ${m.fromUid === me ? "mine" : "theirs"}"><p>${nl2br(m.text)}</p><small>${m.pending ? "Sending…" : fmt(m.createdAt)}</small></div>`;
+    }).join("");
+    if (msgs.length !== lastCount) { body.scrollTop = body.scrollHeight; lastCount = msgs.length; }
+    store.markSeen(a);
+  });
+  // Keep the countdown and status fresh.
+  const tick = setInterval(async () => { if (!$("#chat-form")) return clearInterval(tick); const fresh = await store.getApplication(a.id); if (fresh) { a = fresh; paintState(); } }, 60000);
+  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !CAN_SMS) { e.preventDefault(); form.requestSubmit(); } });
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = input.value.trim(); if (!text || input.disabled) return;
+    input.value = ""; input.style.height = "auto";
+    try { await store.sendMessage(a, text); a = (await store.getApplication(a.id)) || a; }
+    catch (err) {
+      console.error(err); input.value = text;
+      toast(err.code === "permission-denied" ? "This chat is closed, so the message wasn't sent." : "Message not sent. Check your connection.");
+      const fresh = await store.getApplication(a.id); if (fresh) { a = fresh; paintState(); }
+    }
+  });
+  if (!CAN_SMS) input.focus();
+}
+
 /* ---------------- Admin ---------------- */
 let adminTab = "pending";
 const adminJobs = {};
@@ -1210,7 +1398,7 @@ async function viewAdmin() {
   const { user, isAdmin } = getAuthState();
   if (!user) return goSignIn("Admin sign in");
   if (!isAdmin) { app.innerHTML = `<div class="empty"><h1>Not authorized</h1><p class="muted">This account is not an admin.</p></div>`; return; }
-  const tabs = { pending: "Pending", approved: "Live", reports: "Reports", rejected: "Rejected", closed: "Closed" };
+  const tabs = { pending: "Pending", approved: "Live", reports: "Reports", support: "Support", rejected: "Rejected", closed: "Closed" };
   app.innerHTML = `
     <div class="page-head"><h1>Admin</h1></div>
     <div class="tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<button role="tab" class="tab ${adminTab === k ? "active" : ""}" data-tab="${k}">${v}</button>`).join("")}</div>
@@ -1218,7 +1406,14 @@ async function viewAdmin() {
   app.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { adminTab = b.dataset.tab; viewAdmin(); }));
 
   const body = $("#admin-body");
-  if (adminTab === "reports") {
+  if (adminTab === "support") {
+    const items = await store.listSupport();
+    body.innerHTML = items.length ? `<div class="table">${items.map((m) => `
+      <div class="trow"><div><strong>${esc(m.topic)}</strong> <span class="muted small">· ${ago(m.createdAt)}</span>
+        <div class="small">${nl2br(m.message)}</div><div class="muted small copyable">${esc(m.name)} · ${esc(m.reply)}</div></div>
+        <div></div><div class="actions"><button class="btn btn-ghost btn-sm" data-act="supportdone" data-id="${esc(m.id)}">Mark done</button></div></div>`).join("")}</div>`
+      : `<div class="empty"><p>No support messages.</p></div>`;
+  } else if (adminTab === "reports") {
     const reports = await store.listReports();
     const jobs = {};
     await Promise.all([...new Set(reports.map((r) => r.jobId))].map(async (id) => { jobs[id] = await store.getJob(id); }));
@@ -1274,8 +1469,38 @@ async function viewAdmin() {
       if (act === "feature") await store.updateJob(id, { featured: b.dataset.on !== "1" });
       if (act === "delete") { await store.deleteJob(id); await store.clearReportsFor(id); }
       if (act === "dismiss") await store.dismissReport(id);
+      if (act === "supportdone") await store.closeSupport(id);
       jobsCache = null; toast("Done"); viewAdmin();
     } catch (err) { console.error(err); toast("Action failed: " + (err.code || err.message)); }
+  });
+}
+
+/* ---------------- Support ---------------- */
+function viewSupport() {
+  document.title = "Contact support | Job Search PH";
+  const { user, profile } = getAuthState();
+  const topics = ["Problem with my account", "A job post or employer", "An applicant", "Something isn't working", "Suggestion", "Other"];
+  app.innerHTML = `
+    <div class="page-head"><div><p class="kicker">Help</p><h1>Contact support</h1><p class="muted">Tell us what happened. We usually reply within a day by email or phone.</p></div></div>
+    <form id="support-form" class="support-form pcard" novalidate>
+      <div class="fld"><span class="label">What's this about?</span><div class="pills" role="radiogroup">${topics.map((t, i) => `<label class="pill"><input type="radio" name="topic" value="${esc(t)}" ${i === 0 ? "checked" : ""}><span>${esc(t)}</span></label>`).join("")}</div></div>
+      <div class="row">
+        <label class="fld">Your name<input name="name" maxlength="80" value="${esc(profile?.fullName || user?.displayName || "")}" required></label>
+        <label class="fld">Email or mobile to reply to<input name="reply" maxlength="120" value="${esc(user?.email || profile?.phone || "")}" required></label>
+      </div>
+      <label class="fld">Message<textarea name="message" rows="5" maxlength="2000" required minlength="10" placeholder="Include the job title or person's name if it's about a post or applicant."></textarea></label>
+      <p class="hint">If you're in danger, contact the PNP (911) or DOLE right away.</p>
+      <p id="form-error" class="error" hidden></p>
+      <button class="btn btn-primary" type="submit">Send to support</button>
+    </form>`;
+  $("#support-form").addEventListener("submit", async (e) => {
+    e.preventDefault(); const f = e.target; const err = $("#form-error"); err.hidden = true;
+    const data = { topic: f.querySelector("[name=topic]:checked").value, name: f.name.value.trim(), reply: f.reply.value.trim(), message: f.message.value.trim(), page: returnTo || "" };
+    if (data.name.length < 2 || data.reply.length < 5) { err.textContent = "Add your name and an email or mobile number we can reply to."; err.hidden = false; return; }
+    if (data.message.length < 10) { err.textContent = "Write a bit more so we can help."; err.hidden = false; return; }
+    const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Sending…";
+    try { await store.sendSupport(data); app.innerHTML = `<div class="empty"><h1>Message sent</h1><p class="muted">Thanks, ${esc(firstName(data.name))}. We'll get back to you at ${esc(data.reply)}.</p><p><a class="btn btn-primary" href="#/">Back to jobs</a></p></div>`; }
+    catch (ex) { btn.disabled = false; btn.textContent = "Send to support"; err.textContent = `Could not send (${ex.code || "error"}). Please try again.`; err.hidden = false; }
   });
 }
 
@@ -1341,16 +1566,21 @@ async function route() {
   if (page === "my") return viewMy();
   if (page === "applicants" && arg) return viewApplicants(decodeURIComponent(arg));
   if (page === "applications") return viewApplications();
+  if (page === "messages") return viewMessages();
+  if (page === "support") return viewSupport();
+  if (page === "chat" && arg) return viewChat(decodeURIComponent(arg));
   if (page === "admin") return viewAdmin();
   if (["safety", "terms", "privacy"].includes(page)) return viewStatic(page);
   location.hash = "#/";
 }
 
 window.addEventListener("hashchange", route);
+setTheme(getTheme());
 onAuth((s) => {
   const uidNow = s.user?.uid || null;
   const changed = uidNow !== lastUid; lastUid = uidNow;
   if (changed) { myAppsCache = null; startNotifications(); }
+  startInbox();
   if (changed && uidNow && location.hash === "#/signin") return finishAuthFlow();
   route();
 });
