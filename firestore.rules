@@ -3,18 +3,53 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
     function isAdmin() {
-      return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+      return signedIn() && exists(/databases/$(database)/documents/admins/$(me()));
     }
     function str(v, min, max) { return v is string && v.size() >= min && v.size() <= max; }
+    function optStr(v, max) { return v == null || (v is string && v.size() <= max); }
     function optNum(v) { return v == null || (v is number && v >= 0 && v <= 10000000); }
+    function jobDoc(jobId) { return get(/databases/$(database)/documents/jobs/$(jobId)); }
 
+    /* ---------- Profiles ---------- */
+    function validProfile(d) {
+      return d.keys().hasOnly([
+          'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
+          'birthDate','jobCategories','jobTypes','experienceYears','skills','workHistory',
+          'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName'])
+        && d.role in ['jobseeker', 'employer']
+        && str(d.fullName, 2, 80)
+        && str(d.phone, 7, 20)
+        && str(d.city, 1, 60)
+        && d.consent == true
+        && optStr(d.get('messenger', null), 100)
+        && optStr(d.get('birthDate', null), 10)
+        && (d.get('jobCategories', null) == null || (d.jobCategories is list && d.jobCategories.size() <= 14))
+        && (d.get('jobTypes', null) == null || (d.jobTypes is list && d.jobTypes.size() <= 5))
+        && optNum(d.get('experienceYears', null))
+        && optStr(d.get('skills', null), 1000)
+        && optStr(d.get('workHistory', null), 3000)
+        && optStr(d.get('education', null), 300)
+        && optStr(d.get('availability', null), 60)
+        && optStr(d.get('resumeUrl', null), 500)
+        && optStr(d.get('resumeFileUrl', null), 1000)
+        && optStr(d.get('resumeFileName', null), 200)
+        && optStr(d.get('companyName', null), 100);
+    }
+
+    match /users/{uid} {
+      allow read: if (signedIn() && me() == uid) || isAdmin();
+      allow create, update: if signedIn() && me() == uid && validProfile(request.resource.data);
+      allow delete: if (signedIn() && me() == uid) || isAdmin();
+    }
+
+    /* ---------- Jobs ---------- */
     function validJob(d) {
       return d.keys().hasOnly([
           'title','category','employerName','city','employmentType',
           'salaryMin','salaryMax','salaryPeriod','description','requirements',
-          'contactMethod','contactValue','ownerUid','status','featured',
-          'createdAt','updatedAt','approvedAt','expiresAt'])
+          'ownerUid','status','featured','createdAt','updatedAt','approvedAt','expiresAt'])
         && str(d.title, 3, 100)
         && str(d.category, 1, 40)
         && str(d.employerName, 1, 80)
@@ -24,38 +59,72 @@ service cloud.firestore {
         && d.salaryPeriod in ['month', 'day', 'hour']
         && str(d.description, 30, 4000)
         && str(d.requirements, 0, 2000)
-        && d.contactMethod in ['messenger', 'phone', 'email']
-        && str(d.contactValue, 3, 200)
         && d.status in ['pending', 'approved', 'rejected', 'closed']
         && d.featured is bool;
     }
 
     match /jobs/{jobId} {
-      // Public sees only approved posts; owners see their own; admins see everything.
       allow read: if resource.data.status == 'approved'
-                  || (signedIn() && resource.data.ownerUid == request.auth.uid)
+                  || (signedIn() && resource.data.ownerUid == me())
                   || isAdmin();
-
-      // Employers create posts that always start as pending and unfeatured.
       allow create: if signedIn()
                     && validJob(request.resource.data)
-                    && request.resource.data.ownerUid == request.auth.uid
+                    && request.resource.data.ownerUid == me()
                     && request.resource.data.status == 'pending'
                     && request.resource.data.featured == false
                     && request.resource.data.createdAt == request.time
                     && request.resource.data.approvedAt == null
                     && request.resource.data.expiresAt == null;
-
       // Owners may only close their own post. Admins can change anything.
       allow update: if isAdmin()
                     || (signedIn()
-                        && resource.data.ownerUid == request.auth.uid
+                        && resource.data.ownerUid == me()
                         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
                         && request.resource.data.status == 'closed');
-
       allow delete: if isAdmin();
+
+      // Employer contact details: visible to the owner, admins, and people who applied.
+      match /private/{docId} {
+        allow read: if isAdmin()
+                    || (signedIn() && (jobDoc(jobId).data.ownerUid == me()
+                        || exists(/databases/$(database)/documents/applications/$(jobId + '_' + me()))));
+        allow create, update: if signedIn() && docId == 'contact'
+                    && jobDoc(jobId).data.ownerUid == me()
+                    && request.resource.data.keys().hasOnly(['contactMethod', 'contactValue'])
+                    && request.resource.data.contactMethod in ['messenger', 'phone', 'email']
+                    && str(request.resource.data.contactValue, 3, 200);
+        allow delete: if isAdmin();
+      }
     }
 
+    /* ---------- Applications ---------- */
+    match /applications/{appId} {
+      allow read: if (signedIn() && (resource.data.applicantUid == me() || resource.data.employerUid == me())) || isAdmin();
+      allow create: if signedIn()
+                    && appId == request.resource.data.jobId + '_' + me()
+                    && request.resource.data.keys().hasOnly([
+                         'jobId','jobTitle','jobCity','employerUid','applicantUid','applicant',
+                         'message','status','createdAt','updatedAt'])
+                    && request.resource.data.applicantUid == me()
+                    && jobDoc(request.resource.data.jobId).data.status == 'approved'
+                    && request.resource.data.employerUid == jobDoc(request.resource.data.jobId).data.ownerUid
+                    && request.resource.data.employerUid != me()
+                    && request.resource.data.applicant is map
+                    && str(request.resource.data.applicant.fullName, 2, 80)
+                    && str(request.resource.data.applicant.phone, 7, 20)
+                    && str(request.resource.data.message, 0, 1000)
+                    && request.resource.data.status == 'new'
+                    && request.resource.data.createdAt == request.time;
+      // Employers update only the status of applications to their jobs.
+      allow update: if isAdmin()
+                    || (signedIn() && resource.data.employerUid == me()
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+                        && request.resource.data.status in ['new', 'shortlisted', 'not_selected', 'hired']);
+      // Applicants can withdraw.
+      allow delete: if (signedIn() && resource.data.applicantUid == me()) || isAdmin();
+    }
+
+    /* ---------- Reports ---------- */
     match /reports/{reportId} {
       allow create: if request.resource.data.keys().hasOnly(['jobId', 'reason', 'details', 'createdAt'])
                     && str(request.resource.data.jobId, 1, 64)
@@ -65,9 +134,8 @@ service cloud.firestore {
       allow read, delete: if isAdmin();
     }
 
-    // Admin list is managed by hand in the Firebase console.
     match /admins/{uid} {
-      allow read: if signedIn() && request.auth.uid == uid;
+      allow read: if signedIn() && me() == uid;
       allow write: if false;
     }
   }

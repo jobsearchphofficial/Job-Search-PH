@@ -1,5 +1,4 @@
-// Paste your Firebase web app config here (Firebase console → Project settings → Your apps).
-// While apiKey still starts with "YOUR_", the site runs in demo mode with sample data.
+// Firebase web app config (Firebase console → Project settings → Your apps).
 export const firebaseConfig = {
   apiKey: "AIzaSyAc8z7FwRCxDbXj1g2WFdf7A_5iitPJytg",
   authDomain: "job-search-ph-website.firebaseapp.com",
@@ -9,7 +8,9 @@ export const firebaseConfig = {
   appId: "1:541010223461:web:137fa8725eef2465f8018c",
 };
 
-export const DEMO_MODE = firebaseConfig.apiKey.startsWith("YOUR_");
-
 // How long an approved post stays live.
 export const LISTING_DAYS = 30;
+
+// Resume file uploads need Firebase Storage, which requires the Blaze plan.
+// Turn this on after creating the Storage bucket and publishing storage.rules.
+export const RESUME_UPLOADS = false;

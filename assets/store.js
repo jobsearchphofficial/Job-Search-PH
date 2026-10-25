@@ -1,143 +1,173 @@
-// Data layer. Same interface for Firebase (live) and demo (sample data in the browser).
-import { firebaseConfig, DEMO_MODE, LISTING_DAYS } from "./firebase-config.js?v=1792945625";
+// Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792946555";
 
+const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
+const USE_EMULATORS = ["localhost", "127.0.0.1"].includes(location.hostname) && new URLSearchParams(location.search).has("emu");
+
+let A, F, S, auth, db, storage;
+let state = { user: null, profile: null, isAdmin: false, ready: false };
 const listeners = new Set();
-let state = { user: null, isAdmin: false, ready: false };
+const emit = () => listeners.forEach((cb) => cb({ ...state }));
 
-function emit() { listeners.forEach((cb) => cb({ ...state })); }
+export const onAuth = (cb) => { listeners.add(cb); if (state.ready) cb({ ...state }); return () => listeners.delete(cb); };
+export const getAuthState = () => ({ ...state });
+export const uploadsEnabled = RESUME_UPLOADS;
 
-export function onAuth(cb) { listeners.add(cb); if (state.ready) cb({ ...state }); return () => listeners.delete(cb); }
-export function getAuthState() { return { ...state }; }
-export const isDemo = DEMO_MODE;
+// Fields an employer submits for the public post. Contact details are stored privately.
+export const JOB_FIELDS = ["title", "category", "employerName", "city", "employmentType", "salaryMin", "salaryMax", "salaryPeriod", "description", "requirements"];
+export const PROFILE_FIELDS = {
+  common: ["role", "fullName", "phone", "city", "messenger"],
+  jobseeker: ["birthDate", "jobCategories", "jobTypes", "experienceYears", "skills", "workHistory", "education", "availability", "resumeUrl", "resumeFileUrl", "resumeFileName"],
+  employer: ["companyName"],
+};
 
-// Fields an employer may submit.
-export const JOB_FIELDS = [
-  "title", "category", "employerName", "city", "employmentType",
-  "salaryMin", "salaryMax", "salaryPeriod",
-  "description", "requirements", "contactMethod", "contactValue",
-];
+const toMs = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : v ?? null);
+const norm = (snap) => {
+  const d = snap.data();
+  const out = { id: snap.id, ...d };
+  ["createdAt", "approvedAt", "expiresAt", "updatedAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
+  return out;
+};
+const jobsQ = async (...c) => (await F.getDocs(F.query(F.collection(db, "jobs"), ...c))).docs.map(norm);
+const appsQ = async (...c) => (await F.getDocs(F.query(F.collection(db, "applications"), ...c))).docs.map(norm);
+const uid = () => auth.currentUser?.uid;
 
-let impl;
+export function ageFrom(birthDate) {
+  if (!birthDate) return null;
+  const b = new Date(birthDate + "T00:00:00"); if (isNaN(b)) return null;
+  const n = new Date(); let a = n.getFullYear() - b.getFullYear();
+  if (n.getMonth() < b.getMonth() || (n.getMonth() === b.getMonth() && n.getDate() < b.getDate())) a--;
+  return a;
+}
 
-/* ---------------- Demo implementation ---------------- */
-function demoImpl() {
-  const KEY = "jsph-demo-v1";
-  const now = Date.now();
-  const seed = {
-    jobs: [
-      { id: "d1", title: "Live-in Kasambahay", category: "Kasambahay / Househelper", employerName: "Family in Villamonte", city: "Bacolod City", employmentType: "Live-in", salaryMin: 6000, salaryMax: 7000, salaryPeriod: "month", description: "Household of 4 (2 adults, 2 school-age kids). General cleaning, laundry and simple cooking. Own room, free meals, 1 day off per week.", requirements: "At least 18 years old\nWith experience preferred\nCan start within 2 weeks", contactMethod: "messenger", contactValue: "jobsearchph", ownerUid: "seed", status: "approved", featured: true, createdAt: now - 1 * DAY, approvedAt: now - 1 * DAY, expiresAt: now + 29 * DAY },
-      { id: "d2", title: "Yaya for 2-year-old", category: "Yaya / Nanny", employerName: "Mendoza Family", city: "Talisay City", employmentType: "Live-in", salaryMin: 7000, salaryMax: 8000, salaryPeriod: "month", description: "Looking for a patient and caring yaya for our toddler. Help with feeding, bathing and playtime. Both parents work from home.", requirements: "Experience caring for toddlers\nWith references\nNon-smoker", contactMethod: "phone", contactValue: "09171234567", ownerUid: "seed", status: "approved", featured: false, createdAt: now - 2 * DAY, approvedAt: now - 2 * DAY, expiresAt: now + 28 * DAY },
-      { id: "d3", title: "Family Driver", category: "Driver", employerName: "Private employer, Lacson St.", city: "Bacolod City", employmentType: "Stay-out", salaryMin: 15000, salaryMax: null, salaryPeriod: "month", description: "Drive family members to school and work, run errands. Monday to Saturday, 7am–6pm.", requirements: "Professional driver's license\nKnows Bacolod–Silay routes\nClean driving record", contactMethod: "email", contactValue: "hiring@example.com", ownerUid: "seed", status: "approved", featured: false, createdAt: now - 3 * DAY, approvedAt: now - 3 * DAY, expiresAt: now + 27 * DAY },
-      { id: "d4", title: "Caregiver for elderly", category: "Caregiver", employerName: "Santos Household", city: "Silay City", employmentType: "Live-in", salaryMin: 9000, salaryMax: 10000, salaryPeriod: "month", description: "Care for an 80-year-old mother: meals, medicine reminders, light mobility assistance and companionship.", requirements: "Caregiving experience or NC II\nPatient and kind", contactMethod: "messenger", contactValue: "https://m.me/jobsearchph", ownerUid: "seed", status: "approved", featured: false, createdAt: now - 5 * DAY, approvedAt: now - 5 * DAY, expiresAt: now + 25 * DAY },
-      { id: "d5", title: "Kitchen Helper", category: "Food service", employerName: "Inasal stall, Mandalagan", city: "Bacolod City", employmentType: "Full-time", salaryMin: 450, salaryMax: null, salaryPeriod: "day", description: "Prep ingredients, wash dishes and keep the kitchen clean. 6 days a week.", requirements: "Willing to work evenings\nWith health certificate or willing to get one", contactMethod: "phone", contactValue: "09281234567", ownerUid: "seed", status: "approved", featured: false, createdAt: now - 6 * DAY, approvedAt: now - 6 * DAY, expiresAt: now + 24 * DAY },
-      { id: "d6", title: "Part-time Laundry Helper", category: "Laundry", employerName: "Family in Bata", city: "Bacolod City", employmentType: "Part-time", salaryMin: 400, salaryMax: null, salaryPeriod: "day", description: "Twice a week, washing and ironing for a family of 5.", requirements: "Experience with ironing formal clothes", contactMethod: "messenger", contactValue: "jobsearchph", ownerUid: "seed", status: "approved", featured: false, createdAt: now - 8 * DAY, approvedAt: now - 8 * DAY, expiresAt: now + 22 * DAY },
-      { id: "d7", title: "Househelper (stay-out)", category: "Kasambahay / Househelper", employerName: "Demo Employer", city: "Bago City", employmentType: "Stay-out", salaryMin: 5500, salaryMax: null, salaryPeriod: "month", description: "Cleaning and laundry, Monday to Friday.", requirements: "", contactMethod: "phone", contactValue: "09991234567", ownerUid: "demo-user", status: "pending", featured: false, createdAt: now - 2 * 3600000, approvedAt: null, expiresAt: null },
-    ],
-    reports: [],
-    signedIn: false,
-  };
-  let db;
-  const load = () => { try { const raw = localStorage.getItem(KEY); if (raw) return JSON.parse(raw); } catch {} return structuredClone(seed); };
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch {} };
-  const demoUser = { uid: "demo-user", displayName: "Demo Employer", email: "demo@example.com" };
-  const wait = (v) => new Promise((r) => setTimeout(() => r(structuredClone(v)), 120));
-  const find = (id) => db.jobs.find((j) => j.id === id);
+async function loadProfile(user) {
+  if (!user) return { profile: null, isAdmin: false };
+  const [p, a] = await Promise.all([
+    F.getDoc(F.doc(db, "users", user.uid)).catch(() => null),
+    F.getDoc(F.doc(db, "admins", user.uid)).catch(() => null),
+  ]);
+  return { profile: p?.exists() ? norm(p) : null, isAdmin: !!a?.exists() };
+}
 
-  return {
-    async init() {
-      db = load();
-      state = { user: db.signedIn ? demoUser : null, isAdmin: db.signedIn, ready: true };
+export const store = {
+  async init() {
+    const mods = [import(`${CDN}/firebase-app.js`), import(`${CDN}/firebase-auth.js`), import(`${CDN}/firebase-firestore.js`)];
+    if (RESUME_UPLOADS) mods.push(import(`${CDN}/firebase-storage.js`));
+    const [appMod, authMod, fsMod, stMod] = await Promise.all(mods);
+    A = authMod; F = fsMod; S = stMod;
+    const app = appMod.initializeApp(USE_EMULATORS ? { ...firebaseConfig, projectId: "demo-jsph" } : firebaseConfig);
+    auth = A.getAuth(app);
+    db = F.getFirestore(app);
+    if (S) storage = S.getStorage(app);
+    if (USE_EMULATORS) {
+      A.connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
+      F.connectFirestoreEmulator(db, "127.0.0.1", 8085);
+    }
+    A.onAuthStateChanged(auth, async (user) => {
+      const extra = await loadProfile(user);
+      state = { user: user ? { uid: user.uid, displayName: user.displayName, email: user.email } : null, ...extra, ready: true };
       emit();
-    },
-    async signIn() { db.signedIn = true; save(); state = { user: demoUser, isAdmin: true, ready: true }; emit(); },
-    async signOut() { db.signedIn = false; save(); state = { user: null, isAdmin: false, ready: true }; emit(); },
-    async listPublic() { return wait(db.jobs.filter((j) => j.status === "approved")); },
-    async getJob(id) { return wait(find(id) || null); },
-    async createJob(data) {
-      const job = { ...data, id: "j" + Date.now().toString(36), ownerUid: state.user.uid, status: "pending", featured: false, createdAt: Date.now(), approvedAt: null, expiresAt: null };
-      db.jobs.unshift(job); save(); return wait(job);
-    },
-    async myJobs() { return wait(db.jobs.filter((j) => j.ownerUid === state.user?.uid)); },
-    async listByStatus(status) { return wait(db.jobs.filter((j) => j.status === status)); },
-    async updateJob(id, patch) { const j = find(id); if (j) Object.assign(j, patch); save(); return wait(j); },
-    async approve(id) { const t = Date.now(); return this.updateJob(id, { status: "approved", approvedAt: t, expiresAt: t + LISTING_DAYS * DAY }); },
-    async deleteJob(id) { db.jobs = db.jobs.filter((j) => j.id !== id); save(); },
-    async report(jobId, reason, details) { db.reports.unshift({ id: "r" + Date.now().toString(36), jobId, reason, details, createdAt: Date.now() }); save(); },
-    async listReports() { return wait(db.reports); },
-    async dismissReport(id) { db.reports = db.reports.filter((r) => r.id !== id); save(); },
-    async clearReportsFor(jobId) { db.reports = db.reports.filter((r) => r.jobId !== jobId); save(); },
-    async resetDemo() { db = structuredClone(seed); save(); state = { user: null, isAdmin: false, ready: true }; emit(); },
-  };
-}
+    });
+  },
 
-/* ---------------- Firebase implementation ---------------- */
-function firebaseImpl() {
-  const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
-  let A, F, auth, db;
-  const toMs = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : v ?? null);
-  const norm = (snap) => {
-    const d = snap.data();
-    return { id: snap.id, ...d, createdAt: toMs(d.createdAt), approvedAt: toMs(d.approvedAt), expiresAt: toMs(d.expiresAt), updatedAt: toMs(d.updatedAt) };
-  };
-  const q = async (...constraints) => (await F.getDocs(F.query(F.collection(db, "jobs"), ...constraints))).docs.map(norm);
+  /* ---- Auth ---- */
+  async signInGoogle() { await A.signInWithPopup(auth, new A.GoogleAuthProvider()); },
+  async signInEmail(email, pw) { await A.signInWithEmailAndPassword(auth, email, pw); },
+  async signUpEmail(email, pw, name) {
+    const cred = await A.createUserWithEmailAndPassword(auth, email, pw);
+    if (name) await A.updateProfile(cred.user, { displayName: name }).catch(() => {});
+  },
+  async resetPassword(email) { await A.sendPasswordResetEmail(auth, email); },
+  async signOut() { await A.signOut(auth); },
 
-  return {
-    async init() {
-      const [appMod, authMod, fsMod] = await Promise.all([
-        import(`${CDN}/firebase-app.js`), import(`${CDN}/firebase-auth.js`), import(`${CDN}/firebase-firestore.js`),
-      ]);
-      A = authMod; F = fsMod;
-      const app = appMod.initializeApp(firebaseConfig);
-      auth = A.getAuth(app);
-      db = F.getFirestore(app);
-      A.onAuthStateChanged(auth, async (user) => {
-        let isAdmin = false;
-        if (user) {
-          try { isAdmin = (await F.getDoc(F.doc(db, "admins", user.uid))).exists(); } catch { isAdmin = false; }
-        }
-        state = { user: user ? { uid: user.uid, displayName: user.displayName, email: user.email } : null, isAdmin, ready: true };
-        emit();
-      });
-    },
-    async signIn() { await A.signInWithPopup(auth, new A.GoogleAuthProvider()); },
-    async signOut() { await A.signOut(auth); },
-    async listPublic() { return q(F.where("status", "==", "approved"), F.limit(500)); },
-    async getJob(id) {
-      try { const s = await F.getDoc(F.doc(db, "jobs", id)); return s.exists() ? norm(s) : null; }
-      catch { return null; } // permission denied = not public
-    },
-    async createJob(data) {
-      const ref = await F.addDoc(F.collection(db, "jobs"), {
-        ...data, ownerUid: auth.currentUser.uid, status: "pending", featured: false,
-        createdAt: F.serverTimestamp(), updatedAt: F.serverTimestamp(), approvedAt: null, expiresAt: null,
-      });
-      return { id: ref.id };
-    },
-    async myJobs() { return q(F.where("ownerUid", "==", auth.currentUser.uid)); },
-    async listByStatus(status) { return q(F.where("status", "==", status)); },
-    async updateJob(id, patch) { await F.updateDoc(F.doc(db, "jobs", id), { ...patch, updatedAt: F.serverTimestamp() }); },
-    async approve(id) {
-      await F.updateDoc(F.doc(db, "jobs", id), {
-        status: "approved", approvedAt: F.serverTimestamp(), updatedAt: F.serverTimestamp(),
-        expiresAt: F.Timestamp.fromMillis(Date.now() + LISTING_DAYS * DAY),
-      });
-    },
-    async deleteJob(id) { await F.deleteDoc(F.doc(db, "jobs", id)); },
-    async report(jobId, reason, details) {
-      await F.addDoc(F.collection(db, "reports"), { jobId, reason, details, createdAt: F.serverTimestamp() });
-    },
-    async listReports() {
-      const s = await F.getDocs(F.query(F.collection(db, "reports"), F.orderBy("createdAt", "desc"), F.limit(200)));
-      return s.docs.map((d) => ({ id: d.id, ...d.data(), createdAt: toMs(d.data().createdAt) }));
-    },
-    async dismissReport(id) { await F.deleteDoc(F.doc(db, "reports", id)); },
-    async clearReportsFor(jobId) {
-      const s = await F.getDocs(F.query(F.collection(db, "reports"), F.where("jobId", "==", jobId)));
-      await Promise.all(s.docs.map((d) => F.deleteDoc(d.ref)));
-    },
-  };
-}
+  /* ---- Profile ---- */
+  async saveProfile(data) {
+    const ref = F.doc(db, "users", uid());
+    const exists = !!state.profile;
+    const payload = { ...data, consent: true, updatedAt: F.serverTimestamp() };
+    if (!exists) payload.createdAt = F.serverTimestamp();
+    await F.setDoc(ref, payload, { merge: true });
+    const extra = await loadProfile(auth.currentUser);
+    state = { ...state, ...extra }; emit();
+  },
+  async deleteProfile() {
+    await F.deleteDoc(F.doc(db, "users", uid()));
+    state = { ...state, profile: null }; emit();
+  },
+  async uploadResume(file) {
+    if (!storage) throw new Error("Uploads are not enabled");
+    const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-60);
+    const ref = S.ref(storage, `resumes/${uid()}/${Date.now()}-${safe}`);
+    await S.uploadBytes(ref, file, { contentType: file.type });
+    return { url: await S.getDownloadURL(ref), name: file.name };
+  },
 
-impl = DEMO_MODE ? demoImpl() : firebaseImpl();
-export const store = impl;
+  /* ---- Jobs ---- */
+  async listPublic() { return jobsQ(F.where("status", "==", "approved"), F.limit(500)); },
+  async getJob(id) {
+    try { const s = await F.getDoc(F.doc(db, "jobs", id)); return s.exists() ? norm(s) : null; }
+    catch { return null; }
+  },
+  async getContact(jobId) {
+    try { const s = await F.getDoc(F.doc(db, "jobs", jobId, "private", "contact")); return s.exists() ? s.data() : null; }
+    catch { return null; }
+  },
+  async createJob(data, contact) {
+    const ref = await F.addDoc(F.collection(db, "jobs"), {
+      ...data, ownerUid: uid(), status: "pending", featured: false,
+      createdAt: F.serverTimestamp(), updatedAt: F.serverTimestamp(), approvedAt: null, expiresAt: null,
+    });
+    await F.setDoc(F.doc(db, "jobs", ref.id, "private", "contact"), contact);
+    return { id: ref.id };
+  },
+  async myJobs() { return jobsQ(F.where("ownerUid", "==", uid())); },
+  async listByStatus(status) { return jobsQ(F.where("status", "==", status)); },
+  async updateJob(id, patch) { await F.updateDoc(F.doc(db, "jobs", id), { ...patch, updatedAt: F.serverTimestamp() }); },
+  async approve(id) {
+    await F.updateDoc(F.doc(db, "jobs", id), {
+      status: "approved", approvedAt: F.serverTimestamp(), updatedAt: F.serverTimestamp(),
+      expiresAt: F.Timestamp.fromMillis(Date.now() + LISTING_DAYS * DAY),
+    });
+  },
+  async deleteJob(id) {
+    await F.deleteDoc(F.doc(db, "jobs", id, "private", "contact")).catch(() => {});
+    await F.deleteDoc(F.doc(db, "jobs", id));
+  },
+
+  /* ---- Applications ---- */
+  async apply(job, message) {
+    const p = state.profile;
+    const applicant = {
+      fullName: p.fullName, phone: p.phone, city: p.city, messenger: p.messenger || "",
+      email: auth.currentUser.email || "", age: ageFrom(p.birthDate),
+      jobCategories: p.jobCategories || [], experienceYears: p.experienceYears ?? null,
+      skills: p.skills || "", workHistory: p.workHistory || "", education: p.education || "",
+      availability: p.availability || "", resumeUrl: p.resumeUrl || "",
+      resumeFileUrl: p.resumeFileUrl || "", resumeFileName: p.resumeFileName || "",
+    };
+    await F.setDoc(F.doc(db, "applications", `${job.id}_${uid()}`), {
+      jobId: job.id, jobTitle: job.title, jobCity: job.city, employerUid: job.ownerUid, applicantUid: uid(),
+      applicant, message: message || "", status: "new", createdAt: F.serverTimestamp(), updatedAt: F.serverTimestamp(),
+    });
+  },
+  async myApplications() { return appsQ(F.where("applicantUid", "==", uid())); },
+  async applicationsForJob(jobId) { return appsQ(F.where("jobId", "==", jobId), F.where("employerUid", "==", uid())); },
+  async applicationsForEmployer() { return appsQ(F.where("employerUid", "==", uid())); },
+  async setApplicationStatus(id, status) { await F.updateDoc(F.doc(db, "applications", id), { status, updatedAt: F.serverTimestamp() }); },
+  async withdraw(id) { await F.deleteDoc(F.doc(db, "applications", id)); },
+
+  /* ---- Reports ---- */
+  async report(jobId, reason, details) {
+    await F.addDoc(F.collection(db, "reports"), { jobId, reason, details, createdAt: F.serverTimestamp() });
+  },
+  async listReports() {
+    const s = await F.getDocs(F.query(F.collection(db, "reports"), F.orderBy("createdAt", "desc"), F.limit(200)));
+    return s.docs.map(norm);
+  },
+  async dismissReport(id) { await F.deleteDoc(F.doc(db, "reports", id)); },
+  async clearReportsFor(jobId) {
+    const s = await F.getDocs(F.query(F.collection(db, "reports"), F.where("jobId", "==", jobId)));
+    await Promise.all(s.docs.map((d) => F.deleteDoc(d.ref)));
+  },
+};
