@@ -1,0 +1,74 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isAdmin() {
+      return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+    function str(v, min, max) { return v is string && v.size() >= min && v.size() <= max; }
+    function optNum(v) { return v == null || (v is number && v >= 0 && v <= 10000000); }
+
+    function validJob(d) {
+      return d.keys().hasOnly([
+          'title','category','employerName','city','employmentType',
+          'salaryMin','salaryMax','salaryPeriod','description','requirements',
+          'contactMethod','contactValue','ownerUid','status','featured',
+          'createdAt','updatedAt','approvedAt','expiresAt'])
+        && str(d.title, 3, 100)
+        && str(d.category, 1, 40)
+        && str(d.employerName, 1, 80)
+        && str(d.city, 1, 60)
+        && str(d.employmentType, 1, 30)
+        && optNum(d.salaryMin) && optNum(d.salaryMax)
+        && d.salaryPeriod in ['month', 'day', 'hour']
+        && str(d.description, 30, 4000)
+        && str(d.requirements, 0, 2000)
+        && d.contactMethod in ['messenger', 'phone', 'email']
+        && str(d.contactValue, 3, 200)
+        && d.status in ['pending', 'approved', 'rejected', 'closed']
+        && d.featured is bool;
+    }
+
+    match /jobs/{jobId} {
+      // Public sees only approved posts; owners see their own; admins see everything.
+      allow read: if resource.data.status == 'approved'
+                  || (signedIn() && resource.data.ownerUid == request.auth.uid)
+                  || isAdmin();
+
+      // Employers create posts that always start as pending and unfeatured.
+      allow create: if signedIn()
+                    && validJob(request.resource.data)
+                    && request.resource.data.ownerUid == request.auth.uid
+                    && request.resource.data.status == 'pending'
+                    && request.resource.data.featured == false
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.approvedAt == null
+                    && request.resource.data.expiresAt == null;
+
+      // Owners may only close their own post. Admins can change anything.
+      allow update: if isAdmin()
+                    || (signedIn()
+                        && resource.data.ownerUid == request.auth.uid
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+                        && request.resource.data.status == 'closed');
+
+      allow delete: if isAdmin();
+    }
+
+    match /reports/{reportId} {
+      allow create: if request.resource.data.keys().hasOnly(['jobId', 'reason', 'details', 'createdAt'])
+                    && str(request.resource.data.jobId, 1, 64)
+                    && request.resource.data.reason in ['fee', 'scam', 'illegal', 'wrong', 'filled', 'other']
+                    && str(request.resource.data.details, 0, 500)
+                    && request.resource.data.createdAt == request.time;
+      allow read, delete: if isAdmin();
+    }
+
+    // Admin list is managed by hand in the Firebase console.
+    match /admins/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+  }
+}
