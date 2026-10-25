@@ -117,12 +117,14 @@ async function viewList() {
   document.title = "Job Search PH — Jobs in Negros & Western Visayas";
   app.innerHTML = `
     <section class="hero">
-      <h1>Find work near you in Negros &amp; Western Visayas</h1>
-      <p>Household, service and local jobs posted by employers. Contact them directly — <strong>always free for jobseekers.</strong></p>
+      <span class="eyebrow">Free for jobseekers · No fees, ever</span>
+      <h1>Find work near you in <em>Negros &amp; Western Visayas</em></h1>
+      <p>Household, service and local jobs posted by employers in Bacolod and nearby cities. Apply directly by Messenger, call or email.</p>
       <form class="search" id="search" role="search">
         <input type="search" name="q" placeholder="Search jobs, e.g. yaya, driver, cook" value="${esc(filters.q)}" aria-label="Search jobs">
         <button class="btn btn-primary" type="submit">Search</button>
       </form>
+      <div class="hero-stats"><span><strong id="stat-jobs">–</strong> open jobs</span><span><strong id="stat-cities">–</strong> cities</span><span>New posts reviewed daily</span></div>
     </section>
     <section class="filters" aria-label="Filters">
       <select name="category" aria-label="Category"><option value="">All categories</option>${CATEGORIES.map((c) => `<option ${filters.category === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
@@ -153,7 +155,12 @@ async function viewList() {
   $("#search").q.addEventListener("input", (e) => { filters.q = e.target.value; draw(); });
   app.querySelectorAll(".filters select").forEach((s) => s.addEventListener("change", () => { filters[s.name] = s.value; draw(); }));
 
-  try { jobsCache = await store.listPublic(); draw(); }
+  try {
+    jobsCache = await store.listPublic(); draw();
+    const live = jobsCache.filter(isLive);
+    $("#stat-jobs").textContent = live.length;
+    $("#stat-cities").textContent = new Set(live.map((j) => j.city)).size;
+  }
   catch (err) { console.error(err); $("#results").innerHTML = `<p class="error">Could not load jobs. Please refresh.</p>`; }
 }
 
