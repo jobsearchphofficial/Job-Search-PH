@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792946555";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792946924";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -541,20 +541,44 @@ function viewProfile() {
     });
   };
 
+  const ICONS = {
+    jobseeker: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2.5" stroke="currentColor" stroke-width="1.7"/><path d="M8.5 7V5.8A1.8 1.8 0 0 1 10.3 4h3.4a1.8 1.8 0 0 1 1.8 1.8V7" stroke="currentColor" stroke-width="1.7"/><path d="M3 12.5h18" stroke="currentColor" stroke-width="1.7"/><path d="M11 12.5v1.6h2v-1.6" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>`,
+    employer: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V19a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19v-8.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="12" cy="12.2" r="2.2" stroke="currentColor" stroke-width="1.7"/><path d="M8.3 18.2a3.9 3.9 0 0 1 7.4 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
+  };
+  const ROLES = {
+    jobseeker: { title: "I'm looking for work", sub: "For kasambahay, yaya, drivers, cooks and other workers", points: ["Apply to any job in one tap", "See employer contact after you apply", "Track replies in My applications"] },
+    employer: { title: "I'm hiring", sub: "For households and local businesses", points: ["Post jobs for free", "Get applicants with their full profile", "Call, text or message them directly"] },
+  };
+  const roleCard = (k) => `
+    <button type="button" class="role ${role === k ? "on" : ""}" data-role="${k}" role="radio" aria-checked="${role === k}">
+      <span class="role-top"><span class="role-icon">${ICONS[k]}</span><span class="role-check" aria-hidden="true"></span></span>
+      <strong>${ROLES[k].title}</strong>
+      <span class="role-sub">${ROLES[k].sub}</span>
+      ${isNew ? `<ul>${ROLES[k].points.map((t) => `<li>${t}</li>`).join("")}</ul>` : ""}
+    </button>`;
+
   const draw = () => {
+    const name = p.fullName || user.displayName || "";
+    const step = !role ? 1 : 2;
     app.innerHTML = `
       <div class="profile-wrap">
-        <h1>${isNew ? "Set up your profile" : "My profile"}</h1>
-        <p class="muted">${isNew ? "Tell us a bit about yourself so employers and jobseekers can reach each other easily." : `Signed in as ${esc(user.email || user.displayName || "")}`}</p>
-        <div class="role-pick" role="radiogroup" aria-label="Profile type">
-          <button type="button" class="role ${role === "jobseeker" ? "on" : ""}" data-role="jobseeker" role="radio" aria-checked="${role === "jobseeker"}">
-            <strong>I'm looking for work</strong><span>Apply to jobs with one profile</span></button>
-          <button type="button" class="role ${role === "employer" ? "on" : ""}" data-role="employer" role="radio" aria-checked="${role === "employer"}">
-            <strong>I'm hiring</strong><span>Post jobs and review applicants</span></button>
-        </div>
-        ${role ? formHtml() : `<p class="muted center">Choose one to continue.</p>`}
+        <header class="profile-head">
+          <span class="avatar" aria-hidden="true">${esc((name || user.email || "?").trim().charAt(0).toUpperCase())}</span>
+          <div>
+            ${isNew ? `<p class="kicker">Step ${step} of 2</p>` : `<p class="kicker">${role === "employer" ? "Employer" : "Jobseeker"} profile</p>`}
+            <h1>${isNew ? `Welcome${name ? `, ${esc(firstName(name))}` : ""}` : "My profile"}</h1>
+            <p class="muted">${isNew ? (role ? "Fill in your details. Fields marked * are required." : "How will you use Job Search PH? You can change this later.") : `Signed in as ${esc(user.email || user.displayName || "")}`}</p>
+          </div>
+        </header>
+        ${isNew ? `<ol class="steps" aria-label="Progress"><li class="${step >= 1 ? "done" : ""} ${step === 1 ? "current" : ""}">Choose type</li><li class="${step === 2 ? "current" : ""}">Your details</li></ol>` : ""}
+        ${!isNew ? `<p class="label">Profile type</p>` : ""}
+        <div class="role-pick ${isNew ? "" : "compact"}" role="radiogroup" aria-label="Profile type">${roleCard("jobseeker")}${roleCard("employer")}</div>
+        ${role ? formHtml() : `<div class="trust"><span>Free to use</span><span>No fees for jobseekers, ever</span><span>Your details are shared only when you apply</span></div>`}
       </div>`;
-    app.querySelectorAll("[data-role]").forEach((b) => b.addEventListener("click", () => { collect(); role = b.dataset.role; draw(); }));
+    app.querySelectorAll("[data-role]").forEach((b) => b.addEventListener("click", () => {
+      const first = !role; collect(); role = b.dataset.role; draw();
+      if (first) $("#profile-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
     if (role) bindForm();
   };
   draw();
