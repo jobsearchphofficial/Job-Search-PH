@@ -16,7 +16,7 @@ service cloud.firestore {
     function validProfile(d) {
       return d.keys().hasOnly([
           'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
-          'birthDate','jobCategories','jobTypes','experienceYears','skills','workHistory',
+          'birthDate','gender','jobCategories','jobTypes','experienceYears','skills','workHistory',
           'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName'])
         && d.role in ['jobseeker', 'employer']
         && str(d.fullName, 2, 80)
@@ -25,6 +25,7 @@ service cloud.firestore {
         && d.consent == true
         && optStr(d.get('messenger', null), 100)
         && optStr(d.get('birthDate', null), 10)
+        && (d.get('gender', null) == null || d.gender in ['', 'Male', 'Female', 'Other'])
         && (d.get('jobCategories', null) == null || (d.jobCategories is list && d.jobCategories.size() <= 14))
         && (d.get('jobTypes', null) == null || (d.jobTypes is list && d.jobTypes.size() <= 5))
         && optNum(d.get('experienceYears', null))
@@ -49,7 +50,8 @@ service cloud.firestore {
       return d.keys().hasOnly([
           'title','category','employerName','city','employmentType',
           'salaryMin','salaryMax','salaryPeriod','description','requirements',
-          'area','workplace','hours','daysOff','openings','startDate','benefits',
+          'area','workplace','arrangement','schedule','hours','daysOff','openings','startDate','benefits',
+          'reqExperience','reqEducation','reqList',
           'ownerUid','status','featured','createdAt','updatedAt','approvedAt','expiresAt'])
         && str(d.title, 3, 100)
         && str(d.category, 1, 40)
@@ -68,7 +70,12 @@ service cloud.firestore {
         && optNum(d.get('daysOff', null))
         && optNum(d.get('openings', null))
         && optStr(d.get('startDate', null), 10)
-        && (d.get('benefits', null) == null || (d.benefits is list && d.benefits.size() <= 12));
+        && (d.get('benefits', null) == null || (d.benefits is list && d.benefits.size() <= 12))
+        && optStr(d.get('arrangement', null), 20)
+        && optStr(d.get('schedule', null), 20)
+        && optNum(d.get('reqExperience', null))
+        && optStr(d.get('reqEducation', null), 40)
+        && (d.get('reqList', null) == null || (d.reqList is list && d.reqList.size() <= 20));
     }
 
     match /jobs/{jobId} {

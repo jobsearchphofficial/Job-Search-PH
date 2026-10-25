@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792948194";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792949610";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -77,6 +77,20 @@ const ICON = {
   home: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V19a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19v-8.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`,
   people: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="9" cy="8.5" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 5.8a3 3 0 0 1 0 5.4M18 19a5.5 5.5 0 0 0-2.5-4.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
 };
+function requirementsHtml(j) {
+  const exp = Number(j.reqExperience || 0);
+  const facts = [];
+  if (exp > 0) facts.push(["Experience", `${exp}+ year${exp === 1 ? "" : "s"}`]);
+  else if (j.reqExperience === 0) facts.push(["Experience", "Not required"]);
+  if (j.reqEducation && j.reqEducation !== "Any") facts.push(["Education", esc(j.reqEducation)]);
+  const list = j.reqList || [];
+  const other = (j.requirements || "").split("\n").map((r) => r.replace(/^[-•*]\s*/, "").trim()).filter(Boolean);
+  if (!facts.length && !list.length && !other.length) return "";
+  return `<h2>Requirements</h2>
+    ${facts.length ? `<dl class="conds">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>` : ""}
+    ${list.length ? `<ul class="benefits reqchips">${list.map((r) => `<li>${ICON.check}${esc(r)}</li>`).join("")}</ul>` : ""}
+    ${other.length ? `<ul class="reqs">${other.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}`;
+}
 function conditionsHtml(j) {
   const rows = [];
   if (j.workplace) rows.push([ICON.home, "Workplace", j.workplace === "household" ? "Private household" : "Business"]);
@@ -185,8 +199,11 @@ function confirmInline(btn, text = "Click again to confirm") {
 let returnTo = null;
 let signInPurpose = "";
 let pendingName = "";
-function goSignIn(purpose) {
+let signupIntent = "";
+function goSignIn(purpose, intent) {
   returnTo = location.hash || "#/";
+  if (intent) signupIntent = intent;
+  if (intent === "employer" && /^#?\/?$/.test(location.hash)) returnTo = "#/post";
   signInPurpose = purpose || "";
   location.hash = "#/signin";
 }
@@ -223,7 +240,7 @@ $("#nav-toggle").addEventListener("click", () => {
 document.addEventListener("click", async (e) => {
   const a = e.target.closest("[data-action]"); if (!a) return;
   if (a.dataset.action === "signout") { await store.signOut(); myAppsCache = null; toast("Signed out"); location.hash = "#/"; }
-  if (a.dataset.action === "gosignin") { e.preventDefault(); goSignIn(a.dataset.purpose); }
+  if (a.dataset.action === "gosignin") { e.preventDefault(); goSignIn(a.dataset.purpose, a.dataset.intent); }
 });
 
 /* ---------------- Jobs list ---------------- */
@@ -259,7 +276,7 @@ async function viewList() {
         <button class="btn btn-ghost btn-sm near" id="near" type="button">${ICON.locate}<span>${filters.near ? `Near ${esc(filters.nearCity)}` : "Use my location"}</span></button>
         <div class="hero-stats"><span><strong id="stat-jobs">–</strong> open jobs</span><span><strong id="stat-cities">–</strong> locations</span></div>
       </div>
-      ${user ? "" : `<div class="hero-actions"><a class="btn btn-ghost btn-sm" href="#/signin" data-action="gosignin" data-purpose="Create your free profile">Create a free profile</a><a class="btn btn-ghost btn-sm" href="#/post">I'm hiring</a></div>`}
+      ${user ? "" : `<div class="hero-actions"><a class="btn btn-ghost btn-sm" href="#/signin" data-action="gosignin" data-intent="jobseeker" data-purpose="Create your free profile">Create a free profile</a><a class="btn btn-ghost btn-sm" href="#/signin" data-action="gosignin" data-intent="employer" data-purpose="Sign in to post a job">I'm hiring</a></div>`}
     </section>
     <nav class="cat-chips" aria-label="Categories">
       <button class="cat ${!filters.category ? "on" : ""}" data-cat="">All jobs</button>
@@ -291,7 +308,7 @@ async function viewList() {
     const where = filters.where.trim().toLowerCase();
     let list = (jobsCache || []).filter(isLive)
       .filter((j) => !filters.category || j.category === filters.category)
-      .filter((j) => !filters.type || j.employmentType === filters.type)
+      .filter((j) => !filters.type || j.employmentType === filters.type || j.schedule === filters.type)
       .filter((j) => !filters.minPay || monthlyEquivalent(j) >= Number(filters.minPay))
       .filter((j) => !where || [j.city, j.area].join(" ").toLowerCase().includes(where.replace(/ city$/, "")))
       .filter((j) => !q || [j.title, j.category, j.employerName, j.description, (j.benefits || []).join(" ")].join(" ").toLowerCase().includes(q));
@@ -363,7 +380,7 @@ function card(j, applied, km) {
     <h3>${esc(j.title)}</h3>
     <p class="employer">${esc(j.employerName)}</p>
     <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}${km != null ? ` · ${km < 1 ? "<1" : Math.round(km)} km` : ""}</span></p>
-    <ul class="meta"><li>${esc(j.employmentType)}</li>${perks.map((b) => `<li class="perk">${esc(b)}</li>`).join("")}</ul>
+    <ul class="meta"><li>${esc(j.employmentType)}</li>${j.workplace === "household" && j.schedule ? `<li>${esc(j.schedule)}</li>` : ""}${perks.map((b) => `<li class="perk">${esc(b)}</li>`).join("")}</ul>
     <div class="card-foot"><span class="salary">${salaryText(j)}</span><span class="muted">${ago(j.approvedAt || j.createdAt)}</span></div>
   </a>`;
 }
@@ -389,11 +406,11 @@ async function viewJob(id) {
         <h1>${esc(j.title)}</h1>
         <p class="employer">${esc(j.employerName)}</p>
         <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}</span></p>
-        <ul class="meta"><li>${esc(j.employmentType)}</li><li>${esc(j.category)}</li><li>Posted ${ago(j.approvedAt || j.createdAt)}</li></ul>
+        <ul class="meta"><li>${esc(j.employmentType)}</li>${j.workplace === "household" && j.schedule ? `<li>${esc(j.schedule)}</li>` : ""}<li>${esc(j.category)}</li><li>Posted ${ago(j.approvedAt || j.createdAt)}</li></ul>
         <div class="pay-box"><span class="salary salary-lg">${salaryText(j)}</span>${(() => { const m = j.workplace && j.salaryMin ? minimumPay(j.city, j.workplace, j.salaryPeriod) : null; return m && j.salaryMin >= m.amount ? `<span class="minok">${ICON.check}Meets the legal minimum wage</span>` : ""; })()}</div>
         <h2>About the job</h2><p>${nl2br(j.description)}</p>
         ${conditionsHtml(j)}
-        ${j.requirements ? `<h2>Requirements</h2><ul class="reqs">${j.requirements.split("\n").filter(Boolean).map((r) => `<li>${esc(r.replace(/^[-•*]\s*/, ""))}</li>`).join("")}</ul>` : ""}
+        ${requirementsHtml(j)}
       </div>
       <aside class="job-side">
         <div class="panel" id="apply-panel"><p class="muted">Loading…</p></div>
@@ -446,7 +463,7 @@ async function renderApplyPanel(j, isOwner) {
     panel.innerHTML = `
       <h2>Apply for this job</h2>
       <p class="muted">Sign in with a free profile to apply. The employer's contact details are shown after you apply.</p>
-      <a class="btn btn-primary btn-block" href="#/signin" data-action="gosignin" data-purpose="Sign in to apply">Sign in to apply</a>`;
+      <a class="btn btn-primary btn-block" href="#/signin" data-action="gosignin" data-intent="jobseeker" data-purpose="Sign in to apply">Sign in to apply</a>`;
     return;
   }
   if (!profile) {
@@ -557,8 +574,9 @@ function viewProfile() {
   if (!user) return goSignIn("Sign in to set up your profile");
   const p = { ...(profile || {}) };
   if (!p.fullName) p.fullName = pendingName || user.displayName || "";
-  let role = p.role || "";
   const isNew = !profile;
+  let role = p.role || (isNew ? signupIntent : "") || "";
+  const guided = isNew && !!signupIntent; // came from "Create a profile", "Apply" or "Post a job"
 
   const maxBirth = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 18); return d.toISOString().slice(0, 10); })();
   const chips = (name, list, selected = []) => `<div class="chips">${list.map((c) => `
@@ -574,10 +592,11 @@ function viewProfile() {
           <label>City / municipality *<select name="city" required><option value="">Choose…</option>${opts(CITIES, p.city)}</select></label>
         </div>
         <div class="row">
-          ${role === "jobseeker" ? `<label>Birthdate *<input name="birthDate" type="date" required max="${maxBirth}" value="${esc(p.birthDate)}"><span class="hint">You must be at least 18. Employers see your age, not your birthdate.</span></label>`
+          ${role === "jobseeker" ? `<label>Birthdate *<span class="date-age"><input name="birthDate" type="date" required max="${maxBirth}" value="${esc(p.birthDate)}"><output id="age-out" class="age-pill">${ageFrom(p.birthDate) != null ? `${ageFrom(p.birthDate)} years old` : "Age"}</output></span><span class="hint">You must be at least 18. Employers see your age, not your birthdate.</span></label>`
             : `<label>Household or business name<input name="companyName" maxlength="100" placeholder="e.g. Reyes Family or Inasal Express" value="${esc(p.companyName)}"></label>`}
           <label>Messenger (optional)<input name="messenger" maxlength="100" placeholder="Username or m.me link" value="${esc(p.messenger)}"></label>
         </div>
+        ${role === "jobseeker" ? `<div><span class="label">Gender</span><div class="pills tight" role="radiogroup">${["Male", "Female", "Other"].map((g) => `<label class="pill"><input type="radio" name="gender" value="${g}" ${p.gender === g ? "checked" : ""}><span>${g}</span></label>`).join("")}</div></div>` : ""}
       </fieldset>
       ${role === "jobseeker" ? `
       <fieldset>
@@ -610,6 +629,7 @@ function viewProfile() {
     const f = $("#profile-form"); if (!f) return;
     ["fullName", "phone", "city", "messenger", "birthDate", "companyName", "experienceYears", "availability", "skills", "workHistory", "education", "resumeUrl"]
       .forEach((k) => { if (f[k]) p[k] = f[k].value; });
+    const g = f.querySelector("[name=gender]:checked"); if (f.querySelector("[name=gender]")) p.gender = g ? g.value : "";
     ["jobCategories", "jobTypes"].forEach((k) => { if (f.querySelector(`[name=${k}]`)) p[k] = [...f.querySelectorAll(`[name=${k}]:checked`)].map((i) => i.value); });
   };
 
@@ -619,6 +639,10 @@ function viewProfile() {
       if (f.querySelectorAll("[name=jobCategories]:checked").length > 5) { cb.checked = false; toast("Pick up to 5 jobs"); }
     }));
     f.addEventListener("input", (e) => e.target.classList?.remove("invalid"));
+    f.birthDate?.addEventListener("input", () => {
+      const a = ageFrom(f.birthDate.value); const out = $("#age-out");
+      out.textContent = a == null ? "Age" : `${a} years old`; out.classList.toggle("bad", a != null && a < 18);
+    });
     $("#del-profile")?.addEventListener("click", async (e) => {
       if (!confirmInline(e.target, "Click again to delete")) return;
       try { await store.deleteProfile(); myAppsCache = null; toast("Profile deleted"); await store.signOut(); location.hash = "#/"; }
@@ -645,7 +669,7 @@ function viewProfile() {
         if (p.resumeUrl && !safeUrl(p.resumeUrl.trim())) return fail("The resume link should start with https://", f.resumeUrl);
         const exp = p.experienceYears === "" || p.experienceYears == null ? null : Number(p.experienceYears);
         Object.assign(data, {
-          birthDate: p.birthDate, jobCategories: p.jobCategories || [], jobTypes: p.jobTypes || [],
+          birthDate: p.birthDate, gender: p.gender || "", jobCategories: p.jobCategories || [], jobTypes: p.jobTypes || [],
           experienceYears: Number.isFinite(exp) && exp >= 0 ? Math.min(exp, 60) : null,
           skills: (p.skills || "").trim(), workHistory: (p.workHistory || "").trim(), education: (p.education || "").trim(),
           availability: p.availability || "", resumeUrl: (p.resumeUrl || "").trim(),
@@ -664,7 +688,7 @@ function viewProfile() {
           data.resumeFileUrl = up.url; data.resumeFileName = up.name;
         }
         await store.saveProfile(data);
-        myAppsCache = null; pendingName = "";
+        myAppsCache = null; pendingName = ""; signupIntent = "";
         toast("Profile saved");
         if (isNew || returnTo) finishAuthFlow(); else viewProfile();
       } catch (ex) {
@@ -698,14 +722,16 @@ function viewProfile() {
         <header class="profile-head">
           <span class="avatar" aria-hidden="true">${esc((name || user.email || "?").trim().charAt(0).toUpperCase())}</span>
           <div>
-            ${isNew ? `<p class="kicker">Step ${step} of 2</p>` : `<p class="kicker">${role === "employer" ? "Employer" : "Jobseeker"} profile</p>`}
+            ${isNew ? `<p class="kicker">${guided ? "Create your profile" : `Step ${step} of 2`}</p>` : `<p class="kicker">${role === "employer" ? "Employer" : "Jobseeker"} profile</p>`}
             <h1>${isNew ? `Welcome${name ? `, ${esc(firstName(name))}` : ""}` : "My profile"}</h1>
             <p class="muted">${isNew ? (role ? "Fill in your details. Fields marked * are required." : "How will you use Job Search PH? You can change this later.") : `Signed in as ${esc(user.email || user.displayName || "")}`}</p>
           </div>
         </header>
-        ${isNew ? `<ol class="steps" aria-label="Progress"><li class="${step >= 1 ? "done" : ""} ${step === 1 ? "current" : ""}">Choose type</li><li class="${step === 2 ? "current" : ""}">Your details</li></ol>` : ""}
-        ${!isNew ? `<p class="label">Profile type</p>` : ""}
-        <div class="role-pick ${isNew ? "" : "compact"}" role="radiogroup" aria-label="Profile type">${roleCard("jobseeker")}${roleCard("employer")}</div>
+        ${isNew && !guided ? `<ol class="steps" aria-label="Progress"><li class="${step >= 1 ? "done" : ""} ${step === 1 ? "current" : ""}">Choose type</li><li class="${step === 2 ? "current" : ""}">Your details</li></ol>` : ""}
+        ${guided ? `<div class="role-switch"><span class="role-now">${ICONS[role]}<span>${role === "employer" ? "Employer profile: post jobs and review applicants" : "Jobseeker profile: apply to jobs with one profile"}</span></span>
+            <button type="button" class="linkbtn" data-role="${role === "employer" ? "jobseeker" : "employer"}">${role === "employer" ? "Looking for work instead?" : "Hiring instead?"}</button></div>`
+          : `${!isNew ? `<p class="label">Profile type</p>` : ""}
+        <div class="role-pick ${isNew ? "" : "compact"}" role="radiogroup" aria-label="Profile type">${roleCard("jobseeker")}${roleCard("employer")}</div>`}
         ${role ? formHtml() : `<div class="trust"><span>Free to use</span><span>No fees for jobseekers, ever</span><span>Your details are shared only when you apply</span></div>`}
       </div>`;
     app.querySelectorAll("[data-role]").forEach((b) => b.addEventListener("click", () => {
@@ -718,11 +744,21 @@ function viewProfile() {
 }
 
 /* ---------------- Post a job ---------------- */
+const REQ_EXPERIENCE = [[0, "No experience needed"], [1, "1+ year"], [2, "2+ years"], [3, "3+ years"], [5, "5+ years"]];
+const REQ_EDUCATION = ["Any", "Elementary", "High school", "Senior high school", "Vocational / TESDA", "College"];
+const REQ_SKILLS = {
+  household: ["Can cook", "Laundry & ironing", "Childcare experience", "Elderly care experience", "Professional driver's license", "Pet care", "Gardening"],
+  business: ["Customer service", "Cash handling", "Food handling", "Professional driver's license", "Own motorcycle", "Computer skills", "Heavy lifting"],
+  common: ["Non-smoker", "With references", "NBI or barangay clearance", "Medical certificate", "Can start immediately", "Speaks Hiligaynon", "Speaks English"],
+};
+const SCHEDULES = { household: ["Full-time", "Part-time"], business: ["Full-time", "Part-time", "Project-based", "Shifts"] };
+const RECOMMENDED = ["SSS", "PhilHealth", "Pag-IBIG", "13th month pay"];
+
 function viewPost() {
   document.title = "Post a job | Job Search PH";
   const { user, profile } = getAuthState();
   if (!user) {
-    app.innerHTML = `<div class="empty"><h1>Post a job for free</h1><p class="muted">Create a free employer account to post jobs and review applicants in one place.</p><p><a class="btn btn-primary" href="#/signin" data-action="gosignin" data-purpose="Sign in to post a job">Sign in to post a job</a></p></div>`;
+    app.innerHTML = `<div class="empty"><h1>Post a job for free</h1><p class="muted">Create a free employer account to post jobs and review applicants in one place.</p><p><a class="btn btn-primary" href="#/signin" data-action="gosignin" data-intent="employer" data-purpose="Sign in to post a job">Sign in to post a job</a></p></div>`;
     return;
   }
   if (!profile) { returnTo = "#/post"; location.hash = "#/profile"; return; }
@@ -731,77 +767,91 @@ function viewPost() {
     app.innerHTML = `<div class="empty"><h1>Hiring?</h1><p class="muted">Your profile is set to "I'm looking for work". Switch it to "I'm hiring" to post jobs.</p><p><a class="btn btn-primary" href="#/profile">Change profile type</a></p></div>`;
     return;
   }
-  const defMethod = profile.messenger ? "messenger" : "phone";
-  const defValue = profile.messenger || profile.phone || "";
   const cityList = CITIES.filter((c) => c !== "Other");
+  const radioPills = (name, list, sel, cls = "") => `<div class="pills ${cls}" role="radiogroup">${list.map(([v, l]) => `<label class="pill"><input type="radio" name="${name}" value="${esc(v)}" ${String(sel) === String(v) ? "checked" : ""}><span>${esc(l)}</span></label>`).join("")}</div>`;
+  const stepper = (name, val, min, max) => `<div class="stepper"><button type="button" data-step="-1" data-for="${name}" aria-label="Less">−</button><input name="${name}" type="number" inputmode="numeric" min="${min}" max="${max}" value="${val}"><button type="button" data-step="1" data-for="${name}" aria-label="More">+</button></div>`;
+
   app.innerHTML = `
     <div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1><p class="muted">Free to post. Reviewed within a day, then live for 30 days.</p></div></div>
     <div class="post-layout">
-      <form id="post-form" class="form" novalidate>
-        <fieldset>
-          <legend>1 · The job</legend>
-          <label>Job title *<input name="title" required minlength="3" maxlength="100" placeholder="e.g. Live-in Kasambahay"></label>
+      <form id="post-form" class="form post-form" novalidate>
+        <section class="pcard">
+          <header><span class="num">1</span><div><h2>Who's hiring?</h2><p>This sets the right pay rules and job options.</p></div></header>
+          <div class="seg" role="radiogroup">
+            <label><input type="radio" name="workplace" value="household" required><span>${ICON.home}<strong>Private household</strong><small>Kasambahay, yaya, family driver, cook…</small></span></label>
+            <label><input type="radio" name="workplace" value="business"><span>${ICON.people}<strong>Business</strong><small>Store, restaurant, office, site…</small></span></label>
+          </div>
+          <label class="fld">Employer or household name *<input name="employerName" required maxlength="80" placeholder="e.g. Reyes Family" value="${esc(profile.companyName || "")}"></label>
+        </section>
+
+        <section class="pcard" data-needs-workplace>
+          <header><span class="num">2</span><div><h2>The job</h2></div></header>
+          <label class="fld">Job title *<input name="title" required minlength="3" maxlength="100" placeholder="e.g. Live-in Kasambahay"></label>
+          <div class="fld"><span class="label">Category *</span><div id="cat-pills" class="pills wrap-pills" role="radiogroup"></div></div>
+          <div class="fld" id="arr-field"><span class="label">Live-in or stay-out? *</span>${radioPills("arrangement", [["Live-in", "Live-in"], ["Stay-out", "Stay-out"]], "")}</div>
+          <div class="fld"><span class="label">Schedule *</span><div id="sched-pills"></div></div>
+        </section>
+
+        <section class="pcard">
+          <header><span class="num">3</span><div><h2>Location</h2></div></header>
           <div class="row">
-            <label>Category *<select name="category" required><option value="">Choose…</option>${opts(CATEGORIES)}</select></label>
-            <label>Job type *<select name="employmentType" required><option value="">Choose…</option>${opts(TYPES)}</select></label>
+            <label class="fld">City or municipality *<select name="city" required><option value="">Choose…</option>${opts(cityList, cityList.includes(profile.city) ? profile.city : "")}</select></label>
+            <label class="fld">Barangay or area<input name="area" maxlength="80" placeholder="e.g. Mandalagan"></label>
           </div>
-          <div class="seg-field"><span class="label">Where will they work? *</span>
-            <div class="seg" role="radiogroup">
-              <label><input type="radio" name="workplace" value="household" required><span><strong>Private household</strong><small>Kasambahay, yaya, family driver, cook…</small></span></label>
-              <label><input type="radio" name="workplace" value="business"><span><strong>Business</strong><small>Store, restaurant, office, site…</small></span></label>
-            </div>
+          <p class="hint">The area helps jobseekers search nearby. Don't include house numbers.</p>
+        </section>
+
+        <section class="pcard">
+          <header><span class="num">4</span><div><h2>Pay</h2></div></header>
+          <div class="pay-row">
+            <label class="fld money"><span>From *</span><span class="peso">₱</span><input name="salaryMin" type="number" min="1" step="1" required inputmode="numeric" placeholder="6,500"></label>
+            <label class="fld money"><span>To</span><span class="peso">₱</span><input name="salaryMax" type="number" min="1" step="1" inputmode="numeric" placeholder="Optional"></label>
+            <div class="fld"><span class="label">Per</span>${radioPills("salaryPeriod", [["month", "Month"], ["day", "Day"], ["hour", "Hour"]], "month", "tight")}</div>
           </div>
-          <label>Employer / household name *<input name="employerName" required maxlength="80" placeholder="e.g. Reyes Family" value="${esc(profile.companyName || "")}"></label>
-        </fieldset>
-        <fieldset>
-          <legend>2 · Location</legend>
-          <div class="row">
-            <label>City / municipality *<select name="city" required><option value="">Choose…</option>${opts(cityList, cityList.includes(profile.city) ? profile.city : "")}</select></label>
-            <label>Barangay or area<input name="area" maxlength="80" placeholder="e.g. Mandalagan, Villamonte"><span class="hint">Helps jobseekers search by area. No house numbers.</span></label>
-          </div>
-        </fieldset>
-        <fieldset>
-          <legend>3 · Pay</legend>
+          <div id="wage-box" class="wage-box" aria-live="polite"></div>
+        </section>
+
+        <section class="pcard">
+          <header><span class="num">5</span><div><h2>Work conditions</h2></div></header>
           <div class="row row-3">
-            <label>From (₱) *<input name="salaryMin" type="number" min="1" step="1" required inputmode="numeric" placeholder="6500"></label>
-            <label>To (₱)<input name="salaryMax" type="number" min="1" step="1" inputmode="numeric" placeholder="Optional"></label>
-            <label>Per<select name="salaryPeriod"><option value="month">Month</option><option value="day">Day</option><option value="hour">Hour</option></select></label>
+            <label class="fld">Working hours<input name="hours" maxlength="60" placeholder="e.g. 7am–6pm"></label>
+            <div class="fld"><span class="label">Days off per week</span>${stepper("daysOff", 1, 0, 3)}</div>
+            <div class="fld"><span class="label">Openings</span>${stepper("openings", 1, 1, 50)}</div>
           </div>
-          <div id="wage-box" class="wage-box" aria-live="polite"><span class="muted small">Choose the category, workplace and city to see the legal minimum.</span></div>
-        </fieldset>
-        <fieldset>
-          <legend>4 · Work conditions</legend>
-          <div class="row row-3">
-            <label>Working hours<input name="hours" maxlength="60" placeholder="e.g. 7am–6pm"></label>
-            <label>Days off per week *<select name="daysOff" required><option value="">Choose…</option>${[1, 2, 3].map((n) => `<option value="${n}">${n}</option>`).join("")}<option value="0">None (business shifts)</option></select></label>
-            <label>Openings<input name="openings" type="number" min="1" max="50" value="1" inputmode="numeric"></label>
+          <label class="fld half">Start date (optional)<input name="startDate" type="date"></label>
+          <div class="fld"><span class="label">Benefits</span>
+            <div class="chips">${BENEFITS.map((b) => `<label class="chip ${RECOMMENDED.includes(b) ? "rec" : ""}"><input type="checkbox" name="benefits" value="${esc(b)}"><span>${esc(b)}${RECOMMENDED.includes(b) ? `<em>Recommended</em>` : ""}</span></label>`).join("")}</div>
+            <p class="hint" id="ben-hint">Posts with SSS, PhilHealth, Pag-IBIG and 13th month pay get more applicants.</p>
           </div>
-          <label class="half">Start date (optional)<input name="startDate" type="date"></label>
-          <div><span class="label">Benefits</span>
-            <div class="chips">${BENEFITS.map((b) => `<label class="chip"><input type="checkbox" name="benefits" value="${esc(b)}"><span>${esc(b)}</span></label>`).join("")}</div>
-            <p class="hint" id="legal-hint" hidden>For household workers, SSS, PhilHealth, Pag-IBIG and 13th month pay are required by the Kasambahay Law, so they're included automatically.</p>
-          </div>
-        </fieldset>
-        <fieldset>
-          <legend>5 · Details</legend>
-          <label>Description *<textarea name="description" required minlength="30" maxlength="4000" rows="6" placeholder="Duties, household size, what a normal day looks like…"></textarea></label>
-          <label>Requirements (one per line)<textarea name="requirements" maxlength="2000" rows="4" placeholder="At least 18 years old&#10;With experience"></textarea></label>
-        </fieldset>
-        <fieldset>
-          <legend>6 · Your contact for applicants</legend>
-          <div class="row">
-            <label>Method *<select name="contactMethod" required><option value="messenger" ${defMethod === "messenger" ? "selected" : ""}>Messenger</option><option value="phone" ${defMethod === "phone" ? "selected" : ""}>Phone / SMS</option><option value="email">Email</option></select></label>
-            <label>Contact *<input name="contactValue" required maxlength="200" value="${esc(defValue)}"></label>
-          </div>
-          <p class="hint">Only people who apply can see this. You'll also get each applicant's phone number.</p>
-        </fieldset>
-        <div class="agree-box">
+        </section>
+
+        <section class="pcard">
+          <header><span class="num">6</span><div><h2>Requirements</h2><p>Pick what matters. Everything here is optional.</p></div></header>
+          <div class="fld"><span class="label">Experience</span>${radioPills("reqExperience", REQ_EXPERIENCE, 0)}</div>
+          <div class="fld"><span class="label">Education</span>${radioPills("reqEducation", REQ_EDUCATION.map((e) => [e, e]), "Any")}</div>
+          <div class="fld"><span class="label">Skills &amp; documents</span><div id="req-chips" class="chips"></div></div>
+          <label class="fld">Other requirements<textarea name="requirements" maxlength="2000" rows="3" placeholder="Anything else, one per line"></textarea></label>
+          <p class="hint">All applicants are 18 or older. To follow the Anti-Age Discrimination Act, posts can't set an age range.</p>
+        </section>
+
+        <section class="pcard">
+          <header><span class="num">7</span><div><h2>Description</h2></div></header>
+          <label class="fld">About the job *<textarea name="description" required minlength="30" maxlength="4000" rows="6" placeholder="Duties, household size, what a normal day looks like…"></textarea></label>
+        </section>
+
+        <section class="pcard">
+          <header><span class="num">8</span><div><h2>How applicants reach you</h2><p>Only people who apply can see this. You also get each applicant's phone number.</p></div></header>
+          ${radioPills("contactMethod", [["messenger", "Messenger"], ["phone", "Phone / SMS"], ["email", "Email"]], profile.messenger ? "messenger" : "phone", "tight")}
+          <label class="fld"><span class="sr">Contact</span><input name="contactValue" required maxlength="200" value="${esc(profile.messenger || profile.phone || "")}"></label>
+        </section>
+
+        <section class="pcard agree-box">
           <p class="label">Before you post, confirm that you will:</p>
-          <label class="check"><input type="checkbox" name="agreeWage" required><span>Pay at least the legal minimum wage shown above</span></label>
-          <label class="check"><input type="checkbox" name="agreeFee" required><span>Never charge applicants any fee, deposit or deduction to apply or be hired</span></label>
+          <label class="check"><input type="checkbox" name="agreeWage" required><span>Pay at least the legal minimum wage</span></label>
+          <label class="check"><input type="checkbox" name="agreeFee" required><span>Never charge applicants any fee, deposit or deduction</span></label>
           <label class="check"><input type="checkbox" name="agreeAge" required><span>Only hire workers aged 18 or older</span></label>
           <label class="check"><input type="checkbox" name="agreeTerms" required><span>Follow Philippine labor law, including the Kasambahay Law, and the <a href="#/terms" target="_blank">Terms</a></span></label>
-        </div>
+        </section>
         <p id="form-error" class="error" hidden></p>
         <button class="btn btn-primary btn-lg" type="submit">Submit for review</button>
       </form>
@@ -809,83 +859,106 @@ function viewPost() {
         <p class="label">Preview</p>
         <div id="preview"></div>
         <div class="panel tips-panel"><strong>Posts that get more applicants</strong>
-          <ul><li>Show the full pay range</li><li>List days off and benefits</li><li>Say what's provided: room, meals, uniform</li></ul></div>
+          <ul><li>Show the full pay range</li><li>Include SSS, PhilHealth and Pag-IBIG</li><li>Say what's provided: room, meals, uniform</li></ul></div>
       </aside>
     </div>`;
 
   const f = $("#post-form");
-  const ph = { messenger: "Messenger username or m.me link", phone: "e.g. 0917 123 4567", email: "you@example.com" };
-  f.contactValue.placeholder = ph[f.contactMethod.value];
-  f.contactMethod.addEventListener("change", () => {
-    f.contactValue.placeholder = ph[f.contactMethod.value];
-    f.contactValue.value = f.contactMethod.value === "phone" ? profile.phone : f.contactMethod.value === "messenger" ? (profile.messenger || "") : (user.email || "");
-  });
-  const counter = document.createElement("p"); counter.className = "hint"; f.description.after(counter);
-  const workplace = () => f.querySelector("[name=workplace]:checked")?.value || "";
-  const benefits = () => [...f.querySelectorAll("[name=benefits]:checked")].map((i) => i.value);
+  const val = (n) => f.querySelector(`[name=${n}]:checked`)?.value ?? "";
+  const workplace = () => val("workplace");
+  let touchedBenefits = false;
 
-  // Category picks a sensible default workplace.
-  f.category.addEventListener("change", () => {
-    if (!workplace() && f.category.value) f.querySelector(`[name=workplace][value=${HOUSEHOLD_CATS.includes(f.category.value) ? "household" : "business"}]`).checked = true;
-    refresh();
-  });
-  const lockLegal = () => {
-    const house = workplace() === "household";
-    f.querySelectorAll("[name=benefits]").forEach((cb) => {
-      const legal = LEGAL_HOUSEHOLD.includes(cb.value);
-      if (house && legal) { cb.checked = true; cb.disabled = true; cb.closest(".chip").classList.add("locked"); }
-      else if (legal) { cb.disabled = false; cb.closest(".chip").classList.remove("locked"); }
-    });
-    $("#legal-hint").hidden = !house;
+  const renderOptions = () => {
+    const wp = workplace() || "household";
+    const cats = wp === "household" ? HOUSEHOLD_CATS.concat(["Other"]) : CATEGORIES;
+    const curCat = val("category");
+    $("#cat-pills").innerHTML = cats.map((c) => `<label class="pill"><input type="radio" name="category" value="${esc(c)}" required ${curCat === c ? "checked" : ""}><span>${esc(c)}</span></label>`).join("");
+    const curSched = val("schedule");
+    $("#sched-pills").innerHTML = radioPills("schedule", SCHEDULES[wp].map((s) => [s, s]), SCHEDULES[wp].includes(curSched) ? curSched : "Full-time");
+    $("#arr-field").hidden = wp !== "household";
+    f.querySelectorAll("[name=arrangement]").forEach((r) => (r.required = wp === "household"));
+    const curReq = [...f.querySelectorAll("[name=reqList]:checked")].map((i) => i.value);
+    $("#req-chips").innerHTML = REQ_SKILLS[wp].concat(REQ_SKILLS.common).map((s) => `<label class="chip"><input type="checkbox" name="reqList" value="${esc(s)}" ${curReq.includes(s) ? "checked" : ""}><span>${esc(s)}</span></label>`).join("");
+    if (!touchedBenefits) f.querySelectorAll("[name=benefits]").forEach((cb) => { if (RECOMMENDED.includes(cb.value)) cb.checked = wp === "household"; });
+    $("#ben-hint").textContent = wp === "household"
+      ? "SSS, PhilHealth, Pag-IBIG and 13th month pay are pre-selected because the Kasambahay Law requires them for household workers. Posts that include them get more applicants."
+      : "Posts with SSS, PhilHealth, Pag-IBIG and 13th month pay get more applicants.";
+    f.querySelectorAll("[data-needs-workplace]").forEach((s) => s.classList.toggle("dim", !workplace()));
   };
-  const currentMin = () => (f.city.value && workplace() ? minimumPay(f.city.value, workplace(), f.salaryPeriod.value) : null);
+
+  const collect = () => {
+    const g = (n) => (f[n] && !(f[n] instanceof RadioNodeList) ? String(f[n].value ?? "").trim() : "");
+    const wp = workplace();
+    const arrangement = wp === "household" ? val("arrangement") : "";
+    const schedule = val("schedule");
+    return {
+      title: g("title"), category: val("category"), employerName: g("employerName"), city: g("city"), area: g("area"),
+      workplace: wp, arrangement, schedule,
+      employmentType: wp === "household" ? (arrangement || "Live-in") : (schedule || "Full-time"),
+      salaryMin: g("salaryMin") ? Number(g("salaryMin")) : null, salaryMax: g("salaryMax") ? Number(g("salaryMax")) : null,
+      salaryPeriod: val("salaryPeriod") || "month", hours: g("hours"),
+      daysOff: g("daysOff") === "" ? null : Math.max(0, Math.min(3, Number(g("daysOff")))),
+      openings: Math.max(1, Math.min(50, Number(g("openings")) || 1)), startDate: g("startDate"),
+      benefits: [...f.querySelectorAll("[name=benefits]:checked")].map((i) => i.value),
+      reqExperience: Number(val("reqExperience") || 0), reqEducation: val("reqEducation") || "Any",
+      reqList: [...f.querySelectorAll("[name=reqList]:checked")].map((i) => i.value),
+      requirements: g("requirements"), description: g("description"),
+    };
+  };
+  const currentMin = () => (f.city.value && workplace() ? minimumPay(f.city.value, workplace(), val("salaryPeriod") || "month") : null);
+  const counter = document.createElement("p"); counter.className = "hint"; f.description.after(counter);
+  const ph = { messenger: "Messenger username or m.me link", phone: "e.g. 0917 123 4567", email: "you@example.com" };
+
   const refresh = () => {
-    lockLegal();
     const n = f.description.value.trim().length; counter.textContent = n < 30 ? `${n}/30 characters minimum` : `${n} characters`;
-    const box = $("#wage-box"); const min = currentMin(); const pay = Number(f.salaryMin.value) || 0;
-    if (!min) box.innerHTML = `<span class="muted small">Choose the workplace and city to see the legal minimum.</span>`;
+    f.contactValue.placeholder = ph[val("contactMethod")] || "";
+    const box = $("#wage-box"); const min = currentMin(); const pay = Number(f.salaryMin.value) || 0; const per = val("salaryPeriod") || "month";
+    if (!min) { box.className = "wage-box"; box.innerHTML = `<span class="small">Choose who's hiring and the city to see the legal minimum.</span>`; }
     else {
-      const ok = pay >= min.amount; const per = { month: "month", day: "day", hour: "hour" }[f.salaryPeriod.value];
+      const ok = pay >= min.amount;
       box.className = `wage-box ${pay ? (ok ? "ok" : "low") : ""}`;
       box.innerHTML = `<strong>Legal minimum: ₱${min.amount.toLocaleString("en-PH")} / ${per}</strong>
-        <span class="small">${esc(min.basis)} in ${esc(min.region)}, effective ${esc(min.since)}.${f.salaryPeriod.value !== "month" ? ` Converted using ${WORK_DAYS} working days a month${f.salaryPeriod.value === "hour" ? " and 8 hours a day" : ""}.` : ""}</span>
-        ${pay ? `<span class="verdict">${ok ? `${ICON.check} Your pay meets the minimum` : `Your pay is below the legal minimum. Raise it to at least ₱${min.amount.toLocaleString("en-PH")}.`}</span>` : ""}`;
+        <span class="small">${esc(min.basis)} in ${esc(min.region)}, effective ${esc(min.since)}.${per !== "month" ? ` Converted using ${WORK_DAYS} working days a month${per === "hour" ? " and 8 hours a day" : ""}.` : ""}</span>
+        ${pay ? `<span class="verdict">${ok ? `${ICON.check} Your pay meets the minimum` : `Below the legal minimum. Raise it to at least ₱${min.amount.toLocaleString("en-PH")}.`}</span>` : ""}`;
     }
     const d = collect();
-    $("#preview").innerHTML = card({ ...d, id: "preview", title: d.title || "Job title", employerName: d.employerName || "Employer name", city: d.city || "City", category: d.category || "Category", employmentType: d.employmentType || "Job type", approvedAt: Date.now() }, false, null).replace(/href="[^"]*"/, 'href="#/post" tabindex="-1" aria-hidden="true"');
+    $("#preview").innerHTML = card({ ...d, id: "preview", title: d.title || "Job title", employerName: d.employerName || "Employer name", city: d.city || "City", category: d.category || "Category", approvedAt: Date.now() }, false, null).replace(/href="[^"]*"/, 'href="#/post" tabindex="-1" aria-hidden="true"');
   };
-  const collect = () => {
-    const data = {};
-    JOB_FIELDS.forEach((k) => { if (f[k] && !(f[k] instanceof RadioNodeList)) data[k] = (f[k].value ?? "").trim(); });
-    data.workplace = workplace();
-    data.salaryMin = data.salaryMin ? Number(data.salaryMin) : null;
-    data.salaryMax = data.salaryMax ? Number(data.salaryMax) : null;
-    data.daysOff = data.daysOff === "" || data.daysOff == null ? null : Number(data.daysOff);
-    data.openings = data.openings ? Math.max(1, Math.min(50, Number(data.openings))) : 1;
-    data.benefits = benefits();
-    return data;
-  };
+
+  f.addEventListener("change", (e) => {
+    if (e.target.name === "benefits") touchedBenefits = true;
+    if (e.target.name === "workplace") renderOptions();
+    if (e.target.name === "contactMethod") {
+      const m = e.target.value; f.contactValue.value = m === "phone" ? profile.phone : m === "messenger" ? (profile.messenger || "") : (user.email || "");
+    }
+    refresh();
+  });
   f.addEventListener("input", (e) => { e.target.classList?.remove("invalid"); refresh(); });
-  f.addEventListener("change", refresh);
-  refresh();
+  f.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-step]"); if (!b) return;
+    const i = f[b.dataset.for]; const v = Math.max(Number(i.min), Math.min(Number(i.max), (Number(i.value) || 0) + Number(b.dataset.step)));
+    i.value = v; refresh();
+  });
+  renderOptions(); refresh();
 
   f.addEventListener("submit", async (e) => {
     e.preventDefault();
     const err = $("#form-error");
-    const fail = (m, el) => { err.textContent = m; err.hidden = false; if (el) { el.classList.add("invalid"); setTimeout(() => el.focus({ preventScroll: true }), 300); } err.scrollIntoView({ block: "center", behavior: "smooth" }); };
+    const fail = (m, el) => { err.textContent = m; err.hidden = false; if (el) { el.classList.add("invalid"); setTimeout(() => el.focus({ preventScroll: true }), 300); } (el || err).scrollIntoView({ block: "center", behavior: "smooth" }); };
     err.hidden = true;
     if (!f.checkValidity()) {
       const bad = f.querySelector("input:invalid, select:invalid, textarea:invalid");
       const msgs = {
-        title: "Add a job title (at least 3 characters).", category: "Choose a category.", employmentType: "Choose a job type.",
-        workplace: "Choose where they will work: private household or business.",
-        city: "Choose the city or municipality.", employerName: "Add the employer or household name.",
-        salaryMin: "Enter the pay. Jobseekers want to see it, and it must meet the legal minimum.",
-        daysOff: "Choose how many days off per week.", description: "Write a description of at least 30 characters: duties, schedule, household size.",
+        workplace: "Choose who's hiring: a private household or a business.", employerName: "Add the employer or household name.",
+        title: "Add a job title (at least 3 characters).", category: "Choose a category.", arrangement: "Choose live-in or stay-out.",
+        city: "Choose the city or municipality.", salaryMin: "Enter the pay. It must meet the legal minimum.",
+        description: "Write a description of at least 30 characters: duties, schedule, household size.",
         contactValue: "Add how applicants can contact you.",
         agreeWage: "Confirm that you'll pay at least the legal minimum.", agreeFee: "Confirm that you won't charge applicants any fee.",
         agreeAge: "Confirm that you'll only hire workers aged 18 or older.", agreeTerms: "Confirm that you'll follow labor law and the Terms.",
       };
+      const target = bad?.type === "radio" ? bad.closest(".pcard, .fld") : bad;
+      if (bad?.type === "radio") { target?.classList.add("flash"); setTimeout(() => target?.classList.remove("flash"), 1600); }
       return fail(msgs[bad?.name] || "Please complete the highlighted field.", bad?.type === "radio" ? null : bad);
     }
     const data = collect();
@@ -893,7 +966,7 @@ function viewPost() {
     const min = currentMin();
     if (min && data.salaryMin < min.amount) return fail(`The pay is below the legal minimum of ₱${min.amount.toLocaleString("en-PH")} per ${data.salaryPeriod}. Please raise it.`, f.salaryMin);
     if (data.workplace === "household" && !(data.daysOff >= 1)) return fail("Household workers are entitled to at least 1 rest day a week.", f.daysOff);
-    const contact = { contactMethod: f.contactMethod.value, contactValue: f.contactValue.value.trim() };
+    const contact = { contactMethod: val("contactMethod"), contactValue: f.contactValue.value.trim() };
     if (!contactLink(contact)) return fail("That contact doesn't look right. Check the username, number or email.", f.contactValue);
     if (contact.contactMethod === "phone" && digits(contact.contactValue).length < 10) return fail("Please enter a complete phone number.", f.contactValue);
     const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Submitting…";
@@ -904,7 +977,9 @@ function viewPost() {
       $("#again").addEventListener("click", (ev) => { ev.preventDefault(); viewPost(); });
     } catch (ex) {
       console.error(ex); btn.disabled = false; btn.textContent = "Submit for review";
-      fail(`Could not submit (${ex.code || ex.message || "unknown error"}). Please try again.`);
+      fail(ex.code === "permission-denied"
+        ? "The database rejected this post. If you just updated the site, publish the latest database rules in Firebase, then try again."
+        : `Could not submit (${ex.code || ex.message || "unknown error"}). Please try again.`);
     }
   });
 }
@@ -948,7 +1023,7 @@ function applicantCard(a) {
   <article class="applicant ${a.status === "new" ? "is-new" : ""}">
     <header>
       <div><h3>${esc(x.fullName)}${x.age ? `, ${x.age}` : ""}</h3>
-        <p class="muted small">${esc(x.city || "")}${x.experienceYears != null ? ` · ${x.experienceYears} yr${x.experienceYears === 1 ? "" : "s"} experience` : ""}${x.availability ? ` · ${esc(x.availability)}` : ""} · applied ${ago(a.createdAt)}</p></div>
+        <p class="muted small">${x.gender ? `${esc(x.gender)} · ` : ""}${esc(x.city || "")}${x.experienceYears != null ? ` · ${x.experienceYears} yr${x.experienceYears === 1 ? "" : "s"} experience` : ""}${x.availability ? ` · ${esc(x.availability)}` : ""} · applied ${ago(a.createdAt)}</p></div>
       ${appBadge(a.status, true)}
     </header>
     ${a.message ? `<blockquote>${nl2br(a.message)}</blockquote>` : ""}

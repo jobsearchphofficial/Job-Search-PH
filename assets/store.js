@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792948194";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792949610";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -18,7 +18,7 @@ export const uploadsEnabled = RESUME_UPLOADS;
 export const JOB_FIELDS = ["title", "category", "employerName", "city", "area", "employmentType", "salaryMin", "salaryMax", "salaryPeriod", "hours", "daysOff", "openings", "startDate", "description", "requirements"];
 export const PROFILE_FIELDS = {
   common: ["role", "fullName", "phone", "city", "messenger"],
-  jobseeker: ["birthDate", "jobCategories", "jobTypes", "experienceYears", "skills", "workHistory", "education", "availability", "resumeUrl", "resumeFileUrl", "resumeFileName"],
+  jobseeker: ["birthDate", "gender", "jobCategories", "jobTypes", "experienceYears", "skills", "workHistory", "education", "availability", "resumeUrl", "resumeFileUrl", "resumeFileName"],
   employer: ["companyName"],
 };
 
@@ -140,7 +140,7 @@ export const store = {
     const p = state.profile;
     const applicant = {
       fullName: p.fullName, phone: p.phone, city: p.city, messenger: p.messenger || "",
-      email: auth.currentUser.email || "", age: ageFrom(p.birthDate),
+      email: auth.currentUser.email || "", age: ageFrom(p.birthDate), gender: p.gender || "",
       jobCategories: p.jobCategories || [], experienceYears: p.experienceYears ?? null,
       skills: p.skills || "", workHistory: p.workHistory || "", education: p.education || "",
       availability: p.availability || "", resumeUrl: p.resumeUrl || "",
