@@ -342,7 +342,7 @@ function viewPost() {
       $("#again").addEventListener("click", (ev) => { ev.preventDefault(); viewPost(); });
     } catch (ex) {
       console.error(ex); btn.disabled = false; btn.textContent = "Submit for review";
-      fail("Could not submit. Please check your details and try again.");
+      fail(`Could not submit (${ex.code || ex.message || "unknown error"}). Please try again.`);
     }
   });
 }
