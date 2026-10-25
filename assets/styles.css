@@ -412,3 +412,14 @@ input[type=number] { -moz-appearance: textfield; }
 .age-pill { flex: none; padding: 10px 12px; border-radius: 10px; background: var(--indigo-soft); color: var(--indigo-deep); font-weight: 600; font-size: .86rem; white-space: nowrap; }
 .age-pill.bad { background: var(--red-soft); color: var(--red); }
 .reqchips { margin-top: 10px; } .conds + .benefits { margin-top: 10px; }
+
+/* Long words or links never widen the page */
+h1, h2, h3, p, li, dd, dt, blockquote, .employer, .loc span, .salary { overflow-wrap: anywhere; }
+.job, .job-side, .job-main, .applicant, .card, .trow > div, .admin-item { min-width: 0; }
+html, body { max-width: 100%; overflow-x: clip; }
+@media (max-width: 600px) {
+  .conds { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .conds div { padding: 9px 10px; }
+  .conds dd { font-size: .9rem; }
+  .pay-box .salary-lg { font-size: 1.15rem; }
+}
