@@ -147,6 +147,7 @@ legend { font-weight: 600; padding: 4px 12px; background: var(--indigo-soft); co
 .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .row-3 { grid-template-columns: 1fr 1fr 1fr; }
 @media (max-width: 600px) { .row, .row-3 { grid-template-columns: 1fr; } }
+.invalid { border-color: var(--red) !important; box-shadow: 0 0 0 3px var(--red-soft) !important; }
 .hint { margin: 0; font-size: .82rem; color: var(--slate-soft); }
 .check { display: flex !important; gap: 10px; align-items: flex-start; font-weight: 400 !important; }
 .check input { width: 20px; height: 20px; flex: none; margin-top: 2px; accent-color: var(--indigo); }

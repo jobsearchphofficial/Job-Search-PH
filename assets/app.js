@@ -298,6 +298,11 @@ function viewPost() {
 
   const f = $("#post-form");
   const ph = { messenger: "Messenger username or m.me link", phone: "e.g. 0917 123 4567", email: "you@example.com" };
+  const counter = document.createElement("p"); counter.className = "hint";
+  f.description.after(counter);
+  const count = () => { const n = f.description.value.trim().length; counter.textContent = n < 30 ? `${n}/30 characters minimum` : `${n} characters`; };
+  f.description.addEventListener("input", count); count();
+  f.addEventListener("input", (e) => e.target.classList?.remove("invalid"));
   f.contactMethod.addEventListener("change", () => (f.contactValue.placeholder = ph[f.contactMethod.value]));
 
   f.addEventListener("submit", async (e) => {
@@ -306,8 +311,21 @@ function viewPost() {
     const fail = (m) => { err.textContent = m; err.hidden = false; err.scrollIntoView({ block: "center", behavior: "smooth" }); };
     err.hidden = true;
     if (!f.checkValidity()) {
-      const bad = f.querySelector(":invalid");
-      return fail(bad.type === "checkbox" ? "Please confirm the statement at the bottom." : `Please check: ${bad.closest("label")?.firstChild.textContent.replace("*", "").trim()}`);
+      const bad = f.querySelector("input:invalid, select:invalid, textarea:invalid");
+      const msgs = {
+        title: "Add a job title (at least 3 characters).",
+        category: "Choose a category.",
+        employmentType: "Choose a job type.",
+        city: "Choose a location.",
+        employerName: "Add the employer or household name.",
+        description: "Write a description of at least 30 characters: duties, schedule, days off.",
+        contactValue: "Add how applicants can contact you.",
+        agree: "Tick the confirmation box at the bottom.",
+        salaryMin: "Enter a valid amount.", salaryMax: "Enter a valid amount.",
+      };
+      f.querySelectorAll(".invalid").forEach((el) => el.classList.remove("invalid"));
+      if (bad) { bad.classList.add("invalid"); setTimeout(() => bad.focus({ preventScroll: true }), 300); }
+      return fail(msgs[bad?.name] || "Please complete the highlighted field.");
     }
     const data = {};
     JOB_FIELDS.forEach((k) => (data[k] = (f[k]?.value ?? "").trim()));
