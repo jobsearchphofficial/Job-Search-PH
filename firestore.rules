@@ -49,6 +49,7 @@ service cloud.firestore {
       return d.keys().hasOnly([
           'title','category','employerName','city','employmentType',
           'salaryMin','salaryMax','salaryPeriod','description','requirements',
+          'area','workplace','hours','daysOff','openings','startDate','benefits',
           'ownerUid','status','featured','createdAt','updatedAt','approvedAt','expiresAt'])
         && str(d.title, 3, 100)
         && str(d.category, 1, 40)
@@ -60,7 +61,14 @@ service cloud.firestore {
         && str(d.description, 30, 4000)
         && str(d.requirements, 0, 2000)
         && d.status in ['pending', 'approved', 'rejected', 'closed']
-        && d.featured is bool;
+        && d.featured is bool
+        && optStr(d.get('area', null), 80)
+        && (d.get('workplace', null) == null || d.workplace in ['household', 'business'])
+        && optStr(d.get('hours', null), 60)
+        && optNum(d.get('daysOff', null))
+        && optNum(d.get('openings', null))
+        && optStr(d.get('startDate', null), 10)
+        && (d.get('benefits', null) == null || (d.benefits is list && d.benefits.size() <= 12));
     }
 
     match /jobs/{jobId} {

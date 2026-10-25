@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792946924";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792948194";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -26,6 +26,70 @@ const REPORT_REASONS = {
 const STATUS_LABEL = { pending: "Under review", approved: "Live", rejected: "Rejected", closed: "Closed" };
 const APP_STATUS = { new: "Sent", shortlisted: "Shortlisted", not_selected: "Not selected", hired: "Hired" };
 const IN_APP_BROWSER = /FBAN|FBAV|FB_IAB|Instagram|Messenger|Line\//i.test(navigator.userAgent);
+
+/* ---------------- Wages, work conditions, places ---------------- */
+// Official minimums. Negros Occidental (incl. Bacolod) follows the Western Visayas wage board;
+// Negros Oriental follows Central Visayas. Update these when new wage orders take effect.
+const WAGES = {
+  R6: { name: "Western Visayas", household: 6500, daily: 525, dailyLarge: 550, since: "Nov 19, 2025" },
+  R7: { name: "Central Visayas", household: 7500, daily: null, since: "Oct 14, 2026" },
+};
+const CITY_REGION = { "Dumaguete City": "R7" };
+const WORK_DAYS = 26; // days per month used to convert daily and monthly pay
+const HOUSEHOLD_CATS = ["Kasambahay / Househelper", "Yaya / Nanny", "Caregiver", "Cook", "Driver", "Laundry", "Gardener / Maintenance"];
+const BENEFITS = ["SSS", "PhilHealth", "Pag-IBIG", "13th month pay", "Free meals", "Free lodging", "Paid leave", "Overtime pay", "Transport allowance", "Uniform provided"];
+const LEGAL_HOUSEHOLD = ["SSS", "PhilHealth", "Pag-IBIG", "13th month pay"];
+const CITY_COORDS = {
+  "Bacolod City": [10.6765, 122.9509], "Talisay City": [10.7363, 122.9672], "Silay City": [10.7947, 122.9748],
+  "Bago City": [10.5333, 122.8333], "Victorias City": [10.901, 123.071], "Cadiz City": [10.9506, 123.309],
+  "Sagay City": [10.8967, 123.4167], "La Carlota City": [10.4239, 122.9213], "Kabankalan City": [9.9846, 122.8114],
+  "San Carlos City": [10.4929, 123.4095], "Escalante City": [10.8404, 123.4994], "Himamaylan City": [10.0989, 122.8706],
+  "Sipalay City": [9.7516, 122.4041], "Murcia": [10.605, 123.042], "Valladolid": [10.46, 122.83], "Pulupandan": [10.52, 122.8],
+  "E.B. Magalona": [10.87, 123.03], "Manapla": [10.96, 123.12], "Iloilo City": [10.7202, 122.5621], "Roxas City": [11.5853, 122.7511],
+  "Dumaguete City": [9.3068, 123.3054],
+};
+function kmBetween([a, b], [c, d]) {
+  const r = (x) => (x * Math.PI) / 180, R = 6371;
+  const h = Math.sin(r(c - a) / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(r(d - b) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+// Lowest legal pay for a job, in the chosen pay period. Returns null when we have no rate to check.
+function minimumPay(city, workplace, period) {
+  const w = WAGES[CITY_REGION[city] || "R6"];
+  let monthly;
+  if (workplace === "household") monthly = w.household;
+  else if (w.daily) monthly = w.daily * WORK_DAYS;
+  else return null;
+  const amt = period === "month" ? monthly : period === "day" ? monthly / WORK_DAYS : monthly / WORK_DAYS / 8;
+  return { amount: Math.ceil(amt), region: w.name, since: w.since, basis: workplace === "household" ? `₱${w.household.toLocaleString("en-PH")}/month kasambahay minimum` : `₱${w.daily}/day minimum (₱${w.dailyLarge}/day if you have more than 10 workers)` };
+}
+const monthlyEquivalent = (j) => {
+  const v = j.salaryMin || j.salaryMax; if (!v) return 0;
+  return j.salaryPeriod === "month" ? v : j.salaryPeriod === "day" ? v * WORK_DAYS : v * 8 * WORK_DAYS;
+};
+const ICON = {
+  pin: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="10" r="2.3" stroke="currentColor" stroke-width="1.8"/></svg>`,
+  search: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  locate: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  clock: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.8"/><path d="M12 7.5V12l3 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  cal: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  home: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V19a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19v-8.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`,
+  people: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="9" cy="8.5" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 5.8a3 3 0 0 1 0 5.4M18 19a5.5 5.5 0 0 0-2.5-4.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+};
+function conditionsHtml(j) {
+  const rows = [];
+  if (j.workplace) rows.push([ICON.home, "Workplace", j.workplace === "household" ? "Private household" : "Business"]);
+  if (j.hours) rows.push([ICON.clock, "Working hours", esc(j.hours)]);
+  if (j.daysOff != null && j.daysOff !== "") rows.push([ICON.cal, "Days off", `${esc(j.daysOff)} day${Number(j.daysOff) === 1 ? "" : "s"} per week`]);
+  if (j.openings > 1) rows.push([ICON.people, "Openings", `${esc(j.openings)} people`]);
+  if (j.startDate) rows.push([ICON.cal, "Start date", new Date(j.startDate + "T00:00:00").toLocaleDateString("en-PH", { month: "long", day: "numeric", year: "numeric" })]);
+  const ben = (j.benefits || []).length ? `<ul class="benefits">${j.benefits.map((b) => `<li>${ICON.check}${esc(b)}</li>`).join("")}</ul>` : "";
+  if (!rows.length && !ben) return "";
+  return `<h2>Work conditions</h2>
+    ${rows.length ? `<dl class="conds">${rows.map(([i, k, v]) => `<div><dt>${i}${k}</dt><dd>${v}</dd></div>`).join("")}</dl>` : ""}
+    ${ben ? `<h3 class="sub">Benefits</h3>${ben}` : ""}`;
+}
 
 /* ---------------- Helpers ---------------- */
 const $ = (s, el = document) => el.querySelector(s);
@@ -165,7 +229,7 @@ document.addEventListener("click", async (e) => {
 /* ---------------- Jobs list ---------------- */
 let jobsCache = null;
 let myAppsCache = null;
-const filters = { q: "", category: "", city: "", type: "" };
+const filters = { q: "", where: "", category: "", type: "", minPay: "", sort: "new", near: null, nearCity: "" };
 
 async function getMyApps() {
   const { profile } = getAuthState();
@@ -177,43 +241,105 @@ async function getMyApps() {
 async function viewList() {
   document.title = "Job Search PH — Jobs in Negros & Western Visayas";
   const { user } = getAuthState();
+  const cityList = CITIES.filter((c) => c !== "Other");
   app.innerHTML = `
     <section class="hero">
       <span class="eyebrow">Free for jobseekers · No fees, ever</span>
       <h1>Find work near you in <em>Negros &amp; Western Visayas</em></h1>
-      <p>Household, service and local jobs posted by employers in Bacolod and nearby cities. Create a free profile once, then apply to any job in one tap.</p>
-      <form class="search" id="search" role="search">
-        <input type="search" id="q" name="q" placeholder="Search jobs, e.g. yaya, driver, cook" value="${esc(filters.q)}" aria-label="Search jobs">
+      <p>Household, service and local jobs from employers in Bacolod and nearby cities. Every post is checked and must pay at least the legal minimum wage.</p>
+      <form class="search2" id="search" role="search">
+        <label class="field"><span class="ico">${ICON.search}</span><span class="sr">What</span>
+          <input type="search" id="q" name="q" placeholder="Job title or keyword" value="${esc(filters.q)}" autocomplete="off"></label>
+        <label class="field"><span class="ico">${ICON.pin}</span><span class="sr">Where</span>
+          <input type="search" id="where" name="where" list="city-list" placeholder="City, town or barangay" value="${esc(filters.where)}" autocomplete="off"></label>
+        <datalist id="city-list">${cityList.map((c) => `<option value="${esc(c)}"></option>`).join("")}</datalist>
         <button class="btn btn-primary" type="submit">Search</button>
       </form>
-      <div class="hero-stats"><span><strong id="stat-jobs">–</strong> open jobs</span><span><strong id="stat-cities">–</strong> cities</span><span>New posts reviewed daily</span></div>
+      <div class="hero-row">
+        <button class="btn btn-ghost btn-sm near" id="near" type="button">${ICON.locate}<span>${filters.near ? `Near ${esc(filters.nearCity)}` : "Use my location"}</span></button>
+        <div class="hero-stats"><span><strong id="stat-jobs">–</strong> open jobs</span><span><strong id="stat-cities">–</strong> locations</span></div>
+      </div>
       ${user ? "" : `<div class="hero-actions"><a class="btn btn-ghost btn-sm" href="#/signin" data-action="gosignin" data-purpose="Create your free profile">Create a free profile</a><a class="btn btn-ghost btn-sm" href="#/post">I'm hiring</a></div>`}
     </section>
-    <section class="filters" aria-label="Filters">
-      <select id="f-category" name="category" aria-label="Category"><option value="">All categories</option>${opts(CATEGORIES, filters.category)}</select>
-      <select id="f-city" name="city" aria-label="Location"><option value="">All locations</option>${opts(CITIES.filter((c) => c !== "Other"), filters.city)}</select>
-      <select id="f-type" name="type" aria-label="Job type"><option value="">Any type</option>${opts(TYPES, filters.type)}</select>
-    </section>
-    <div class="list-head"><span id="count" class="muted"></span></div>
+    <nav class="cat-chips" aria-label="Categories">
+      <button class="cat ${!filters.category ? "on" : ""}" data-cat="">All jobs</button>
+      ${CATEGORIES.map((c) => `<button class="cat ${filters.category === c ? "on" : ""}" data-cat="${esc(c)}">${esc(c)}</button>`).join("")}
+    </nav>
+    <div class="toolbar">
+      <span id="count" class="muted"></span>
+      <div class="toolbar-filters">
+        <select id="f-type" name="type" aria-label="Job type"><option value="">Any type</option>${opts(TYPES, filters.type)}</select>
+        <select id="f-pay" name="minPay" aria-label="Minimum pay">
+          <option value="">Any pay</option>
+          ${[8000, 10000, 15000, 20000].map((v) => `<option value="${v}" ${String(filters.minPay) === String(v) ? "selected" : ""}>₱${v.toLocaleString("en-PH")}+ / month</option>`).join("")}
+        </select>
+        <select id="f-sort" name="sort" aria-label="Sort">
+          <option value="new" ${filters.sort === "new" ? "selected" : ""}>Newest</option>
+          <option value="pay" ${filters.sort === "pay" ? "selected" : ""}>Highest pay</option>
+          <option value="near" ${filters.sort === "near" ? "selected" : ""}>Nearest</option>
+        </select>
+      </div>
+    </div>
+    <div id="active-filters" class="active-filters"></div>
     <section id="results" class="cards"><p class="muted">Loading jobs…</p></section>
     <aside class="notice"><strong>Stay safe:</strong> legitimate employers never ask you to pay to apply, train or get hired. <a href="#/safety">Read safety tips</a></aside>`;
 
   let applied = new Set();
+  const distanceOf = (j) => (filters.near && CITY_COORDS[j.city] ? kmBetween(filters.near, CITY_COORDS[j.city]) : null);
   const draw = () => {
     const q = filters.q.trim().toLowerCase();
-    const list = (jobsCache || []).filter(isLive)
+    const where = filters.where.trim().toLowerCase();
+    let list = (jobsCache || []).filter(isLive)
       .filter((j) => !filters.category || j.category === filters.category)
-      .filter((j) => !filters.city || j.city === filters.city)
       .filter((j) => !filters.type || j.employmentType === filters.type)
-      .filter((j) => !q || [j.title, j.category, j.employerName, j.city, j.description].join(" ").toLowerCase().includes(q))
-      .sort((a, b) => (b.featured - a.featured) || (b.approvedAt || b.createdAt) - (a.approvedAt || a.createdAt));
-    $("#count").textContent = `${list.length} job${list.length === 1 ? "" : "s"} found`;
-    $("#results").innerHTML = list.length ? list.map((j) => card(j, applied.has(j.id))).join("") :
-      `<div class="empty"><p><strong>No jobs match yet.</strong></p><p class="muted">Try another category or location, or check back soon.</p></div>`;
+      .filter((j) => !filters.minPay || monthlyEquivalent(j) >= Number(filters.minPay))
+      .filter((j) => !where || [j.city, j.area].join(" ").toLowerCase().includes(where.replace(/ city$/, "")))
+      .filter((j) => !q || [j.title, j.category, j.employerName, j.description, (j.benefits || []).join(" ")].join(" ").toLowerCase().includes(q));
+    const by = {
+      new: (a, b) => (b.featured - a.featured) || (b.approvedAt || b.createdAt) - (a.approvedAt || a.createdAt),
+      pay: (a, b) => monthlyEquivalent(b) - monthlyEquivalent(a),
+      near: (a, b) => (distanceOf(a) ?? 1e9) - (distanceOf(b) ?? 1e9),
+    };
+    list.sort(by[filters.sort] || by.new);
+    $("#count").textContent = `${list.length} job${list.length === 1 ? "" : "s"}${where ? ` in or near “${filters.where.trim()}”` : ""}`;
+    const chips = [
+      filters.q && ["q", `“${filters.q}”`], filters.where && ["where", filters.where], filters.category && ["category", filters.category],
+      filters.type && ["type", filters.type], filters.minPay && ["minPay", `₱${Number(filters.minPay).toLocaleString("en-PH")}+`],
+    ].filter(Boolean);
+    $("#active-filters").innerHTML = chips.length ? chips.map(([k, v]) => `<button class="fchip" data-clear="${k}">${esc(v)} <span aria-hidden="true">×</span></button>`).join("") + `<button class="linkbtn" data-clear="all">Clear all</button>` : "";
+    $("#results").innerHTML = list.length ? list.map((j) => card(j, applied.has(j.id), distanceOf(j))).join("") :
+      `<div class="empty"><p><strong>No jobs match yet.</strong></p><p class="muted">Try a nearby city, another category, or clear your filters.</p></div>`;
   };
-  $("#search").addEventListener("submit", (e) => { e.preventDefault(); filters.q = e.target.q.value; draw(); });
-  $("#q").addEventListener("input", (e) => { filters.q = e.target.value; draw(); });
-  app.querySelectorAll(".filters select").forEach((s) => s.addEventListener("change", () => { filters[s.name] = s.value; draw(); }));
+  const sync = () => { const f = $("#search"); filters.q = f.q.value; filters.where = f.where.value; draw(); };
+  $("#search").addEventListener("submit", (e) => { e.preventDefault(); sync(); $("#results").scrollIntoView({ behavior: "smooth", block: "start" }); });
+  $("#q").addEventListener("input", sync);
+  $("#where").addEventListener("input", sync);
+  app.querySelectorAll(".toolbar select").forEach((s) => s.addEventListener("change", () => {
+    filters[s.name] = s.value;
+    if (s.name === "sort" && s.value === "near" && !filters.near) locate(); else draw();
+  }));
+  app.querySelectorAll("[data-cat]").forEach((b) => b.addEventListener("click", () => {
+    filters.category = b.dataset.cat;
+    app.querySelectorAll("[data-cat]").forEach((x) => x.classList.toggle("on", x === b)); draw();
+  }));
+  $("#active-filters").addEventListener("click", (e) => {
+    const k = e.target.closest("[data-clear]")?.dataset.clear; if (!k) return;
+    if (k === "all") Object.assign(filters, { q: "", where: "", category: "", type: "", minPay: "" }); else filters[k] = "";
+    viewList();
+  });
+  const locate = () => {
+    const btn = $("#near"); const label = btn.querySelector("span");
+    if (!navigator.geolocation) { toast("Location isn't available on this device. Type your city instead."); return; }
+    label.textContent = "Finding you…";
+    navigator.geolocation.getCurrentPosition((pos) => {
+      const here = [pos.coords.latitude, pos.coords.longitude];
+      let best = null, bestKm = Infinity;
+      for (const [c, xy] of Object.entries(CITY_COORDS)) { const k = kmBetween(here, xy); if (k < bestKm) { bestKm = k; best = c; } }
+      filters.near = here; filters.nearCity = best; filters.sort = "near";
+      label.textContent = `Near ${best}`; $("#f-sort").value = "near"; draw();
+    }, () => { label.textContent = "Use my location"; toast("Couldn't get your location. Type your city instead."); }, { timeout: 10000, maximumAge: 600000 });
+  };
+  $("#near").addEventListener("click", locate);
 
   try {
     const [jobs, apps] = await Promise.all([jobsCache ? jobsCache : store.listPublic(), getMyApps()]);
@@ -226,13 +352,18 @@ async function viewList() {
   } catch (err) { console.error(err); if ($("#results")) $("#results").innerHTML = `<p class="error">Could not load jobs. Please refresh.</p>`; }
 }
 
-function card(j, applied) {
+function card(j, applied, km) {
+  const perks = (j.benefits || []).filter((b) => ["Free meals", "Free lodging", "SSS", "13th month pay"].includes(b)).slice(0, 3);
   return `
   <a class="card ${j.featured ? "card-featured" : ""}" href="#/job/${encodeURIComponent(j.id)}">
-    ${j.featured ? `<span class="badge badge-featured">Featured</span>` : applied ? `<span class="badge badge-app-new">Applied</span>` : ""}
+    <div class="card-top">
+      <span class="cat-tag">${esc(j.category)}</span>
+      ${j.featured ? `<span class="badge badge-featured">Featured</span>` : applied ? `<span class="badge badge-app-new">Applied</span>` : ""}
+    </div>
     <h3>${esc(j.title)}</h3>
     <p class="employer">${esc(j.employerName)}</p>
-    <ul class="meta"><li>${esc(j.city)}</li><li>${esc(j.employmentType)}</li><li>${esc(j.category)}</li></ul>
+    <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}${km != null ? ` · ${km < 1 ? "<1" : Math.round(km)} km` : ""}</span></p>
+    <ul class="meta"><li>${esc(j.employmentType)}</li>${perks.map((b) => `<li class="perk">${esc(b)}</li>`).join("")}</ul>
     <div class="card-foot"><span class="salary">${salaryText(j)}</span><span class="muted">${ago(j.approvedAt || j.createdAt)}</span></div>
   </a>`;
 }
@@ -256,10 +387,12 @@ async function viewJob(id) {
       <div class="job-main">
         ${!isLive(j) ? `<p class="notice">This post is not public. Status: ${statusBadge(j)}</p>` : ""}
         <h1>${esc(j.title)}</h1>
-        <p class="employer">${esc(j.employerName)} · ${esc(j.city)}</p>
+        <p class="employer">${esc(j.employerName)}</p>
+        <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}</span></p>
         <ul class="meta"><li>${esc(j.employmentType)}</li><li>${esc(j.category)}</li><li>Posted ${ago(j.approvedAt || j.createdAt)}</li></ul>
-        <p class="salary salary-lg">${salaryText(j)}</p>
+        <div class="pay-box"><span class="salary salary-lg">${salaryText(j)}</span>${(() => { const m = j.workplace && j.salaryMin ? minimumPay(j.city, j.workplace, j.salaryPeriod) : null; return m && j.salaryMin >= m.amount ? `<span class="minok">${ICON.check}Meets the legal minimum wage</span>` : ""; })()}</div>
         <h2>About the job</h2><p>${nl2br(j.description)}</p>
+        ${conditionsHtml(j)}
         ${j.requirements ? `<h2>Requirements</h2><ul class="reqs">${j.requirements.split("\n").filter(Boolean).map((r) => `<li>${esc(r.replace(/^[-•*]\s*/, ""))}</li>`).join("")}</ul>` : ""}
       </div>
       <aside class="job-side">
@@ -600,49 +733,85 @@ function viewPost() {
   }
   const defMethod = profile.messenger ? "messenger" : "phone";
   const defValue = profile.messenger || profile.phone || "";
+  const cityList = CITIES.filter((c) => c !== "Other");
   app.innerHTML = `
-    <h1>Post a job</h1>
-    <p class="muted">Posts are reviewed before going live, usually within a day. Live posts stay up for 30 days.</p>
-    <form id="post-form" class="form" novalidate>
-      <fieldset>
-        <legend>The job</legend>
-        <label>Job title *<input name="title" required minlength="3" maxlength="100" placeholder="e.g. Live-in Kasambahay"></label>
-        <div class="row">
-          <label>Category *<select name="category" required><option value="">Choose…</option>${opts(CATEGORIES)}</select></label>
-          <label>Job type *<select name="employmentType" required><option value="">Choose…</option>${opts(TYPES)}</select></label>
+    <div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1><p class="muted">Free to post. Reviewed within a day, then live for 30 days.</p></div></div>
+    <div class="post-layout">
+      <form id="post-form" class="form" novalidate>
+        <fieldset>
+          <legend>1 · The job</legend>
+          <label>Job title *<input name="title" required minlength="3" maxlength="100" placeholder="e.g. Live-in Kasambahay"></label>
+          <div class="row">
+            <label>Category *<select name="category" required><option value="">Choose…</option>${opts(CATEGORIES)}</select></label>
+            <label>Job type *<select name="employmentType" required><option value="">Choose…</option>${opts(TYPES)}</select></label>
+          </div>
+          <div class="seg-field"><span class="label">Where will they work? *</span>
+            <div class="seg" role="radiogroup">
+              <label><input type="radio" name="workplace" value="household" required><span><strong>Private household</strong><small>Kasambahay, yaya, family driver, cook…</small></span></label>
+              <label><input type="radio" name="workplace" value="business"><span><strong>Business</strong><small>Store, restaurant, office, site…</small></span></label>
+            </div>
+          </div>
+          <label>Employer / household name *<input name="employerName" required maxlength="80" placeholder="e.g. Reyes Family" value="${esc(profile.companyName || "")}"></label>
+        </fieldset>
+        <fieldset>
+          <legend>2 · Location</legend>
+          <div class="row">
+            <label>City / municipality *<select name="city" required><option value="">Choose…</option>${opts(cityList, cityList.includes(profile.city) ? profile.city : "")}</select></label>
+            <label>Barangay or area<input name="area" maxlength="80" placeholder="e.g. Mandalagan, Villamonte"><span class="hint">Helps jobseekers search by area. No house numbers.</span></label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>3 · Pay</legend>
+          <div class="row row-3">
+            <label>From (₱) *<input name="salaryMin" type="number" min="1" step="1" required inputmode="numeric" placeholder="6500"></label>
+            <label>To (₱)<input name="salaryMax" type="number" min="1" step="1" inputmode="numeric" placeholder="Optional"></label>
+            <label>Per<select name="salaryPeriod"><option value="month">Month</option><option value="day">Day</option><option value="hour">Hour</option></select></label>
+          </div>
+          <div id="wage-box" class="wage-box" aria-live="polite"><span class="muted small">Choose the category, workplace and city to see the legal minimum.</span></div>
+        </fieldset>
+        <fieldset>
+          <legend>4 · Work conditions</legend>
+          <div class="row row-3">
+            <label>Working hours<input name="hours" maxlength="60" placeholder="e.g. 7am–6pm"></label>
+            <label>Days off per week *<select name="daysOff" required><option value="">Choose…</option>${[1, 2, 3].map((n) => `<option value="${n}">${n}</option>`).join("")}<option value="0">None (business shifts)</option></select></label>
+            <label>Openings<input name="openings" type="number" min="1" max="50" value="1" inputmode="numeric"></label>
+          </div>
+          <label class="half">Start date (optional)<input name="startDate" type="date"></label>
+          <div><span class="label">Benefits</span>
+            <div class="chips">${BENEFITS.map((b) => `<label class="chip"><input type="checkbox" name="benefits" value="${esc(b)}"><span>${esc(b)}</span></label>`).join("")}</div>
+            <p class="hint" id="legal-hint" hidden>For household workers, SSS, PhilHealth, Pag-IBIG and 13th month pay are required by the Kasambahay Law, so they're included automatically.</p>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>5 · Details</legend>
+          <label>Description *<textarea name="description" required minlength="30" maxlength="4000" rows="6" placeholder="Duties, household size, what a normal day looks like…"></textarea></label>
+          <label>Requirements (one per line)<textarea name="requirements" maxlength="2000" rows="4" placeholder="At least 18 years old&#10;With experience"></textarea></label>
+        </fieldset>
+        <fieldset>
+          <legend>6 · Your contact for applicants</legend>
+          <div class="row">
+            <label>Method *<select name="contactMethod" required><option value="messenger" ${defMethod === "messenger" ? "selected" : ""}>Messenger</option><option value="phone" ${defMethod === "phone" ? "selected" : ""}>Phone / SMS</option><option value="email">Email</option></select></label>
+            <label>Contact *<input name="contactValue" required maxlength="200" value="${esc(defValue)}"></label>
+          </div>
+          <p class="hint">Only people who apply can see this. You'll also get each applicant's phone number.</p>
+        </fieldset>
+        <div class="agree-box">
+          <p class="label">Before you post, confirm that you will:</p>
+          <label class="check"><input type="checkbox" name="agreeWage" required><span>Pay at least the legal minimum wage shown above</span></label>
+          <label class="check"><input type="checkbox" name="agreeFee" required><span>Never charge applicants any fee, deposit or deduction to apply or be hired</span></label>
+          <label class="check"><input type="checkbox" name="agreeAge" required><span>Only hire workers aged 18 or older</span></label>
+          <label class="check"><input type="checkbox" name="agreeTerms" required><span>Follow Philippine labor law, including the Kasambahay Law, and the <a href="#/terms" target="_blank">Terms</a></span></label>
         </div>
-        <div class="row">
-          <label>Location *<select name="city" required><option value="">Choose…</option>${opts(CITIES.filter((c) => c !== "Other"), profile.city)}</select></label>
-          <label>Employer / household name *<input name="employerName" required maxlength="80" placeholder="e.g. Reyes Family, Mandalagan" value="${esc(profile.companyName || "")}"></label>
-        </div>
-      </fieldset>
-      <fieldset>
-        <legend>Pay</legend>
-        <div class="row row-3">
-          <label>From (₱)<input name="salaryMin" type="number" min="0" step="1" inputmode="numeric"></label>
-          <label>To (₱)<input name="salaryMax" type="number" min="0" step="1" inputmode="numeric"></label>
-          <label>Per<select name="salaryPeriod"><option value="month">Month</option><option value="day">Day</option><option value="hour">Hour</option></select></label>
-        </div>
-        <p class="hint">Leave blank for "negotiable". Pay must meet the legal minimum for your area.</p>
-      </fieldset>
-      <fieldset>
-        <legend>Details</legend>
-        <label>Description *<textarea name="description" required minlength="30" maxlength="4000" rows="6" placeholder="Duties, schedule, days off, what's provided (room, meals)…"></textarea></label>
-        <label>Requirements (one per line)<textarea name="requirements" maxlength="2000" rows="4" placeholder="At least 18 years old&#10;With experience"></textarea></label>
-      </fieldset>
-      <fieldset>
-        <legend>Your contact for applicants</legend>
-        <div class="row">
-          <label>Method *<select name="contactMethod" required><option value="messenger" ${defMethod === "messenger" ? "selected" : ""}>Messenger</option><option value="phone" ${defMethod === "phone" ? "selected" : ""}>Phone / SMS</option><option value="email">Email</option></select></label>
-          <label>Contact *<input name="contactValue" required maxlength="200" value="${esc(defValue)}"></label>
-        </div>
-        <p class="hint">Only people who apply can see this. You'll also get each applicant's phone number.</p>
-      </fieldset>
-      <label class="check"><input type="checkbox" name="agree" required>
-        <span>I confirm this is a real job, I will not charge applicants any fee, and all workers will be at least 18 years old. I agree to the <a href="#/terms" target="_blank">Terms</a>.</span></label>
-      <p id="form-error" class="error" hidden></p>
-      <button class="btn btn-primary" type="submit">Submit for review</button>
-    </form>`;
+        <p id="form-error" class="error" hidden></p>
+        <button class="btn btn-primary btn-lg" type="submit">Submit for review</button>
+      </form>
+      <aside class="post-side">
+        <p class="label">Preview</p>
+        <div id="preview"></div>
+        <div class="panel tips-panel"><strong>Posts that get more applicants</strong>
+          <ul><li>Show the full pay range</li><li>List days off and benefits</li><li>Say what's provided: room, meals, uniform</li></ul></div>
+      </aside>
+    </div>`;
 
   const f = $("#post-form");
   const ph = { messenger: "Messenger username or m.me link", phone: "e.g. 0917 123 4567", email: "you@example.com" };
@@ -652,35 +821,81 @@ function viewPost() {
     f.contactValue.value = f.contactMethod.value === "phone" ? profile.phone : f.contactMethod.value === "messenger" ? (profile.messenger || "") : (user.email || "");
   });
   const counter = document.createElement("p"); counter.className = "hint"; f.description.after(counter);
-  const count = () => { const n = f.description.value.trim().length; counter.textContent = n < 30 ? `${n}/30 characters minimum` : `${n} characters`; };
-  f.description.addEventListener("input", count); count();
-  f.addEventListener("input", (e) => e.target.classList?.remove("invalid"));
+  const workplace = () => f.querySelector("[name=workplace]:checked")?.value || "";
+  const benefits = () => [...f.querySelectorAll("[name=benefits]:checked")].map((i) => i.value);
+
+  // Category picks a sensible default workplace.
+  f.category.addEventListener("change", () => {
+    if (!workplace() && f.category.value) f.querySelector(`[name=workplace][value=${HOUSEHOLD_CATS.includes(f.category.value) ? "household" : "business"}]`).checked = true;
+    refresh();
+  });
+  const lockLegal = () => {
+    const house = workplace() === "household";
+    f.querySelectorAll("[name=benefits]").forEach((cb) => {
+      const legal = LEGAL_HOUSEHOLD.includes(cb.value);
+      if (house && legal) { cb.checked = true; cb.disabled = true; cb.closest(".chip").classList.add("locked"); }
+      else if (legal) { cb.disabled = false; cb.closest(".chip").classList.remove("locked"); }
+    });
+    $("#legal-hint").hidden = !house;
+  };
+  const currentMin = () => (f.city.value && workplace() ? minimumPay(f.city.value, workplace(), f.salaryPeriod.value) : null);
+  const refresh = () => {
+    lockLegal();
+    const n = f.description.value.trim().length; counter.textContent = n < 30 ? `${n}/30 characters minimum` : `${n} characters`;
+    const box = $("#wage-box"); const min = currentMin(); const pay = Number(f.salaryMin.value) || 0;
+    if (!min) box.innerHTML = `<span class="muted small">Choose the workplace and city to see the legal minimum.</span>`;
+    else {
+      const ok = pay >= min.amount; const per = { month: "month", day: "day", hour: "hour" }[f.salaryPeriod.value];
+      box.className = `wage-box ${pay ? (ok ? "ok" : "low") : ""}`;
+      box.innerHTML = `<strong>Legal minimum: ₱${min.amount.toLocaleString("en-PH")} / ${per}</strong>
+        <span class="small">${esc(min.basis)} in ${esc(min.region)}, effective ${esc(min.since)}.${f.salaryPeriod.value !== "month" ? ` Converted using ${WORK_DAYS} working days a month${f.salaryPeriod.value === "hour" ? " and 8 hours a day" : ""}.` : ""}</span>
+        ${pay ? `<span class="verdict">${ok ? `${ICON.check} Your pay meets the minimum` : `Your pay is below the legal minimum. Raise it to at least ₱${min.amount.toLocaleString("en-PH")}.`}</span>` : ""}`;
+    }
+    const d = collect();
+    $("#preview").innerHTML = card({ ...d, id: "preview", title: d.title || "Job title", employerName: d.employerName || "Employer name", city: d.city || "City", category: d.category || "Category", employmentType: d.employmentType || "Job type", approvedAt: Date.now() }, false, null).replace(/href="[^"]*"/, 'href="#/post" tabindex="-1" aria-hidden="true"');
+  };
+  const collect = () => {
+    const data = {};
+    JOB_FIELDS.forEach((k) => { if (f[k] && !(f[k] instanceof RadioNodeList)) data[k] = (f[k].value ?? "").trim(); });
+    data.workplace = workplace();
+    data.salaryMin = data.salaryMin ? Number(data.salaryMin) : null;
+    data.salaryMax = data.salaryMax ? Number(data.salaryMax) : null;
+    data.daysOff = data.daysOff === "" || data.daysOff == null ? null : Number(data.daysOff);
+    data.openings = data.openings ? Math.max(1, Math.min(50, Number(data.openings))) : 1;
+    data.benefits = benefits();
+    return data;
+  };
+  f.addEventListener("input", (e) => { e.target.classList?.remove("invalid"); refresh(); });
+  f.addEventListener("change", refresh);
+  refresh();
 
   f.addEventListener("submit", async (e) => {
     e.preventDefault();
     const err = $("#form-error");
-    const fail = (m) => { err.textContent = m; err.hidden = false; err.scrollIntoView({ block: "center", behavior: "smooth" }); };
+    const fail = (m, el) => { err.textContent = m; err.hidden = false; if (el) { el.classList.add("invalid"); setTimeout(() => el.focus({ preventScroll: true }), 300); } err.scrollIntoView({ block: "center", behavior: "smooth" }); };
     err.hidden = true;
     if (!f.checkValidity()) {
       const bad = f.querySelector("input:invalid, select:invalid, textarea:invalid");
       const msgs = {
         title: "Add a job title (at least 3 characters).", category: "Choose a category.", employmentType: "Choose a job type.",
-        city: "Choose a location.", employerName: "Add the employer or household name.",
-        description: "Write a description of at least 30 characters: duties, schedule, days off.",
-        contactValue: "Add how applicants can contact you.", agree: "Tick the confirmation box at the bottom.",
-        salaryMin: "Enter a valid amount.", salaryMax: "Enter a valid amount.",
+        workplace: "Choose where they will work: private household or business.",
+        city: "Choose the city or municipality.", employerName: "Add the employer or household name.",
+        salaryMin: "Enter the pay. Jobseekers want to see it, and it must meet the legal minimum.",
+        daysOff: "Choose how many days off per week.", description: "Write a description of at least 30 characters: duties, schedule, household size.",
+        contactValue: "Add how applicants can contact you.",
+        agreeWage: "Confirm that you'll pay at least the legal minimum.", agreeFee: "Confirm that you won't charge applicants any fee.",
+        agreeAge: "Confirm that you'll only hire workers aged 18 or older.", agreeTerms: "Confirm that you'll follow labor law and the Terms.",
       };
-      if (bad) { bad.classList.add("invalid"); setTimeout(() => bad.focus({ preventScroll: true }), 300); }
-      return fail(msgs[bad?.name] || "Please complete the highlighted field.");
+      return fail(msgs[bad?.name] || "Please complete the highlighted field.", bad?.type === "radio" ? null : bad);
     }
-    const data = {};
-    JOB_FIELDS.forEach((k) => (data[k] = (f[k]?.value ?? "").trim()));
-    data.salaryMin = data.salaryMin ? Number(data.salaryMin) : null;
-    data.salaryMax = data.salaryMax ? Number(data.salaryMax) : null;
-    if (data.salaryMin && data.salaryMax && data.salaryMax < data.salaryMin) return fail("The 'To' amount should be higher than 'From'.");
+    const data = collect();
+    if (data.salaryMax && data.salaryMax < data.salaryMin) return fail("The 'To' amount should be higher than 'From'.", f.salaryMax);
+    const min = currentMin();
+    if (min && data.salaryMin < min.amount) return fail(`The pay is below the legal minimum of ₱${min.amount.toLocaleString("en-PH")} per ${data.salaryPeriod}. Please raise it.`, f.salaryMin);
+    if (data.workplace === "household" && !(data.daysOff >= 1)) return fail("Household workers are entitled to at least 1 rest day a week.", f.daysOff);
     const contact = { contactMethod: f.contactMethod.value, contactValue: f.contactValue.value.trim() };
-    if (!contactLink(contact)) return fail("That contact doesn't look right. Check the username, number or email.");
-    if (contact.contactMethod === "phone" && digits(contact.contactValue).length < 10) return fail("Please enter a complete phone number.");
+    if (!contactLink(contact)) return fail("That contact doesn't look right. Check the username, number or email.", f.contactValue);
+    if (contact.contactMethod === "phone" && digits(contact.contactValue).length < 10) return fail("Please enter a complete phone number.", f.contactValue);
     const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Submitting…";
     try {
       await store.createJob(data, contact);

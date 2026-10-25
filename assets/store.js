@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792946924";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792948194";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -15,7 +15,7 @@ export const getAuthState = () => ({ ...state });
 export const uploadsEnabled = RESUME_UPLOADS;
 
 // Fields an employer submits for the public post. Contact details are stored privately.
-export const JOB_FIELDS = ["title", "category", "employerName", "city", "employmentType", "salaryMin", "salaryMax", "salaryPeriod", "description", "requirements"];
+export const JOB_FIELDS = ["title", "category", "employerName", "city", "area", "employmentType", "salaryMin", "salaryMax", "salaryPeriod", "hours", "daysOff", "openings", "startDate", "description", "requirements"];
 export const PROFILE_FIELDS = {
   common: ["role", "fullName", "phone", "city", "messenger"],
   jobseeker: ["birthDate", "jobCategories", "jobTypes", "experienceYears", "skills", "workHistory", "education", "availability", "resumeUrl", "resumeFileUrl", "resumeFileName"],
