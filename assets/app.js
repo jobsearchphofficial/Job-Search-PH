@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, isDemo, JOB_FIELDS } from "./store.js";
+import { store, onAuth, getAuthState, isDemo, JOB_FIELDS } from "./store.js?v=1792945473";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [

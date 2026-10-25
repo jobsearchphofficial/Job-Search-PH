@@ -1,5 +1,5 @@
 // Data layer. Same interface for Firebase (live) and demo (sample data in the browser).
-import { firebaseConfig, DEMO_MODE, LISTING_DAYS } from "./firebase-config.js";
+import { firebaseConfig, DEMO_MODE, LISTING_DAYS } from "./firebase-config.js?v=1792945473";
 
 const DAY = 86400000;
 const listeners = new Set();
