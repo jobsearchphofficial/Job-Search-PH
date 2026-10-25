@@ -1,5 +1,5 @@
 // Data layer. Same interface for Firebase (live) and demo (sample data in the browser).
-import { firebaseConfig, DEMO_MODE, LISTING_DAYS } from "./firebase-config.js?v=1792945473";
+import { firebaseConfig, DEMO_MODE, LISTING_DAYS } from "./firebase-config.js?v=1792945625";
 
 const DAY = 86400000;
 const listeners = new Set();
@@ -66,6 +66,7 @@ function demoImpl() {
     async report(jobId, reason, details) { db.reports.unshift({ id: "r" + Date.now().toString(36), jobId, reason, details, createdAt: Date.now() }); save(); },
     async listReports() { return wait(db.reports); },
     async dismissReport(id) { db.reports = db.reports.filter((r) => r.id !== id); save(); },
+    async clearReportsFor(jobId) { db.reports = db.reports.filter((r) => r.jobId !== jobId); save(); },
     async resetDemo() { db = structuredClone(seed); save(); state = { user: null, isAdmin: false, ready: true }; emit(); },
   };
 }
@@ -131,6 +132,10 @@ function firebaseImpl() {
       return s.docs.map((d) => ({ id: d.id, ...d.data(), createdAt: toMs(d.data().createdAt) }));
     },
     async dismissReport(id) { await F.deleteDoc(F.doc(db, "reports", id)); },
+    async clearReportsFor(jobId) {
+      const s = await F.getDocs(F.query(F.collection(db, "reports"), F.where("jobId", "==", jobId)));
+      await Promise.all(s.docs.map((d) => F.deleteDoc(d.ref)));
+    },
   };
 }
 

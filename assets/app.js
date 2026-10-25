@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, isDemo, JOB_FIELDS } from "./store.js?v=1792945473";
+import { store, onAuth, getAuthState, isDemo, JOB_FIELDS } from "./store.js?v=1792945625";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -179,7 +179,9 @@ function card(j) {
 
 async function viewJob(id) {
   app.innerHTML = `<p class="muted">Loading…</p>`;
+  const here = location.hash;
   const j = await store.getJob(id);
+  if (location.hash !== here) return; // user navigated away while loading
   const { user, isAdmin } = getAuthState();
   const canSeeHidden = j && (isAdmin || (user && j.ownerUid === user.uid));
   if (!j || (!isLive(j) && !canSeeHidden)) {
@@ -394,11 +396,17 @@ async function viewAdmin() {
   const body = $("#admin-body");
   if (adminTab === "reports") {
     const reports = await store.listReports();
-    body.innerHTML = reports.length ? `<div class="table">${reports.map((r) => `
+    const jobs = {};
+    await Promise.all([...new Set(reports.map((r) => r.jobId))].map(async (id) => { jobs[id] = await store.getJob(id); }));
+    body.innerHTML = reports.length ? `<div class="table">${reports.map((r) => {
+      const j = jobs[r.jobId];
+      const title = j ? `<a href="#/job/${encodeURIComponent(r.jobId)}"><strong>${esc(j.title)}</strong></a> ${statusBadge(j)}` : `<strong class="muted">Job deleted</strong>`;
+      const canClose = j && j.status !== "closed";
+      return `
       <div class="trow">
-        <div><a href="#/job/${encodeURIComponent(r.jobId)}"><strong>Job ${esc(r.jobId)}</strong></a><div class="small">${esc(REPORT_REASONS[r.reason] || r.reason)}</div>${r.details ? `<div class="muted small">“${esc(r.details)}”</div>` : ""}<div class="muted small">${ago(r.createdAt)}</div></div>
-        <div class="actions"><button class="btn btn-danger btn-sm" data-act="closejob" data-id="${esc(r.jobId)}">Close job</button><button class="btn btn-ghost btn-sm" data-act="dismiss" data-id="${esc(r.id)}">Dismiss</button></div>
-      </div>`).join("")}</div>` : `<div class="empty"><p>No reports. 🎉</p></div>`;
+        <div>${title}<div class="small">${esc(REPORT_REASONS[r.reason] || r.reason)}</div>${r.details ? `<div class="muted small">“${esc(r.details)}”</div>` : ""}<div class="muted small">${ago(r.createdAt)}</div></div>
+        <div class="actions">${canClose ? `<button class="btn btn-danger btn-sm" data-act="closejob" data-id="${esc(r.jobId)}">Close job</button>` : ""}<button class="btn btn-ghost btn-sm" data-act="dismiss" data-id="${esc(r.id)}">Dismiss</button></div>
+      </div>`; }).join("")}</div>` : `<div class="empty"><p>No reports.</p></div>`;
   } else {
     const list = (await store.listByStatus(adminTab)).sort((a, b) => b.createdAt - a.createdAt);
     body.innerHTML = list.length ? list.map((j) => `
@@ -427,9 +435,9 @@ async function viewAdmin() {
     try {
       if (act === "approve") await store.approve(id);
       if (act === "reject") await store.updateJob(id, { status: "rejected" });
-      if (act === "closejob") await store.updateJob(id, { status: "closed" });
+      if (act === "closejob") { await store.updateJob(id, { status: "closed" }); await store.clearReportsFor(id); }
       if (act === "feature") await store.updateJob(id, { featured: b.dataset.on !== "1" });
-      if (act === "delete") await store.deleteJob(id);
+      if (act === "delete") { await store.deleteJob(id); await store.clearReportsFor(id); }
       if (act === "dismiss") await store.dismissReport(id);
       jobsCache = null; toast("Done"); viewAdmin();
     } catch (err) { console.error(err); toast("Action failed: " + (err.code || err.message)); }
