@@ -119,7 +119,7 @@ service cloud.firestore {
       allow create: if signedIn()
                     && appId == request.resource.data.jobId + '_' + me()
                     && request.resource.data.keys().hasOnly([
-                         'jobId','jobTitle','jobCity','employerUid','applicantUid','applicant',
+                         'jobId','jobTitle','jobCity','jobSchedule','jobArrangement','employerUid','applicantUid','applicant',
                          'message','status','createdAt','updatedAt'])
                     && request.resource.data.applicantUid == me()
                     && jobDoc(request.resource.data.jobId).data.status == 'approved'
@@ -136,8 +136,37 @@ service cloud.firestore {
                     || (signedIn() && resource.data.employerUid == me()
                         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
                         && request.resource.data.status in ['new', 'shortlisted', 'not_selected', 'hired']);
+      // Applicants can mark a job they were hired for as ended.
+      allow update: if signedIn() && resource.data.applicantUid == me()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['employmentEnded', 'updatedAt'])
+                    && request.resource.data.employmentEnded == true;
       // Applicants can withdraw.
       allow delete: if (signedIn() && resource.data.applicantUid == me()) || isAdmin();
+    }
+
+    /* ---------- Notifications ---------- */
+    function appDoc(appId) { return get(/databases/$(database)/documents/applications/$(appId)); }
+    match /notifications/{nid} {
+      allow read, delete: if signedIn() && resource.data.toUid == me();
+      allow update: if signedIn() && resource.data.toUid == me()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      // Only people connected through an application (or admins) can notify someone.
+      allow create: if signedIn()
+                    && request.resource.data.keys().hasOnly(['toUid','fromUid','type','title','body','link','appId','jobId','read','createdAt'])
+                    && request.resource.data.fromUid == me()
+                    && request.resource.data.toUid != me()
+                    && request.resource.data.read == false
+                    && request.resource.data.createdAt == request.time
+                    && str(request.resource.data.type, 1, 40)
+                    && str(request.resource.data.title, 1, 120)
+                    && str(request.resource.data.body, 0, 300)
+                    && str(request.resource.data.link, 0, 200)
+                    && (isAdmin()
+                        || (str(request.resource.data.appId, 3, 200)
+                            && ((appDoc(request.resource.data.appId).data.applicantUid == me()
+                                 && appDoc(request.resource.data.appId).data.employerUid == request.resource.data.toUid)
+                             || (appDoc(request.resource.data.appId).data.employerUid == me()
+                                 && appDoc(request.resource.data.appId).data.applicantUid == request.resource.data.toUid))));
     }
 
     /* ---------- Reports ---------- */

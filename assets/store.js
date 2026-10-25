@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792949968";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792950452";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -146,16 +146,43 @@ export const store = {
       availability: p.availability || "", resumeUrl: p.resumeUrl || "",
       resumeFileUrl: p.resumeFileUrl || "", resumeFileName: p.resumeFileName || "",
     };
-    await F.setDoc(F.doc(db, "applications", `${job.id}_${uid()}`), {
-      jobId: job.id, jobTitle: job.title, jobCity: job.city, employerUid: job.ownerUid, applicantUid: uid(),
+    const appId = `${job.id}_${uid()}`;
+    await F.setDoc(F.doc(db, "applications", appId), {
+      jobId: job.id, jobTitle: job.title, jobCity: job.city, jobSchedule: job.schedule || job.employmentType || "",
+      jobArrangement: job.arrangement || "", employerUid: job.ownerUid, applicantUid: uid(),
       applicant, message: message || "", status: "new", createdAt: F.serverTimestamp(), updatedAt: F.serverTimestamp(),
     });
+    await this.notify(job.ownerUid, { type: "application", title: `New applicant for ${job.title}`, body: `${p.fullName} applied.`, link: `#/applicants/${job.id}`, appId, jobId: job.id }).catch(() => {});
   },
   async myApplications() { return appsQ(F.where("applicantUid", "==", uid())); },
   async applicationsForJob(jobId) { return appsQ(F.where("jobId", "==", jobId), F.where("employerUid", "==", uid())); },
   async applicationsForEmployer() { return appsQ(F.where("employerUid", "==", uid())); },
-  async setApplicationStatus(id, status) { await F.updateDoc(F.doc(db, "applications", id), { status, updatedAt: F.serverTimestamp() }); },
+  async setApplicationStatus(a, status) {
+    await F.updateDoc(F.doc(db, "applications", a.id), { status, updatedAt: F.serverTimestamp() });
+    const msg = {
+      shortlisted: ["You're shortlisted", `The employer shortlisted you for ${a.jobTitle}. Expect a call or message soon.`],
+      hired: ["You got the job!", `You were hired for ${a.jobTitle}. Congratulations!`],
+      not_selected: ["Application update", `The employer chose other applicants for ${a.jobTitle}. Keep applying!`],
+    }[status];
+    if (msg) await this.notify(a.applicantUid, { type: `app_${status}`, title: msg[0], body: msg[1], link: `#/job/${a.jobId}`, appId: a.id, jobId: a.jobId }).catch(() => {});
+  },
+  async endEmployment(id) { await F.updateDoc(F.doc(db, "applications", id), { employmentEnded: true, updatedAt: F.serverTimestamp() }); },
   async withdraw(id) { await F.deleteDoc(F.doc(db, "applications", id)); },
+
+  /* ---- Notifications ---- */
+  async notify(toUid, n) {
+    if (!toUid || toUid === uid()) return;
+    await F.addDoc(F.collection(db, "notifications"), {
+      toUid, fromUid: uid(), type: n.type, title: n.title.slice(0, 120), body: (n.body || "").slice(0, 300),
+      link: n.link || "", appId: n.appId || "", jobId: n.jobId || "", read: false, createdAt: F.serverTimestamp(),
+    });
+  },
+  watchNotifications(cb) {
+    return F.onSnapshot(F.query(F.collection(db, "notifications"), F.where("toUid", "==", uid()), F.limit(60)),
+      (s) => cb(s.docs.map(norm).sort((a, b) => (b.createdAt || Date.now()) - (a.createdAt || Date.now()))), () => cb([]));
+  },
+  async markRead(ids) { await Promise.all(ids.map((id) => F.updateDoc(F.doc(db, "notifications", id), { read: true }))); },
+  async pendingCount() { try { return (await jobsQ(F.where("status", "==", "pending"))).length; } catch { return 0; } },
 
   /* ---- Reports ---- */
   async report(jobId, reason, details) {

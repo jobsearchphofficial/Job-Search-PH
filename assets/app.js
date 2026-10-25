@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792949968";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792950452";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -25,6 +25,7 @@ const REPORT_REASONS = {
 };
 const STATUS_LABEL = { pending: "Under review", approved: "Live", rejected: "Rejected", closed: "Closed" };
 const APP_STATUS = { new: "Sent", shortlisted: "Shortlisted", not_selected: "Not selected", hired: "Hired" };
+const CAN_SMS = matchMedia("(pointer: coarse)").matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 const IN_APP_BROWSER = /FBAN|FBAV|FB_IAB|Instagram|Messenger|Line\//i.test(navigator.userAgent);
 
 /* ---------------- Wages, work conditions, places ---------------- */
@@ -148,7 +149,7 @@ function messengerUrl(v) {
 function contactLink(c) {
   if (!c) return null;
   const v = String(c.contactValue || "").trim();
-  if (c.contactMethod === "phone") return { href: `tel:${digits(v)}`, label: `Call ${v}`, extra: `sms:${digits(v)}`, text: v };
+  if (c.contactMethod === "phone") return { href: `tel:${digits(v)}`, label: `Call ${v}`, extra: CAN_SMS ? `sms:${digits(v)}` : null, text: v };
   if (c.contactMethod === "email") {
     if (!/^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/.test(v)) return null;
     return { href: `mailto:${v}`, label: `Email ${v}`, text: v };
@@ -215,6 +216,69 @@ function finishAuthFlow() {
   if (location.hash === to) route(); else location.hash = to;
 }
 
+/* ---------------- Dialog (no browser popups) ---------------- */
+function showDialog({ title, body, actions }) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement("div");
+    wrap.className = "dlg-backdrop";
+    wrap.innerHTML = `<div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">${title}</h2><p>${body}</p>
+      <div class="dlg-actions">${actions.map((a, i) => `<button class="btn ${a.primary ? "btn-primary" : "btn-ghost"}" data-i="${i}">${a.label}</button>`).join("")}</div></div>`;
+    const done = (v) => { wrap.remove(); document.removeEventListener("keydown", onKey); resolve(v); };
+    const onKey = (e) => { if (e.key === "Escape") done(null); };
+    wrap.addEventListener("click", (e) => { const b = e.target.closest("[data-i]"); if (b) done(actions[b.dataset.i].value); else if (e.target === wrap) done(null); });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(wrap);
+    wrap.querySelector(".btn-primary, .btn")?.focus();
+  });
+}
+
+/* ---------------- Notifications ---------------- */
+let notifs = [];
+let unwatch = null;
+let pendingForAdmin = 0;
+const BELL = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 16.5V11a6 6 0 1 1 12 0v5.5l1.5 2H4.5l1.5-2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10 20.5a2 2 0 0 0 4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+function startNotifications() {
+  if (unwatch) { unwatch(); unwatch = null; }
+  notifs = []; renderBell();
+  const { user, isAdmin } = getAuthState();
+  if (!user) return;
+  unwatch = store.watchNotifications((list) => { if (list.length !== notifs.length) myAppsCache = null; notifs = list; renderBell(); });
+  if (isAdmin) store.pendingCount().then((n) => { pendingForAdmin = n; renderBell(); renderNav(); });
+}
+function renderBell() {
+  const wrap = $("#bell-wrap"); const { user, isAdmin } = getAuthState();
+  if (!user) { wrap.innerHTML = ""; return; }
+  const unread = notifs.filter((n) => !n.read).length + (isAdmin && pendingForAdmin ? 1 : 0);
+  const open = wrap.classList.contains("open");
+  const items = [
+    ...(isAdmin && pendingForAdmin ? [{ id: "_pending", title: `${pendingForAdmin} post${pendingForAdmin === 1 ? "" : "s"} waiting for review`, body: "Approve or reject them in Admin.", link: "#/admin", read: false, createdAt: null, type: "admin" }] : []),
+    ...notifs,
+  ];
+  wrap.innerHTML = `
+    <button class="bell" id="bell-btn" aria-label="Notifications${unread ? `, ${unread} unread` : ""}" aria-expanded="${open}">${BELL}${unread ? `<span class="bell-count">${unread > 9 ? "9+" : unread}</span>` : ""}</button>
+    <div class="notif-panel" ${open ? "" : "hidden"}>
+      <div class="notif-head"><strong>Notifications</strong>${notifs.some((n) => !n.read) ? `<button class="linkbtn" id="mark-all">Mark all as read</button>` : ""}</div>
+      <div class="notif-list">${items.length ? items.map((n) => `
+        <button class="notif ${n.read ? "" : "unread"} t-${esc(n.type || "")}" data-nid="${esc(n.id)}" data-link="${esc(n.link || "")}">
+          <span class="notif-dot" aria-hidden="true"></span>
+          <span class="notif-text"><strong>${esc(n.title)}</strong>${n.body ? `<span>${esc(n.body)}</span>` : ""}${n.createdAt ? `<small>${ago(n.createdAt)}</small>` : ""}</span>
+        </button>`).join("") : `<p class="notif-empty">No notifications yet. You'll see application updates here.</p>`}</div>
+    </div>`;
+}
+document.addEventListener("click", async (e) => {
+  const wrap = $("#bell-wrap");
+  if (e.target.closest("#bell-btn")) { wrap.classList.toggle("open"); renderBell(); return; }
+  if (e.target.closest("#mark-all")) { await store.markRead(notifs.filter((n) => !n.read).map((n) => n.id)).catch(() => {}); return; }
+  const item = e.target.closest(".notif");
+  if (item) {
+    wrap.classList.remove("open");
+    if (item.dataset.nid !== "_pending") store.markRead([item.dataset.nid]).catch(() => {});
+    if (item.dataset.link) { if (location.hash === item.dataset.link) route(); else location.hash = item.dataset.link; }
+    renderBell(); return;
+  }
+  if (wrap.classList.contains("open") && !e.target.closest("#bell-wrap")) { wrap.classList.remove("open"); renderBell(); }
+});
+
 /* ---------------- Nav ---------------- */
 function renderNav() {
   const { user, profile, isAdmin } = getAuthState();
@@ -226,7 +290,7 @@ function renderNav() {
     !user || role === "employer" ? link("#/post", "Post a job") : "",
     role === "employer" ? link("#/my", "My posts") : "",
     role === "jobseeker" ? link("#/applications", "My applications") : "",
-    isAdmin ? link("#/admin", "Admin") : "",
+    isAdmin ? link("#/admin", `Admin${pendingForAdmin ? ` <span class="dot">${pendingForAdmin}</span>` : ""}`) : "",
     user ? link("#/profile", esc(profile ? firstName(profile.fullName) : "Set up profile")) : "",
     user
       ? `<button class="btn btn-ghost btn-sm" data-action="signout">Sign out</button>`
@@ -476,8 +540,10 @@ async function renderApplyPanel(j, isOwner) {
     panel.innerHTML = `<h2>Apply for this job</h2><p class="muted">You're signed in as an employer. Switch your profile to "I'm looking for work" to apply.</p><a class="btn btn-ghost btn-block" href="#/profile">Change profile type</a>`;
     return;
   }
+  myAppsCache = null; // always check the latest status before showing Apply
   const apps = await getMyApps();
   const mine = apps.find((a) => a.jobId === j.id);
+  const employed = apps.find((a) => a.status === "hired" && !a.employmentEnded && isFullTime(a.jobSchedule, a.jobArrangement));
   if (mine) {
     const contact = await store.getContact(j.id);
     const c = contactLink(contact);
@@ -497,6 +563,13 @@ async function renderApplyPanel(j, isOwner) {
     return;
   }
   if (!isLive(j)) { panel.innerHTML = `<p class="muted">This job is not accepting applications.</p>`; return; }
+  if (employed && isFullTime(j.schedule || j.employmentType, j.arrangement)) {
+    panel.innerHTML = `
+      <h2>You're employed full-time</h2>
+      <p class="muted">You were hired for <a href="#/job/${encodeURIComponent(employed.jobId)}">${esc(employed.jobTitle)}</a>, so you can't apply to other full-time jobs right now. Part-time jobs are still open to you.</p>
+      <p class="small muted">Did that job end? Update it in <a href="#/applications">My applications</a>.</p>`;
+    return;
+  }
   const age = ageFrom(profile.birthDate);
   panel.innerHTML = `
     <h2>Apply for this job</h2>
@@ -512,6 +585,10 @@ async function renderApplyPanel(j, isOwner) {
     try { await store.apply(j, e.target.message.value.trim()); myAppsCache = null; toast("Application sent"); renderApplyPanel(j, false); }
     catch (err) { console.error(err); btn.disabled = false; btn.textContent = "Apply now"; toast(`Could not apply (${err.code || "error"}). Try again.`); }
   });
+}
+
+function isFullTime(schedule, arrangement) {
+  return schedule === "Full-time" || arrangement === "Live-in" || schedule === "Live-in" || schedule === "Stay-out";
 }
 
 /* ---------------- Sign in ---------------- */
@@ -1029,7 +1106,7 @@ function applicantCard(a) {
     ${a.message ? `<blockquote>${nl2br(a.message)}</blockquote>` : ""}
     <div class="contact-row">
       <a class="btn btn-primary btn-sm" href="tel:${esc(digits(x.phone))}">Call ${esc(x.phone)}</a>
-      <a class="btn btn-ghost btn-sm" href="sms:${esc(digits(x.phone))}">Text</a>
+      ${CAN_SMS ? `<a class="btn btn-ghost btn-sm" href="sms:${esc(digits(x.phone))}">Text</a>` : ""}
       ${m ? `<a class="btn btn-ghost btn-sm" href="${esc(m)}" target="_blank" rel="noopener nofollow">Messenger</a>` : ""}
       ${x.email ? `<a class="btn btn-ghost btn-sm" href="mailto:${esc(x.email)}">Email</a>` : ""}
     </div>
@@ -1071,7 +1148,28 @@ async function viewApplicants(jobId) {
       <div class="applicants">${shown.length ? shown.map(applicantCard).join("") : `<div class="empty"><p>${apps.length ? "No applicants in this group." : "No applicants yet. Share your post to get more."}</p></div>`}</div>`;
     app.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { tab = b.dataset.tab; draw(); }));
     app.querySelectorAll("[data-st]").forEach((b) => b.addEventListener("click", async () => {
-      try { await store.setApplicationStatus(b.dataset.id, b.dataset.st); toast("Updated"); draw(); } catch { toast("Could not update"); }
+      const a = apps.find((x) => x.id === b.dataset.id); const st = b.dataset.st;
+      try {
+        await store.setApplicationStatus(a, st);
+        if (st !== "hired") { toast(st === "shortlisted" ? "Shortlisted. We let them know." : "Updated. We let them know."); return draw(); }
+        const openings = Number(job.openings) || 1;
+        const hired = apps.filter((x) => x.status === "hired" && x.id !== a.id).length + 1;
+        if (job.status === "approved" && hired >= openings) {
+          const choice = await showDialog({
+            title: "Close this job post?",
+            body: `You've hired ${hired} of ${openings} opening${openings === 1 ? "" : "s"}. Closing removes the post from search and lets the other applicants know the position is filled.`,
+            actions: [{ label: "Keep it open", value: "keep" }, { label: "Close the post", value: "close", primary: true }],
+          });
+          if (choice === "close") {
+            await store.updateJob(job.id, { status: "closed" }); job.status = "closed"; jobsCache = null;
+            await store.clearReportsFor(job.id).catch(() => {});
+            await Promise.all(apps.filter((x) => x.id !== a.id && ["new", "shortlisted"].includes(x.status)).map((x) =>
+              store.notify(x.applicantUid, { type: "job_filled", title: "Position filled", body: `${job.title} has been filled. Keep applying to other jobs!`, link: "#/", appId: x.id, jobId: job.id }).catch(() => {})));
+            toast("Post closed. Applicants have been told.");
+          } else toast(`Marked hired (${hired} of ${openings}).`);
+        } else toast(`Marked hired${openings > 1 ? ` (${hired} of ${openings})` : ""}. We let them know.`);
+        draw();
+      } catch (err) { console.error(err); toast("Could not update"); }
     }));
   };
   draw().catch((e) => { console.error(e); app.innerHTML = `<p class="error">Could not load applicants (${esc(e.code || e.message)}).</p>`; });
@@ -1090,14 +1188,23 @@ async function viewApplications() {
   $("#apps").innerHTML = apps.length ? `<div class="table">${apps.map((a) => `
     <div class="trow">
       <div><a href="#/job/${encodeURIComponent(a.jobId)}"><strong>${esc(a.jobTitle)}</strong></a><div class="muted small">${esc(a.jobCity || "")} · applied ${ago(a.createdAt)}</div></div>
-      <div>${appBadge(a.status)}</div>
-      <div class="actions"><a class="btn btn-ghost btn-sm" href="#/job/${encodeURIComponent(a.jobId)}">View &amp; contact</a></div>
+      <div>${a.status === "hired" && a.employmentEnded ? `<span class="badge badge-closed">Job ended</span>` : appBadge(a.status)}</div>
+      <div class="actions"><a class="btn btn-ghost btn-sm" href="#/job/${encodeURIComponent(a.jobId)}">View &amp; contact</a>${a.status === "hired" && !a.employmentEnded ? `<button class="btn btn-ghost btn-sm" data-ended="${esc(a.id)}">This job ended</button>` : ""}</div>
     </div>`).join("")}</div>`
     : `<div class="empty"><p><strong>No applications yet.</strong></p><p class="muted">Find a job you like and tap Apply.</p><p><a class="btn btn-primary" href="#/">Browse jobs</a></p></div>`;
+  const hiredNow = apps.find((a) => a.status === "hired" && !a.employmentEnded && isFullTime(a.jobSchedule, a.jobArrangement));
+  if (hiredNow) $("#apps").insertAdjacentHTML("beforebegin", `<p class="notice">You're employed full-time as <strong>${esc(hiredNow.jobTitle)}</strong>. You can apply to part-time jobs, and to full-time jobs again once this job ends.</p>`);
+  $("#apps").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-ended]"); if (!b) return;
+    const ok = await showDialog({ title: "Did this job end?", body: "We'll mark it as ended so you can apply to full-time jobs again.", actions: [{ label: "Cancel", value: false }, { label: "Yes, it ended", value: true, primary: true }] });
+    if (!ok) return;
+    try { await store.endEmployment(b.dataset.ended); myAppsCache = null; toast("Updated. You can apply to full-time jobs again."); viewApplications(); } catch { toast("Could not update"); }
+  });
 }
 
 /* ---------------- Admin ---------------- */
 let adminTab = "pending";
+const adminJobs = {};
 async function viewAdmin() {
   document.title = "Admin | Job Search PH";
   const { user, isAdmin } = getAuthState();
@@ -1125,6 +1232,8 @@ async function viewAdmin() {
       </div>`; }).join("")}</div>` : `<div class="empty"><p>No reports.</p></div>`;
   } else {
     const list = (await store.listByStatus(adminTab)).sort((a, b) => b.createdAt - a.createdAt);
+    list.forEach((j) => (adminJobs[j.id] = j));
+    if (adminTab === "pending" && pendingForAdmin !== list.length) { pendingForAdmin = list.length; renderBell(); renderNav(); }
     body.innerHTML = list.length ? list.map((j) => `
       <div class="admin-item">
         <div><strong>${esc(j.title)}</strong> ${statusBadge(j)} ${j.featured ? `<span class="badge badge-featured">Featured</span>` : ""}
@@ -1152,8 +1261,15 @@ async function viewAdmin() {
     const { act, id } = b.dataset;
     if ((act === "delete" || act === "closejob") && !confirmInline(b)) return;
     try {
-      if (act === "approve") await store.approve(id);
-      if (act === "reject") await store.updateJob(id, { status: "rejected" });
+      const aj = adminJobs[id];
+      if (act === "approve") {
+        await store.approve(id);
+        if (aj) store.notify(aj.ownerUid, { type: "job_approved", title: "Your job post is live", body: `${aj.title} is now visible to jobseekers for 30 days.`, link: `#/job/${id}`, jobId: id }).catch(() => {});
+      }
+      if (act === "reject") {
+        await store.updateJob(id, { status: "rejected" });
+        if (aj) store.notify(aj.ownerUid, { type: "job_rejected", title: "Your job post wasn't approved", body: `${aj.title} didn't meet our posting rules. Check the pay, details and contact, then post again.`, link: "#/my", jobId: id }).catch(() => {});
+      }
       if (act === "closejob") { await store.updateJob(id, { status: "closed" }); await store.clearReportsFor(id); }
       if (act === "feature") await store.updateJob(id, { featured: b.dataset.on !== "1" });
       if (act === "delete") { await store.deleteJob(id); await store.clearReportsFor(id); }
@@ -1234,7 +1350,7 @@ window.addEventListener("hashchange", route);
 onAuth((s) => {
   const uidNow = s.user?.uid || null;
   const changed = uidNow !== lastUid; lastUid = uidNow;
-  if (changed) myAppsCache = null;
+  if (changed) { myAppsCache = null; startNotifications(); }
   if (changed && uidNow && location.hash === "#/signin") return finishAuthFlow();
   route();
 });
