@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792949934";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792949968";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -95,7 +95,7 @@ function conditionsHtml(j) {
   const rows = [];
   if (j.workplace) rows.push([ICON.home, "Workplace", j.workplace === "household" ? "Private household" : "Business"]);
   if (j.hours) rows.push([ICON.clock, "Working hours", esc(j.hours)]);
-  if (j.daysOff != null && j.daysOff !== "") rows.push([ICON.cal, "Days off", `${esc(j.daysOff)} day${Number(j.daysOff) === 1 ? "" : "s"} per week`]);
+  if (j.daysOff != null && j.daysOff !== "") rows.push([ICON.cal, "Days off", `${esc(j.daysOff)} day${Number(j.daysOff) === 1 ? "" : "s"} per ${j.daysOffPer === "month" ? "month" : "week"}`]);
   if (j.openings > 1) rows.push([ICON.people, "Openings", `${esc(j.openings)} people`]);
   if (j.startDate) rows.push([ICON.cal, "Start date", new Date(j.startDate + "T00:00:00").toLocaleDateString("en-PH", { month: "long", day: "numeric", year: "numeric" })]);
   const ben = (j.benefits || []).length ? `<ul class="benefits">${j.benefits.map((b) => `<li>${ICON.check}${esc(b)}</li>`).join("")}</ul>` : "";
@@ -815,8 +815,8 @@ function viewPost() {
           <header><span class="num">5</span><div><h2>Work conditions</h2></div></header>
           <div class="row row-3">
             <label class="fld">Working hours<input name="hours" maxlength="60" placeholder="e.g. 7am–6pm"></label>
-            <div class="fld"><span class="label">Days off per week</span>${stepper("daysOff", 1, 0, 3)}</div>
-            <div class="fld"><span class="label">Openings</span>${stepper("openings", 1, 1, 50)}</div>
+            <div class="fld"><span class="label">Days off per month</span>${stepper("daysOff", 4, 0, 15)}</div>
+            <div class="fld"><span class="label">Openings (max 3)</span>${stepper("openings", 1, 1, 3)}</div>
           </div>
           <label class="fld half">Start date (optional)<input name="startDate" type="date"></label>
           <div class="fld"><span class="label">Benefits</span>
@@ -897,8 +897,8 @@ function viewPost() {
       employmentType: wp === "household" ? (arrangement || "Live-in") : (schedule || "Full-time"),
       salaryMin: g("salaryMin") ? Number(g("salaryMin")) : null, salaryMax: g("salaryMax") ? Number(g("salaryMax")) : null,
       salaryPeriod: val("salaryPeriod") || "month", hours: g("hours"),
-      daysOff: g("daysOff") === "" ? null : Math.max(0, Math.min(3, Number(g("daysOff")))),
-      openings: Math.max(1, Math.min(50, Number(g("openings")) || 1)), startDate: g("startDate"),
+      daysOff: g("daysOff") === "" ? null : Math.max(0, Math.min(15, Number(g("daysOff")))), daysOffPer: "month",
+      openings: Math.max(1, Math.min(3, Number(g("openings")) || 1)), startDate: g("startDate"),
       benefits: [...f.querySelectorAll("[name=benefits]:checked")].map((i) => i.value),
       reqExperience: Number(val("reqExperience") || 0), reqEducation: val("reqEducation") || "Any",
       reqList: [...f.querySelectorAll("[name=reqList]:checked")].map((i) => i.value),
@@ -965,7 +965,7 @@ function viewPost() {
     if (data.salaryMax && data.salaryMax < data.salaryMin) return fail("The 'To' amount should be higher than 'From'.", f.salaryMax);
     const min = currentMin();
     if (min && data.salaryMin < min.amount) return fail(`The pay is below the legal minimum of ₱${min.amount.toLocaleString("en-PH")} per ${data.salaryPeriod}. Please raise it.`, f.salaryMin);
-    if (data.workplace === "household" && !(data.daysOff >= 1)) return fail("Household workers are entitled to at least 1 rest day a week.", f.daysOff);
+    if (data.workplace === "household" && !(data.daysOff >= 4)) return fail("Household workers are entitled to a rest day every week, so give at least 4 days off a month.", f.daysOff);
     const contact = { contactMethod: val("contactMethod"), contactValue: f.contactValue.value.trim() };
     if (!contactLink(contact)) return fail("That contact doesn't look right. Check the username, number or email.", f.contactValue);
     if (contact.contactMethod === "phone" && digits(contact.contactValue).length < 10) return fail("Please enter a complete phone number.", f.contactValue);
