@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792993029";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792993113";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -1761,8 +1761,8 @@ function viewSupport() {
     <div class="page-head"><div><p class="kicker">Help</p><h1>Contact support</h1><p class="muted">We usually reply within a day. Reach us the way that's easiest for you.</p></div></div>
     <div class="contact-cards">
       <a class="ccard" href="mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Job Search PH support")}"><strong>Email us</strong><span class="copyable">${SUPPORT_EMAIL}</span></a>
-      <a class="ccard" href="${SUPPORT_MESSENGER}" target="_blank" rel="noopener"><strong>Message us on Messenger</strong><span>Job Search PH page</span></a>
-      <a class="ccard" href="#/safety"><strong>Safety tips &amp; FAQs</strong><span>Quick answers to common questions</span></a>
+      <a class="ccard" href="${SUPPORT_MESSENGER}" target="_blank" rel="noopener"><strong>Message us on Messenger</strong><span>Chat with the Job Search PH page</span></a>
+      <a class="ccard" href="${SUPPORT_FACEBOOK}" target="_blank" rel="noopener"><strong>Visit our Facebook page</strong><span>facebook.com/thejobsearchph</span></a>
     </div>
     <h2 class="form-h">Or send us a message here</h2>
     <form id="support-form" class="support-form pcard" novalidate>
@@ -1790,6 +1790,7 @@ function viewSupport() {
 /* ---------------- Static pages ---------------- */
 const SUPPORT_EMAIL = "jobsearchph.official@gmail.com";
 const SUPPORT_MESSENGER = "https://m.me/thejobsearchph";
+const SUPPORT_FACEBOOK = "https://www.facebook.com/thejobsearchph/";
 const UPDATED = "October 26, 2026";
 function legalPage(title, intro, sections) {
   return `
@@ -1800,7 +1801,7 @@ function legalPage(title, intro, sections) {
       <p class="legal-meta"><span>Last updated: ${UPDATED}</span><span>Republic of the Philippines</span></p>
       <nav class="toc" aria-label="Contents"><strong>Contents</strong><ol>${sections.map(([h], i) => `<li><a href="#" data-sec="s${i + 1}">${h}</a></li>`).join("")}</ol></nav>
       ${sections.map(([h, body], i) => `<section id="s${i + 1}"><h2><span class="sec-n">${String(i + 1).padStart(2, "0")}</span>${h}</h2>${body}</section>`).join("")}
-      <div class="legal-contact"><strong>Questions?</strong> Email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>, message us on <a href="${SUPPORT_MESSENGER}" target="_blank" rel="noopener">Messenger</a>, or use <a href="#/support">Contact support</a>. We're based in Bacolod City and serve Negros Occidental.</div>
+      <div class="legal-contact"><strong>Questions?</strong> Email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>, message us on <a href="${SUPPORT_MESSENGER}" target="_blank" rel="noopener">Messenger</a> (<a href="${SUPPORT_FACEBOOK}" target="_blank" rel="noopener">facebook.com/thejobsearchph</a>), or use <a href="#/support">Contact support</a>. We're based in Bacolod City and serve Negros Occidental.</div>
     </article>`;
 }
 function viewStatic(page) {
@@ -1854,7 +1855,7 @@ function viewStatic(page) {
         ${faq("What's the minimum pay for a kasambahay?", "In Negros Occidental (Western Visayas), it's ₱6,500 a month, effective November 19, 2025. Employers must also give a weekly rest day and 13th month pay.")}
         ${faq("How do I change or delete my profile?", "Open the gear menu → <strong>My profile</strong>. You can edit everything there, or tap <strong>Delete my profile</strong>. To delete your whole account, email us.")}
         ${faq("I'm under 18. Can I use the site?", "Not yet. Job Search PH is only for people 18 and older.")}
-        <div class="legal-contact"><strong>Still need help?</strong> Email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a> or <a href="#/support">contact support</a>.</div>
+        <div class="legal-contact"><strong>Still need help?</strong> Message us on <a href="${SUPPORT_MESSENGER}" target="_blank" rel="noopener">Messenger</a>, email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>, or <a href="#/support">contact support</a>.</div>
       </article>`,
     },
     terms: {
