@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792996279";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792997316";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -34,6 +34,9 @@ const POPULAR_TITLES = [
   "Utility worker", "Barista", "Office staff", "Encoder", "Store helper", "Janitor", "Mason", "Welder", "Tutor",
 ];
 const AVAILABILITY = ["Available now", "Within 2 weeks", "Within a month", "Not sure yet"];
+const EDUCATION_LEVELS = ["Elementary level", "Elementary graduate", "High school level", "High school graduate", "Senior high school graduate", "Vocational / TESDA certificate", "College level", "College graduate", "Post-graduate"];
+// Stored as one text field: "College graduate · University of St. La Salle"
+const splitEdu = (v) => { const t = String(v || ""); const i = t.indexOf(" · "); const lvl = i < 0 ? t : t.slice(0, i); return EDUCATION_LEVELS.includes(lvl) ? [lvl, i < 0 ? "" : t.slice(i + 3)] : ["", t]; };
 const PERIODS = { month: "/ month", day: "/ day", hour: "/ hour" };
 const REPORT_REASONS = {
   fee: "Asks jobseekers to pay a fee",
@@ -808,13 +811,13 @@ async function renderApplyPanel(j, isOwner) {
       <h2>${isOwner ? "Your post" : "Admin view"}</h2>
       ${isOwner ? `<p class="muted">${apps.length} applicant${apps.length === 1 ? "" : "s"}${fresh ? ` · ${fresh} new` : ""}</p>
       <a class="btn btn-primary btn-block" href="#/applicants/${encodeURIComponent(j.id)}">View applicants</a>` : ""}
-      ${contact ? `<p class="small muted">Contact shown to applicants: ${esc(contact.contactMethod)} · ${esc(contact.contactValue)}</p>` : ""}`;
+      ${contact ? `<p class="small muted">Contact shown to the person you hire: ${esc(contact.contactMethod)} · ${esc(contact.contactValue)}</p>` : ""}`;
     return;
   }
   if (!user) {
     panel.innerHTML = `
       <h2>Apply for this job</h2>
-      <p class="muted">Sign in with a free profile to apply. The employer's contact details are shown after you apply.</p>
+      <p class="muted">Sign in with a free profile to apply. You can message the employer here once you apply.</p>
       <a class="btn btn-primary btn-block" href="#/signin" data-action="gosignin" data-intent="jobseeker" data-purpose="Sign in to apply">Sign in to apply</a>`;
     return;
   }
@@ -833,23 +836,24 @@ async function renderApplyPanel(j, isOwner) {
   const mine = apps.find((a) => a.jobId === j.id);
   const employed = apps.find((a) => a.status === "hired" && !a.employmentEnded && isFullTime(a.jobSchedule, a.jobArrangement));
   if (mine) {
-    const contact = await store.getContact(j.id);
-    const c = contactLink(contact);
+    const c = mine.status === "hired" ? contactLink(await store.getContact(j.id).catch(() => null)) : null;
     panel.innerHTML = `
       <h2>${mine.status === "new" ? "Application sent" : mine.status === "offered" ? "You got a job offer!" : `You applied ${appBadge(mine.status)}`}</h2>
       ${mine.status === "offered" ? `<p>${esc(mine.employerName || "The employer")} wants to hire you. Accept to start, or decline if it's not right for you.</p><div class="actions offer-row">${offerHtml(mine)}</div>` : ""}
-      <p class="muted">Sent ${ago(mine.createdAt)}. The employer can see your profile and may contact you at ${esc(profile.phone)}.</p>
+      <p class="muted">Sent ${ago(mine.createdAt)}. ${mine.status === "hired" ? "You're hired. Coordinate your start with the employer below." : "The employer can see your profile. Replies come through Messages here on Job Search PH."}</p>
       ${c ? `<p class="small"><strong>Employer contact</strong></p>
         <a class="btn btn-primary btn-block" href="${esc(c.href)}" target="_blank" rel="noopener nofollow">${esc(c.label)}</a>
         ${c.extra ? `<a class="btn btn-ghost btn-block" href="${esc(c.extra)}">Send a text</a>` : ""}
         <p class="small muted copyable">${esc(c.text)}</p>` : ""}
-      <a class="btn btn-ghost btn-block" href="#/chat/${encodeURIComponent(mine.id)}">${chatState(mine).open ? "Message the employer" : "View chat"}</a>
-      ${["hired", "offered"].includes(mine.status) ? "" : `<button class="btn btn-ghost btn-sm" id="withdraw">Withdraw application</button>`}`;
+      <a class="btn ${mine.status === "offered" ? "btn-ghost" : "btn-primary"} btn-block" href="#/chat/${encodeURIComponent(mine.id)}">${chatState(mine).open ? "Message the employer" : "View chat"}</a>
+      ${mine.status === "new" || mine.status === "shortlisted" ? `<p class="withdraw-line"><button type="button" class="linkbtn small muted" id="withdraw">Withdraw application</button></p>` : ""}`;
     panel.querySelector(".offer-row")?.addEventListener("click", (e) => { const b = e.target.closest("[data-offer]"); if (b) handleOffer(b, mine, () => renderApplyPanel(j, false)); });
-    $("#withdraw")?.addEventListener("click", async (e) => {
-      if (!confirmInline(e.target, "Click again to withdraw")) return;
-      try { await store.withdraw(mine.id); myAppsCache = null; toast("Application withdrawn"); renderApplyPanel(j, false); }
-      catch { toast("Could not withdraw. Try again."); }
+    $("#withdraw")?.addEventListener("click", async () => {
+      if (!(await withdrawDialog(mine))) return;
+      try {
+        await store.notify(mine.employerUid, { type: "app_withdrawn", title: "An applicant withdrew", body: `${profile.fullName} withdrew their application for ${mine.jobTitle}.`, link: `#/applicants/${mine.jobId}`, appId: mine.id, jobId: mine.jobId }).catch(() => {});
+        await store.withdraw(mine.id); myAppsCache = null; toast("Application withdrawn"); renderApplyPanel(j, false);
+      } catch { toast("Could not withdraw. Try again."); }
     });
     return;
   }
@@ -991,7 +995,10 @@ function viewProfile() {
         <legend>Experience &amp; resume</legend>
         <label>Skills<textarea name="skills" rows="2" maxlength="1000" placeholder="e.g. cooking Filipino dishes, ironing, caring for toddlers, basic first aid">${esc(p.skills)}</textarea></label>
         <label>Work history<textarea name="workHistory" rows="4" maxlength="3000" placeholder="One job per line, e.g.&#10;2022–2024 · Kasambahay · Santos family, Bacolod&#10;2020–2022 · Kitchen helper · Inasal stall, Silay">${esc(p.workHistory)}</textarea></label>
-        <label>Highest education (optional)<input name="education" maxlength="300" placeholder="e.g. High school graduate, TESDA NC II Caregiving" value="${esc(p.education)}"></label>
+        <div class="row">
+          <label>Highest education<select name="eduLevel"><option value="">Choose…</option>${opts(EDUCATION_LEVELS, splitEdu(p.education)[0])}</select></label>
+          <label>School (optional)<input name="eduSchool" maxlength="200" placeholder="e.g. Bacolod City National High School" value="${esc(splitEdu(p.education)[1])}"></label>
+        </div>
         <label>Resume link (optional)<input name="resumeUrl" type="url" maxlength="500" placeholder="https://drive.google.com/…" value="${esc(p.resumeUrl)}"><span class="hint">A Google Drive or other link. Set sharing to "Anyone with the link".</span></label>
         ${uploadsEnabled ? `<label>Upload resume (optional)<input name="resumeFile" type="file" accept="application/pdf,image/jpeg,image/png,image/webp"><span class="hint">PDF or photo, up to 5 MB.${p.resumeFileName ? ` Current file: <a href="${esc(p.resumeFileUrl)}" target="_blank" rel="noopener">${esc(p.resumeFileName)}</a>` : ""}</span></label>` : ""}
       </fieldset>` : ""}
@@ -1006,8 +1013,9 @@ function viewProfile() {
 
   const collect = () => {
     const f = $("#profile-form"); if (!f) return;
-    ["fullName", "phone", "city", "messenger", "birthDate", "companyName", "experienceYears", "availability", "skills", "workHistory", "education", "resumeUrl"]
+    ["fullName", "phone", "city", "messenger", "birthDate", "companyName", "experienceYears", "availability", "skills", "workHistory", "resumeUrl"]
       .forEach((k) => { if (f[k]) p[k] = f[k].value; });
+    if (f.eduLevel) p.education = [f.eduLevel.value, f.eduSchool.value.trim()].filter(Boolean).join(" · ");
     const g = f.querySelector("[name=gender]:checked"); if (f.querySelector("[name=gender]")) p.gender = g ? g.value : "";
     ["jobCategories", "jobTypes"].forEach((k) => { if (f.querySelector(`[name=${k}]`)) p[k] = [...f.querySelectorAll(`[name=${k}]:checked`)].map((i) => i.value); });
   };
@@ -1024,7 +1032,7 @@ function viewProfile() {
       const b = e.target.closest("[data-goto]"); if (!b) return;
       const k = b.dataset.goto;
       if (k === "photo") { $(".photo-pick").scrollIntoView({ behavior: "smooth", block: "center" }); return $("#photo-in").click(); }
-      const el = f.querySelector(`[name=${k}]`); if (!el) return;
+      const el = f.querySelector(`[name=${k === "education" ? "eduLevel" : k}]`); if (!el) return;
       const box = el.closest("label, div") || el;
       box.scrollIntoView({ behavior: "smooth", block: "center" }); box.classList.add("flash"); setTimeout(() => box.classList.remove("flash"), 1600);
       setTimeout(() => el.focus({ preventScroll: true }), 350);
@@ -1093,7 +1101,7 @@ function viewProfile() {
     employer: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V19a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19v-8.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="12" cy="12.2" r="2.2" stroke="currentColor" stroke-width="1.7"/><path d="M8.3 18.2a3.9 3.9 0 0 1 7.4 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
   };
   const ROLES = {
-    jobseeker: { title: "I'm looking for work", sub: "For kasambahay, yaya, drivers, cooks and other workers", points: ["Apply to any job in one tap", "See employer contact after you apply", "Track replies in My applications"] },
+    jobseeker: { title: "I'm looking for work", sub: "For kasambahay, yaya, drivers, cooks and other workers", points: ["Apply to any job in one tap", "Message employers right here", "Track replies in My applications"] },
     employer: { title: "I'm hiring", sub: "For households and local businesses", points: ["Post jobs for free", "Get applicants with their full profile", "Call, text or message them directly"] },
   };
   const roleCard = (k) => `
@@ -1273,7 +1281,7 @@ function viewPost() {
         </section>
 
         <section class="pcard">
-          <header><span class="num">8</span><div><h2>How applicants reach you</h2><p>Only people who apply can see this. You also get each applicant's phone number.</p></div></header>
+          <header><span class="num">8</span><div><h2>Your contact for the person you hire</h2><p>Applicants talk to you through Messages here. This contact is only shown to the person who accepts your job offer.</p></div></header>
           ${radioPills("contactMethod", [["messenger", "Messenger"], ["phone", "Phone / SMS"], ["email", "Email"]], profile.messenger ? "messenger" : "phone", "tight")}
           <label class="fld"><span class="sr">Contact</span><input name="contactValue" required maxlength="200" value="${esc(profile.messenger || profile.phone || "")}"></label>
         </section>
@@ -1619,6 +1627,50 @@ async function viewApplications() {
   });
 }
 
+/* ---------------- Withdrawing (deliberately a few steps) ---------------- */
+function withdrawDialog(a) {
+  const reasons = ["I found another job", "The pay or schedule doesn't work for me", "The location is too far", "I applied by mistake", "Other reason"];
+  return new Promise((resolve) => {
+    const wrap = document.createElement("div"); wrap.className = "dlg-backdrop";
+    wrap.innerHTML = `<div class="dlg dlg-wd" role="dialog" aria-modal="true" aria-labelledby="wd-t">
+      <h2 id="wd-t">Withdraw from ${esc(a.jobTitle)}?</h2>
+      <p>${a.status === "shortlisted" ? `<strong>The employer shortlisted you.</strong> They're seriously considering you, so withdrawing now loses that chance.` : "The employer may already be reviewing your profile."}</p>
+      <ul class="wd-list"><li>Your application and chat with ${esc(a.employerName || "the employer")} will be deleted.</li><li>The employer will be told you withdrew.</li><li>Applying again uses one of your ${LIMITS.applies} applications for the day.</li></ul>
+      <fieldset class="wd-reasons"><legend>Why are you withdrawing?</legend>${reasons.map((r) => `<label class="wd-r"><input type="radio" name="wd" value="${esc(r)}"><span>${esc(r)}</span></label>`).join("")}</fieldset>
+      <label class="check wd-ok"><input type="checkbox" id="wd-ok"><span>I understand this can't be undone.</span></label>
+      <div class="dlg-actions"><button class="btn btn-primary" data-v="0">Keep my application</button><button class="btn btn-danger" data-v="1" disabled>Withdraw</button></div></div>`;
+    const go = wrap.querySelector('[data-v="1"]');
+    const check = () => { go.disabled = !(wrap.querySelector("[name=wd]:checked") && wrap.querySelector("#wd-ok").checked); };
+    wrap.addEventListener("change", check);
+    const done = (v) => { wrap.remove(); document.removeEventListener("keydown", onKey); resolve(v); };
+    const onKey = (e) => { if (e.key === "Escape") done(false); };
+    wrap.addEventListener("click", (e) => { const b = e.target.closest("[data-v]"); if (b && !b.disabled) done(b.dataset.v === "1"); else if (e.target === wrap) done(false); });
+    document.addEventListener("keydown", onKey); document.body.appendChild(wrap); wrap.querySelector('[data-v="0"]').focus();
+  });
+}
+// After accepting a full-time job, strongly suggest withdrawing other full-time applications.
+async function suggestWithdrawOthers(accepted) {
+  if (!isFullTime(accepted.jobSchedule, accepted.jobArrangement)) return;
+  myAppsCache = null;
+  const others = (await getMyApps()).filter((x) => x.id !== accepted.id && ["new", "shortlisted", "offered"].includes(x.status) && isFullTime(x.jobSchedule, x.jobArrangement));
+  if (!others.length) return;
+  const ok = await showDialog({
+    title: "Withdraw your other full-time applications?",
+    body: `You still have ${others.length} other full-time application${others.length === 1 ? "" : "s"} (${others.map((x) => esc(x.jobTitle)).join(", ")}). Since you've accepted a full-time job, we strongly recommend withdrawing them so those employers can hire someone else. Their chats will be deleted, and any job offers will be declined.`,
+    actions: [{ label: "Keep them for now", value: false }, { label: `Withdraw ${others.length === 1 ? "it" : `all ${others.length}`} (recommended)`, value: true, primary: true }],
+  });
+  if (!ok) return toast("Okay. You can withdraw them anytime from each job page.");
+  const me = getAuthState().profile?.fullName || "An applicant";
+  await Promise.all(others.map(async (x) => {
+    try {
+      if (x.status === "offered") return store.respondOffer(x, false);
+      await store.notify(x.employerUid, { type: "app_withdrawn", title: "An applicant withdrew", body: `${me} accepted another job and withdrew from ${x.jobTitle}.`, link: `#/applicants/${x.jobId}`, appId: x.id, jobId: x.jobId }).catch(() => {});
+      await store.withdraw(x.id);
+    } catch (e) { console.error(e); }
+  }));
+  myAppsCache = null; toast("Done. Your other full-time applications were withdrawn.");
+}
+
 /* ---------------- Job offers (jobseeker accepts or declines) ---------------- */
 function offerHtml(a) {
   if (a.status !== "offered" || a.employerUid === getAuthState().user?.uid) return "";
@@ -1642,6 +1694,7 @@ async function handleOffer(btn, a, after) {
   try {
     await store.respondOffer(a, accept); myAppsCache = null;
     toast(accept ? "Congratulations! You accepted the job." : "Offer declined. We let the employer know.");
+    if (accept) await suggestWithdrawOthers(a);
     after?.();
   } catch (err) { console.error(err); toast(err.code === "permission-denied" ? "Couldn't update. The offer may have been withdrawn, or the latest database rules aren't published yet." : "Could not update. Try again."); }
 }
@@ -1996,7 +2049,7 @@ function viewStatic(page) {
         ${faq("Is Job Search PH free?", "Yes. Creating a profile, searching and applying are free for jobseekers, always. Posting a job is free for employers.")}
         ${faq("Is Job Search PH a recruitment agency?", "No. We're an online job listing board. Employers post their own jobs and hire directly. We don't recruit, screen, place or employ anyone, and we never charge placement fees.")}
         ${faq("How do I know a job is real?", "Every post is reviewed before it goes live and must meet the legal minimum wage. Still, trust your instincts: if an employer asks for money, pushes you to leave the site quickly, or the details keep changing, stop and report the post.")}
-        ${faq("Why can't I see the employer's phone number before applying?", "To protect employers from spam, their contact details appear after you apply. You can also message them directly in the chat.")}
+        ${faq("Why can't I see the employer's phone number?", "To protect both sides from spam and scams, you talk to employers through Messages here on Job Search PH. The employer's own contact is shared with you once you accept their job offer.")}
         ${faq("Someone asked me for money. What do I do?", "Don't pay. Tap <strong>Report this post</strong> on the job, or contact support with the details. We'll review it and may remove the post or restrict the account.")}
         ${faq("How many jobs can I apply to?", "Up to 10 a day. Employers can post up to 5 jobs a day. These limits stop spam and keep the site fair.")}
         ${faq("Why did my chat close?", "If an employer chooses other applicants, the chat stays open for 48 hours so you can say goodbye or ask questions, then it closes. You can still read old messages.")}
@@ -2034,8 +2087,8 @@ function viewStatic(page) {
       title: "Privacy policy",
       html: legalPage("Privacy policy", "How Job Search PH collects, uses and protects your personal data, in line with the Data Privacy Act of 2012 (RA 10173) and the rules of the National Privacy Commission.", [
         ["Data we collect", `<ul><li><strong>Account:</strong> your email and sign-in method (Google or email and password).</li><li><strong>Jobseeker profile:</strong> name, photo (optional), birthdate (we show employers your age, not your birthdate), gender, mobile number, city, Messenger, jobs wanted, experience, skills, work history, education and resume link.</li><li><strong>Employer profile:</strong> name, photo (optional), household or business name, mobile number, city and Messenger.</li><li><strong>Activity on the site:</strong> job posts, applications, chat messages, interview and hiring status, notifications, reports and support messages.</li><li><strong>Anti-spam counters:</strong> how many applications, posts, messages and reports you sent today.</li><li><strong>On your device only:</strong> your light or dark mode choice.</li></ul><p>We don't use advertising trackers, and we don't sell your data.</p>`],
-        ["Why we use it", `<ul><li>To run your account and show your posts, applications and messages;</li><li>To share your profile with employers you apply to, and employer contact details with people who apply;</li><li>To review job posts, prevent spam, fraud and abuse, and handle reports and appeals;</li><li>To reply to support requests and improve the site.</li></ul>`],
-        ["Who can see it", `<ul><li><strong>Everyone:</strong> live job posts (title, employer or household name, area, pay and details). Employer contact details are not public.</li><li><strong>Employers you apply to:</strong> your profile, photo, age, contact details, message, experience and resume.</li><li><strong>People who applied to your job:</strong> the employer contact you entered on the post.</li><li><strong>The person you're chatting with:</strong> your messages.</li><li><strong>Job Search PH admins:</strong> all data, only to run and keep the site safe.</li><li><strong>Service provider:</strong> the site runs on Google Firebase, which stores data for us under its own security and privacy terms.</li></ul><p>We may also disclose data when the law requires it, such as a lawful order from the authorities.</p>`],
+        ["Why we use it", `<ul><li>To run your account and show your posts, applications and messages;</li><li>To share your profile with employers you apply to, and employer contact details with the worker they hire;</li><li>To review job posts, prevent spam, fraud and abuse, and handle reports and appeals;</li><li>To reply to support requests and improve the site.</li></ul>`],
+        ["Who can see it", `<ul><li><strong>Everyone:</strong> live job posts (title, employer or household name, area, pay and details). Employer contact details are not public.</li><li><strong>Employers you apply to:</strong> your profile, photo, age, contact details, message, experience and resume.</li><li><strong>The worker you hire:</strong> the employer contact you entered on the post, once they accept your job offer.</li><li><strong>The person you're chatting with:</strong> your messages.</li><li><strong>Job Search PH admins:</strong> all data, only to run and keep the site safe.</li><li><strong>Service provider:</strong> the site runs on Google Firebase, which stores data for us under its own security and privacy terms.</li></ul><p>We may also disclose data when the law requires it, such as a lawful order from the authorities.</p>`],
         ["How long we keep it", `<ul><li>Your profile stays until you delete it.</li><li>Job posts expire after 30 days and stay in your account until removed.</li><li>Applications and chats stay so both sides can refer back to them. Chats with declined applicants close after 48 hours but remain readable.</li><li>Reports and safety records are kept as long as needed to protect users, then deleted.</li></ul>`],
         ["How we protect it", `<p>Data is stored on Google Firebase with access rules that let each person see only what they're allowed to. Admin access is limited to authorized Job Search PH staff. No system is perfectly secure, so please use a strong password and keep it private.</p>`],
         ["Your rights", `<p>Under the Data Privacy Act, you can:</p><ul><li>Ask what data we have about you and get a copy;</li><li>Correct wrong information (most of it you can edit in My profile);</li><li>Delete your profile (My profile → Delete my profile) or ask us to delete your whole account;</li><li>Object to how we use your data, or withdraw consent;</li><li>File a complaint with the National Privacy Commission (privacy.gov.ph).</li></ul><p>To make a request, email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>.</p>`],

@@ -118,11 +118,12 @@ service cloud.firestore {
                         && request.resource.data.status == 'closed');
       allow delete: if isAdmin();
 
-      // Employer contact details: visible to the owner, admins, and people who applied.
+      // Employer contact details: visible to the owner, admins, and the worker they hired.
       match /private/{docId} {
         allow read: if isAdmin()
                     || (signedIn() && (jobDoc(jobId).data.ownerUid == me()
-                        || exists(/databases/$(database)/documents/applications/$(jobId + '_' + me()))));
+                        || (exists(/databases/$(database)/documents/applications/$(jobId + '_' + me()))
+                            && get(/databases/$(database)/documents/applications/$(jobId + '_' + me())).data.status == 'hired')));
         allow create, update: if signedIn() && docId == 'contact'
                     && getAfter(/databases/$(database)/documents/jobs/$(jobId)).data.ownerUid == me()
                     && request.resource.data.keys().hasOnly(['contactMethod', 'contactValue'])
