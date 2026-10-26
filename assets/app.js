@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792991279";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792991563";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -978,8 +978,25 @@ function viewProfile() {
         <div class="role-pick ${isNew ? "" : "compact"}" role="radiogroup" aria-label="Profile type">${roleCard("jobseeker")}${roleCard("employer")}</div>`}
         ${role ? formHtml() : `<div class="trust"><span>Free to use</span><span>No fees for jobseekers, ever</span><span>Your details are shared only when you apply</span></div>`}
       </div>`;
-    app.querySelectorAll("[data-role]").forEach((b) => b.addEventListener("click", () => {
-      const first = !role; collect(); role = b.dataset.role; draw();
+    app.querySelectorAll("[data-role]").forEach((b) => b.addEventListener("click", async () => {
+      const target = b.dataset.role;
+      if (target === role) return;
+      if (!isNew && profile?.role && target !== profile.role) {
+        const to = target === "employer" ? "an employer (I'm hiring)" : "a jobseeker (I'm looking for work)";
+        const step1 = await showDialog({
+          title: "Switch profile type?",
+          body: `You're about to change your profile to ${to}. ${target === "employer" ? "You won't be able to apply to jobs while you're an employer." : "You won't be able to post jobs or see your applicants while you're a jobseeker."}`,
+          actions: [{ label: "Keep my profile", value: false }, { label: "Continue", value: true, primary: true }],
+        });
+        if (!step1) return;
+        const step2 = await showDialog({
+          title: "Are you sure?",
+          body: `Your ${profile.role === "employer" ? "job posts and applicants" : "applications"} stay saved, but you'll only see them again after you switch back. Tap Switch, then Save changes to finish.`,
+          actions: [{ label: "Cancel", value: false }, { label: target === "employer" ? "Switch to employer" : "Switch to jobseeker", value: true, primary: true }],
+        });
+        if (!step2) return;
+      }
+      const first = !role; collect(); role = target; draw();
       if (first) $("#profile-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }));
     if (role) bindForm();
@@ -1300,6 +1317,7 @@ function applicantCard(a) {
       ${!x.skills && !x.workHistory && !x.education && !resume ? `<p class="small muted">No details added.</p>` : ""}
       <p class="small muted copyable">Phone: ${esc(x.phone)}${x.email ? ` · ${esc(x.email)}` : ""}</p>
     </details>
+    ${a.status === "hired" ? `<div class="actions emp-row">${employmentHtml(a)}</div>` : ""}
     <div class="actions">
       ${a.status !== "shortlisted" ? `<button class="btn btn-ghost btn-sm" data-st="shortlisted" data-id="${esc(a.id)}">Shortlist</button>` : ""}
       ${a.status !== "hired" ? `<button class="btn btn-ghost btn-sm" data-st="hired" data-id="${esc(a.id)}">Mark hired</button>` : ""}
@@ -1328,6 +1346,9 @@ async function viewApplicants(jobId) {
         .map(([k, v]) => `<button class="tab ${tab === k ? "active" : ""}" data-tab="${k}">${v} <span class="count">${counts[k]}</span></button>`).join("")}</div>
       <div class="applicants">${shown.length ? shown.map(applicantCard).join("") : `<div class="empty"><p>${apps.length ? "No applicants in this group." : "No applicants yet. Share your post to get more."}</p></div>`}</div>`;
     app.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { tab = b.dataset.tab; draw(); }));
+    app.querySelectorAll("[data-emp]").forEach((b) => b.addEventListener("click", () => {
+      const a = apps.find((x) => x.id === b.dataset.id); if (a) handleEmployment(b, a, draw);
+    }));
     app.querySelectorAll("[data-st]").forEach((b) => b.addEventListener("click", async () => {
       const a = apps.find((x) => x.id === b.dataset.id); const st = b.dataset.st;
       try {
@@ -1370,17 +1391,43 @@ async function viewApplications() {
     <div class="trow ${a.status === "not_selected" ? "declined" : ""}">
       <div><a href="#/job/${encodeURIComponent(a.jobId)}"><strong>${esc(a.jobTitle)}</strong></a><div class="muted small">${esc(a.jobCity || "")} · applied ${ago(a.createdAt)}${a.status === "not_selected" ? ` · ${chatClosedText(chatState(a))}` : ""}</div></div>
       <div>${a.status === "hired" && a.employmentEnded ? `<span class="badge badge-closed">Job ended</span>` : appBadge(a.status)}</div>
-      <div class="actions"><a class="btn btn-ghost btn-sm" href="#/chat/${encodeURIComponent(a.id)}">${chatState(a).open ? "Message" : "View chat"}</a><a class="btn btn-ghost btn-sm" href="#/job/${encodeURIComponent(a.jobId)}">View job</a>${a.status === "hired" && !a.employmentEnded ? `<button class="btn btn-ghost btn-sm" data-ended="${esc(a.id)}">This job ended</button>` : ""}</div>
+      <div class="actions"><a class="btn btn-ghost btn-sm" href="#/chat/${encodeURIComponent(a.id)}">${chatState(a).open ? "Message" : "View chat"}</a><a class="btn btn-ghost btn-sm" href="#/job/${encodeURIComponent(a.jobId)}">View job</a>${a.status === "hired" && !a.employmentEnded ? employmentHtml(a) : ""}</div>
     </div>`).join("")}</div>`
     : `<div class="empty"><p><strong>No applications yet.</strong></p><p class="muted">Find a job you like and tap Apply.</p><p><a class="btn btn-primary" href="#/">Browse jobs</a></p></div>`;
   const hiredNow = apps.find((a) => a.status === "hired" && !a.employmentEnded && isFullTime(a.jobSchedule, a.jobArrangement));
-  if (hiredNow) $("#apps").insertAdjacentHTML("beforebegin", `<p class="notice">You're employed full-time as <strong>${esc(hiredNow.jobTitle)}</strong>. You can apply to part-time jobs, and to full-time jobs again once this job ends.</p>`);
+  if (hiredNow) $("#apps").insertAdjacentHTML("beforebegin", `<p class="notice">You're employed full-time as <strong>${esc(hiredNow.jobTitle)}</strong>. You can apply to part-time jobs. To apply for full-time jobs again, tap <strong>Leave this job</strong> below and your employer confirms.</p>`);
   $("#apps").addEventListener("click", async (e) => {
-    const b = e.target.closest("[data-ended]"); if (!b) return;
-    const ok = await showDialog({ title: "Did this job end?", body: "We'll mark it as ended so you can apply to full-time jobs again.", actions: [{ label: "Cancel", value: false }, { label: "Yes, it ended", value: true, primary: true }] });
-    if (!ok) return;
-    try { await store.endEmployment(b.dataset.ended); myAppsCache = null; toast("Updated. You can apply to full-time jobs again."); viewApplications(); } catch { toast("Could not update"); }
+    const b = e.target.closest("[data-emp]"); if (!b) return;
+    const a = apps.find((x) => x.id === b.dataset.id); if (a) handleEmployment(b, a, viewApplications);
   });
+}
+
+/* ---------------- Ending a job (both sides confirm) ---------------- */
+function employmentHtml(a) {
+  if (a.status !== "hired") return "";
+  const me = getAuthState().user?.uid; const iAmEmployer = a.employerUid === me;
+  const other = iAmEmployer ? (a.applicant?.fullName || "the worker") : (a.employerName || "the employer");
+  if (a.employmentEnded) return `<span class="emp-state ended">Job ended${a.endedAt ? ` ${ago(a.endedAt)}` : ""}</span>`;
+  if (!a.endRequestedBy) return `<button class="btn btn-ghost btn-sm" data-emp="request" data-id="${esc(a.id)}">${iAmEmployer ? "End employment" : "Leave this job"}</button>`;
+  if (a.endRequestedBy === me) return `<span class="emp-state">Waiting for ${esc(other)} to confirm</span><button class="btn btn-ghost btn-sm" data-emp="cancel" data-id="${esc(a.id)}">Cancel request</button>`;
+  return `<span class="emp-state ask">${esc(other)} says this job has ended</span><button class="btn btn-primary btn-sm" data-emp="confirm" data-id="${esc(a.id)}">Confirm</button><button class="btn btn-ghost btn-sm" data-emp="decline" data-id="${esc(a.id)}">Not yet</button>`;
+}
+async function handleEmployment(btn, a, after) {
+  const kind = btn.dataset.emp; const iAmEmployer = a.employerUid === getAuthState().user?.uid;
+  const other = iAmEmployer ? (a.applicant?.fullName || "the worker") : (a.employerName || "the employer");
+  const ask = {
+    request: { title: iAmEmployer ? "End this employment?" : "Leave this job?", body: `We'll ask ${esc(other)} to confirm. The job is marked as ended only after they agree.`, yes: "Send request" },
+    confirm: { title: "Confirm the job has ended?", body: iAmEmployer ? `${esc(other)} will be able to apply to full-time jobs again.` : "You'll be able to apply to full-time jobs again.", yes: "Yes, it ended" },
+    decline: { title: "Say the job hasn't ended?", body: `We'll let ${esc(other)} know it's still going.`, yes: "Not yet" },
+    cancel: { title: "Cancel your request?", body: "The job stays active.", yes: "Cancel request" },
+  }[kind];
+  const ok = await showDialog({ title: ask.title, body: ask.body, actions: [{ label: "Back", value: false }, { label: ask.yes, value: true, primary: true }] });
+  if (!ok) return;
+  try {
+    await store.employment(a, kind); myAppsCache = null;
+    toast({ request: "Request sent. Waiting for them to confirm.", confirm: "Job marked as ended.", decline: "Okay, the job stays active.", cancel: "Request cancelled." }[kind]);
+    after?.();
+  } catch (err) { console.error(err); toast(err.code === "permission-denied" ? "Couldn't update. Make sure the latest database rules are published." : "Could not update. Try again."); }
 }
 
 /* ---------------- Messages ---------------- */
@@ -1477,14 +1524,18 @@ async function viewChat(appId) {
   const paintState = () => {
     const st = chatState(a);
     $("#chat-badge").innerHTML = st.declined ? `<span class="badge badge-app-not_selected">Not selected</span>` : appBadge(a.status, iAmEmployer);
-    $("#chat-banner").innerHTML = st.declined
+    const emp = a.status === "hired" && !a.employmentEnded && a.endRequestedBy ? `<div class="chat-banner emp">${employmentHtml(a)}</div>` : "";
+    $("#chat-banner").innerHTML = emp + (st.declined
       ? `<p class="chat-banner ${st.open ? "" : "closed"}">${st.open
           ? `${iAmEmployer ? "You marked this applicant as not a fit." : "The employer chose other applicants."} This chat closes in <strong>${st.hoursLeft} hour${st.hoursLeft === 1 ? "" : "s"}</strong>.`
-          : "This chat has closed. You can still read past messages."}</p>` : "";
+          : "This chat has closed. You can still read past messages."}</p>` : "");
     input.disabled = !st.open; form.querySelector("button").disabled = !st.open;
     input.placeholder = st.open ? "Write a message…" : "Chat closed";
     form.classList.toggle("closed", !st.open);
   };
+  $("#chat-banner").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-emp]"); if (b) handleEmployment(b, a, async () => { a = (await store.getApplication(a.id)) || a; paintState(); });
+  });
   paintState();
   const fmt = (ms) => new Date(ms).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   let lastCount = -1;

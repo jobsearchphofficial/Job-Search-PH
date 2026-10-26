@@ -592,3 +592,8 @@ html, body { max-width: 100%; overflow-x: clip; }
 .crop-ring { position: absolute; inset: 0; pointer-events: none; border-radius: 50%; box-shadow: 0 0 0 999px rgba(12, 17, 34, .45); outline: 2px solid rgba(255, 255, 255, .9); outline-offset: -2px; }
 .crop-zoom { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 280px; color: var(--slate); font-weight: 600; }
 .crop-zoom input { flex: 1; accent-color: var(--indigo); padding: 0; border: 0; background: none; box-shadow: none !important; }
+.emp-state { display: inline-flex; align-items: center; font-size: .8rem; font-weight: 600; color: var(--slate); background: var(--line-soft); padding: 5px 10px; border-radius: 999px; }
+.emp-state.ask { color: var(--orange-text); background: var(--peach); }
+.emp-state.ended { color: var(--slate); }
+.emp-row { align-items: center; }
+.chat-banner.emp { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--indigo-soft); color: var(--navy); }

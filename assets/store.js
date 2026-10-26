@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792991279";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792991563";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -26,7 +26,7 @@ const toMs = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : v ??
 const norm = (snap) => {
   const d = snap.data();
   const out = { id: snap.id, ...d };
-  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
+  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt", "endRequestedAt", "endedAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
   return out;
 };
 const jobsQ = async (...c) => (await F.getDocs(F.query(F.collection(db, "jobs"), ...c))).docs.map(norm);
@@ -191,7 +191,23 @@ export const store = {
     }[status];
     if (msg) await this.notify(a.applicantUid, { type: `app_${status}`, title: msg[0], body: msg[1], link: `#/chat/${a.id}`, appId: a.id, jobId: a.jobId }).catch(() => {});
   },
-  async endEmployment(id) { await F.updateDoc(F.doc(db, "applications", id), { employmentEnded: true, updatedAt: F.serverTimestamp() }); },
+  // Ending employment needs both sides. kind: "request" | "cancel" | "decline" | "confirm"
+  async employment(a, kind) {
+    const ref = F.doc(db, "applications", a.id); const me = uid(); const iAmEmployer = a.employerUid === me;
+    const patch = { updatedAt: F.serverTimestamp() };
+    if (kind === "request") Object.assign(patch, { endRequestedBy: me, endRequestedAt: F.serverTimestamp() });
+    if (kind === "cancel" || kind === "decline") Object.assign(patch, { endRequestedBy: null });
+    if (kind === "confirm") Object.assign(patch, { employmentEnded: true, endedAt: F.serverTimestamp() });
+    await F.updateDoc(ref, patch);
+    const other = iAmEmployer ? a.applicantUid : a.employerUid;
+    const who = iAmEmployer ? (a.employerName || "The employer") : (a.applicant?.fullName || "Your worker");
+    const msg = {
+      request: [`${who} says the job has ended`, `Please confirm that the ${a.jobTitle} job has ended.`],
+      decline: ["Job hasn't ended yet", `${who} says the ${a.jobTitle} job is still going.`],
+      confirm: ["Job ended", `${who} confirmed the ${a.jobTitle} job has ended.`],
+    }[kind];
+    if (msg) await this.notify(other, { type: `emp_${kind}`, title: msg[0], body: msg[1], link: iAmEmployer ? "#/applications" : `#/applicants/${a.jobId}`, appId: a.id, jobId: a.jobId }).catch(() => {});
+  },
   async withdraw(id) { await F.deleteDoc(F.doc(db, "applications", id)); },
 
   /* ---- Messages ---- */

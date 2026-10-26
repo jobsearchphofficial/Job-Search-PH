@@ -187,10 +187,28 @@ service cloud.firestore {
                       && (!exists(limPath()) || get(limPath()).data.get('msgAt', null) == null
                           || request.time > get(limPath()).data.msgAt + duration.value(2, 's'));
       }
-      // Applicants can mark a job they were hired for as ended.
-      allow update: if signedIn() && resource.data.applicantUid == me()
-                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['employmentEnded', 'updatedAt'])
-                    && request.resource.data.employmentEnded == true;
+      // Ending a job needs both sides: one asks, the other confirms (or says not yet).
+      allow update: if signedIn()
+                    && (resource.data.applicantUid == me() || resource.data.employerUid == me())
+                    && resource.data.status == 'hired'
+                    && resource.data.get('employmentEnded', false) != true
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['endRequestedBy', 'endRequestedAt', 'employmentEnded', 'endedAt', 'updatedAt'])
+                    && (
+                      // ask to end
+                      (resource.data.get('endRequestedBy', null) == null
+                        && request.resource.data.endRequestedBy == me()
+                        && request.resource.data.endRequestedAt == request.time
+                        && request.resource.data.get('employmentEnded', false) == false)
+                      // withdraw my request, or say "not yet" to theirs
+                      || (resource.data.get('endRequestedBy', null) != null
+                        && request.resource.data.endRequestedBy == null
+                        && request.resource.data.get('employmentEnded', false) == false)
+                      // confirm the other side's request
+                      || (resource.data.get('endRequestedBy', null) != null
+                        && resource.data.endRequestedBy != me()
+                        && request.resource.data.employmentEnded == true
+                        && request.resource.data.endedAt == request.time)
+                    );
       // Applicants can withdraw.
       allow delete: if (signedIn() && resource.data.applicantUid == me()) || isAdmin();
     }
