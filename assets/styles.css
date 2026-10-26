@@ -625,3 +625,38 @@ html, body { max-width: 100%; overflow-x: clip; }
 .empty-art { width: 64px; height: 64px; border-radius: 20px; display: grid; place-items: center; background: var(--indigo-soft); color: var(--indigo); }
 .empty-art svg { width: 30px; height: 30px; }
 .empty-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 8px !important; }
+img.brand-mark { display: block; width: 38px; height: 38px; border-radius: 11px; object-fit: cover; background: #1d4ed8; box-shadow: 0 8px 18px -8px rgba(29, 78, 216, .7); }
+
+/* ---------- Legal, safety & support pages ---------- */
+.legal { max-width: 820px; }
+.legal h1 { margin-bottom: 6px; }
+.legal section { scroll-margin-top: 90px; }
+.legal h2 { display: flex; align-items: baseline; gap: 10px; margin-top: 28px; }
+.sec-n { font-size: .78rem; font-weight: 700; color: var(--indigo); font-variant-numeric: tabular-nums; }
+.legal ul { padding-left: 1.2em; display: grid; gap: 6px; }
+.legal-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: .82rem; color: var(--slate-soft); margin: 8px 0 18px; }
+.toc { background: var(--bg); border: 1px solid var(--line-soft); border-radius: 14px; padding: 14px 18px; }
+.toc ol { margin: 8px 0 0; padding-left: 1.3em; columns: 2; column-gap: 28px; font-size: .9rem; }
+.toc li { margin-bottom: 4px; break-inside: avoid; }
+.toc a { text-decoration: none; }
+@media (max-width: 600px) { .toc ol { columns: 1; } }
+.callout { background: var(--indigo-soft); border-radius: 12px; padding: 12px 16px; margin: 12px 0; font-size: .92rem; }
+.legal-contact { margin-top: 32px; padding: 16px 18px; border-radius: 14px; background: var(--bg); border: 1px solid var(--line-soft); font-size: .92rem; }
+.tip-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+@media (max-width: 760px) { .tip-grid { grid-template-columns: 1fr; } }
+.tip-card { background: var(--bg); border: 1px solid var(--line-soft); border-radius: 16px; padding: 16px 18px; }
+.tip-card h2 { margin-top: 0; }
+.tip-card .tips { padding-left: 1.1em; }
+.faq-h { margin-top: 28px; }
+.faq { border: 1px solid var(--line); border-radius: 12px; padding: 0; margin-bottom: 8px; background: var(--card); }
+.faq summary { cursor: pointer; padding: 13px 16px; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 10px; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: "+"; color: var(--indigo); font-weight: 700; }
+.faq[open] summary::after { content: "−"; }
+.faq div { padding: 0 16px 14px; color: var(--slate); }
+.contact-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 22px; max-width: 880px; }
+@media (max-width: 760px) { .contact-cards { grid-template-columns: 1fr; } }
+.ccard { display: grid; gap: 4px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); text-decoration: none; color: var(--navy); box-shadow: var(--shadow-sm); }
+.ccard:hover { border-color: var(--line-strong); }
+.ccard span { color: var(--slate); font-size: .86rem; overflow-wrap: anywhere; }
+.form-h { font-size: 1.05rem; margin: 0 0 12px; }
