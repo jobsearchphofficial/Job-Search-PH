@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792999207";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793000152";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -447,7 +447,7 @@ function renderBell() {
   const unread = notifs.filter((n) => !n.read).length + (isAdmin && pendingForAdmin ? 1 : 0);
   const open = wrap.classList.contains("open");
   const items = [
-    ...(isAdmin && pendingForAdmin ? [{ id: "_pending", title: `${pendingForAdmin} post${pendingForAdmin === 1 ? "" : "s"} waiting for review`, body: "Approve or reject them in Admin.", link: "#/admin", read: false, createdAt: null, type: "admin" }] : []),
+    ...(isAdmin && pendingForAdmin ? [{ id: "_pending", title: `${pendingForAdmin} post${pendingForAdmin === 1 ? "" : "s"} waiting for review`, body: "Approve or reject them in Admin.", link: "#/admin/pending", read: false, createdAt: null, type: "admin" }] : []),
     ...notifs,
   ];
   wrap.innerHTML = `
@@ -1921,21 +1921,200 @@ async function viewChat(appId) {
 }
 
 /* ---------------- Admin ---------------- */
-let adminTab = "pending";
+let adminTab = "analytics";
+let anRange = 30;
 const adminJobs = {};
+/* ---------------- Admin analytics ---------------- */
+const DAYMS = 86400000;
+const phDayOf = (ms) => Math.floor((ms + 8 * 3600000) / DAYMS);
+const dayLabel = (d) => new Date(d * DAYMS).toLocaleDateString("en-PH", { month: "short", day: "numeric", timeZone: "UTC" });
+const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+const median = (xs) => { if (!xs.length) return 0; const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const fmtN = (n) => Number(n || 0).toLocaleString("en-PH");
+const fmtHrs = (h) => (h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : h < 48 ? `${Math.round(h)} hrs` : `${Math.round(h / 24)} days`);
+
+function anTile(label, value, sub, delta) {
+  const d = delta == null ? "" : `<span class="an-delta ${delta > 0 ? "up" : delta < 0 ? "down" : ""}">${delta > 0 ? "▲" : delta < 0 ? "▼" : "•"} ${delta === 0 ? "same" : `${Math.abs(delta)}%`}</span>`;
+  return `<div class="an-tile"><span class="an-label">${label}</span><strong class="an-value">${value}</strong><span class="an-sub">${sub || ""} ${d}</span></div>`;
+}
+// Daily (or weekly) bars, one series. series: [{label, v, tip}]
+function anBars(series, { title, sub }) {
+  const max = Math.max(1, ...series.map((x) => x.v));
+  const total = series.reduce((n, x) => n + x.v, 0);
+  const ticks = [0, Math.ceil(max / 2), max];
+  const every = Math.ceil(series.length / 6);
+  return `<figure class="an-card an-chart"><figcaption><h3>${title}</h3><span class="an-sub">${sub || `${fmtN(total)} total`}</span></figcaption>
+    <div class="an-plot"><div class="an-y">${ticks.reverse().map((t) => `<span>${fmtN(t)}</span>`).join("")}</div>
+      <div class="an-bars" style="--n:${series.length}">${series.map((x) => `<div class="an-col" data-tip="${esc(x.tip || `${x.label}: ${x.v}`)}"><i style="height:${(x.v / max) * 100}%"></i></div>`).join("")}</div></div>
+    <div class="an-x" style="--n:${series.length}">${series.map((x, i) => `<span>${i % every === 0 ? esc(x.label) : ""}</span>`).join("")}</div>
+    <details class="an-table"><summary>View as table</summary><table><tbody>${series.filter((x) => x.v).map((x) => `<tr><td>${esc(x.label)}</td><td>${x.v}</td></tr>`).join("") || `<tr><td>No data yet</td></tr>`}</tbody></table></details>
+  </figure>`;
+}
+// Horizontal ranked bars, one series.
+function anRank(rows, { title, sub, unit = "" }) {
+  const max = Math.max(1, ...rows.map((r) => r.v));
+  return `<div class="an-card"><h3>${title}</h3>${sub ? `<p class="an-sub">${sub}</p>` : ""}
+    ${rows.length ? `<ul class="an-rank">${rows.map((r) => `<li data-tip="${esc(`${r.label}: ${r.tipV ?? fmtN(r.v)}${unit}`)}"><span class="an-rl">${esc(r.label)}</span><span class="an-rb"><i style="width:${(r.v / max) * 100}%"></i></span><span class="an-rv">${r.show ?? fmtN(r.v)}${unit}</span></li>`).join("")}</ul>` : `<p class="muted small">No data yet.</p>`}</div>`;
+}
+
+async function renderAnalytics(body) {
+  body.innerHTML = `<div class="an-grid">${SK.rows(3)}</div>`;
+  let data;
+  try { data = await store.adminAll(); } catch (e) { console.error(e); body.innerHTML = `<div class="empty"><p>Couldn't load analytics (${esc(e.code || e.message)}).</p></div>`; return; }
+  const draw = () => {
+    const now = Date.now(); const today = phDayOf(now);
+    const R = anRange; const from = R ? now - R * DAYMS : 0; const prevFrom = R ? now - 2 * R * DAYMS : 0;
+    const inR = (t) => t && t >= from; const inPrev = (t) => R && t && t >= prevFrom && t < from;
+    const delta = (cur, prev) => (!R ? null : prev ? Math.round(((cur - prev) / prev) * 100) : cur ? 100 : 0);
+    const { users, jobs, apps, reports, support } = data;
+    const seekers = users.filter((u) => u.role === "jobseeker"), employers = users.filter((u) => u.role === "employer");
+    const live = jobs.filter((j) => isLive(j)), pending = jobs.filter((j) => j.status === "pending");
+    const newUsers = users.filter((u) => inR(u.createdAt)), prevUsers = users.filter((u) => inPrev(u.createdAt));
+    const newJobs = jobs.filter((j) => inR(j.createdAt)), prevJobs = jobs.filter((j) => inPrev(j.createdAt));
+    const rApps = apps.filter((a) => inR(a.createdAt)), prevApps = apps.filter((a) => inPrev(a.createdAt));
+    const hiredT = (a) => a.acceptedAt || a.updatedAt;
+    const hires = apps.filter((a) => a.status === "hired" && inR(hiredT(a))), prevHires = apps.filter((a) => a.status === "hired" && inPrev(hiredT(a)));
+    const responded = rApps.filter((a) => a.status !== "new");
+    const respTimes = responded.map((a) => (a.updatedAt - a.createdAt) / 3600000).filter((h) => h > 0);
+    const offersDone = apps.filter((a) => ["hired", "offer_declined"].includes(a.status) && inR(a.updatedAt));
+    const accepted = offersDone.filter((a) => a.status === "hired").length;
+    const postsWithApps = new Set(apps.map((a) => a.jobId));
+    const approvedEver = jobs.filter((j) => j.approvedAt);
+    const fillRate = pct(new Set(apps.filter((a) => a.status === "hired").map((a) => a.jobId)).size, approvedEver.length);
+    const chatsActive = apps.filter((a) => a.lastMessageAt && a.lastMessageAt >= now - 7 * DAYMS).length;
+    const activeSeekers = new Set(rApps.map((a) => a.applicantUid)).size;
+
+    // daily series
+    const span = R || Math.max(7, today - Math.min(today, ...users.map((u) => phDayOf(u.createdAt || now)), ...jobs.map((j) => phDayOf(j.createdAt || now))) + 1);
+    const weekly = span > 90; const step = weekly ? 7 : 1; const buckets = Math.ceil(span / step);
+    const series = (items, t, split) => Array.from({ length: buckets }, (_, i) => {
+      const end = today - (buckets - 1 - i) * step, start = end - step + 1;
+      const hit = items.filter((x) => { const d = t(x) ? phDayOf(t(x)) : null; return d != null && d >= start && d <= end; });
+      const label = weekly ? `Wk of ${dayLabel(start)}` : dayLabel(end);
+      return { label, v: hit.length, tip: `${label}: ${hit.length}${split ? split(hit) : ""}` };
+    });
+    const splitRole = (hit) => { const s = hit.filter((u) => u.role === "jobseeker").length; return ` (${s} jobseeker${s === 1 ? "" : "s"}, ${hit.length - s} employer${hit.length - s === 1 ? "" : "s"})`; };
+
+    // breakdowns
+    const countBy = (xs, key) => { const m = new Map(); xs.forEach((x) => { const k = key(x); if (k) m.set(k, (m.get(k) || 0) + 1); }); return [...m.entries()].map(([label, v]) => ({ label, v })).sort((a, b) => b.v - a.v); };
+    const jobsById = Object.fromEntries(jobs.map((j) => [j.id, j]));
+    const catJobs = countBy(newJobs.length ? newJobs : jobs, (j) => j.category).slice(0, 8);
+    const catApps = countBy(rApps, (a) => jobsById[a.jobId]?.category).slice(0, 8);
+    const cityJobs = countBy(live, (j) => j.city).slice(0, 8);
+    const citySeekers = countBy(seekers, (u) => u.city).slice(0, 8);
+    const appsPer = (j) => apps.filter((a) => a.jobId === j.id).length;
+    const topJobs = live.map((j) => ({ label: `${j.title} · ${j.city}`, v: appsPer(j) })).sort((a, b) => b.v - a.v).slice(0, 6);
+    const payRows = countBy(jobs.filter((j) => j.salaryMin), (j) => j.category).slice(0, 8).map((r) => {
+      const m = median(jobs.filter((j) => j.category === r.label && j.salaryMin).map(monthlyEquivalent));
+      return { label: r.label, v: m, show: `₱${fmtN(Math.round(m))}`, tipV: `₱${fmtN(Math.round(m))}/month median (${r.v} post${r.v === 1 ? "" : "s"})` };
+    }).sort((a, b) => b.v - a.v);
+    const levels = ["Weak", "Good", "Great", "Excellent"]; const lv = { Weak: 0, Good: 0, Great: 0, Excellent: 0 };
+    seekers.forEach((u) => lv[profileStrength(u).level]++);
+    const photoPct = pct(seekers.filter((u) => u.photo).length, seekers.length);
+
+    // funnel (applications in range, by furthest stage reached)
+    const reached = (a, stages) => stages.includes(a.status);
+    const funnel = [
+      ["Applied", rApps.length],
+      ["Employer responded", responded.length],
+      ["Shortlisted or further", rApps.filter((a) => reached(a, ["shortlisted", "offered", "hired", "offer_declined"])).length],
+      ["Offered the job", rApps.filter((a) => reached(a, ["offered", "hired", "offer_declined"])).length],
+      ["Hired", rApps.filter((a) => a.status === "hired").length],
+    ];
+
+    // needs attention
+    const noApps = live.filter((j) => !postsWithApps.has(j.id) && now - (j.approvedAt || j.createdAt) > 3 * DAYMS);
+    const waiting = new Map(); apps.filter((a) => a.status === "new" && now - a.createdAt > 3 * DAYMS).forEach((a) => waiting.set(a.jobId, (waiting.get(a.jobId) || 0) + 1));
+    const expiring = live.filter((j) => j.expiresAt && j.expiresAt - now < 5 * DAYMS);
+    const oldPending = pending.filter((j) => now - j.createdAt > DAYMS);
+    const att = [
+      ...oldPending.map((j) => [`Waiting for review over a day`, j, `submitted ${ago(j.createdAt)}`]),
+      ...[...waiting.entries()].map(([id, n]) => [`${n} applicant${n === 1 ? "" : "s"} unanswered 3+ days`, jobsById[id], "employer hasn't responded"]).filter((x) => x[1]),
+      ...noApps.map((j) => ["No applicants after 3+ days", j, `live ${ago(j.approvedAt || j.createdAt)}`]),
+      ...expiring.map((j) => ["Expires within 5 days", j, `expires ${new Date(j.expiresAt).toLocaleDateString("en-PH")}`]),
+    ].slice(0, 12);
+
+    const rangeLbl = R ? `last ${R} days` : "all time";
+    body.innerHTML = `
+      <div class="an-bar">
+        <div class="seg-mini" role="radiogroup" aria-label="Time range">${[[7, "7 days"], [30, "30 days"], [90, "90 days"], [0, "All time"]].map(([v, l]) => `<button type="button" role="radio" aria-checked="${R === v}" class="${R === v ? "on" : ""}" data-range="${v}">${l}</button>`).join("")}</div>
+        <span class="an-sub">Updated ${new Date().toLocaleTimeString("en-PH", { hour: "numeric", minute: "2-digit" })} · <button type="button" class="linkbtn" id="an-refresh">Refresh</button> · <button type="button" class="linkbtn" id="an-csv">Download CSV</button></span>
+      </div>
+      <h2 class="an-h">Overview <span class="an-sub">${rangeLbl}${R ? ", compared with the period before" : ""}</span></h2>
+      <div class="an-tiles">
+        ${anTile("New users", fmtN(newUsers.length), `${fmtN(users.length)} total`, delta(newUsers.length, prevUsers.length))}
+        ${anTile("Jobseekers", fmtN(seekers.length), `${fmtN(newUsers.filter((u) => u.role === "jobseeker").length)} new`)}
+        ${anTile("Employers", fmtN(employers.length), `${fmtN(newUsers.filter((u) => u.role === "employer").length)} new`)}
+        ${anTile("Live jobs", fmtN(live.length), `${fmtN(pending.length)} waiting review`)}
+        ${anTile("New posts", fmtN(newJobs.length), `${fmtN(jobs.length)} all time`, delta(newJobs.length, prevJobs.length))}
+        ${anTile("Applications", fmtN(rApps.length), `${fmtN(activeSeekers)} jobseekers applied`, delta(rApps.length, prevApps.length))}
+        ${anTile("Hires", fmtN(hires.length), `${fillRate}% of approved posts filled`, delta(hires.length, prevHires.length))}
+        ${anTile("Employer response", `${pct(responded.length, rApps.length)}%`, respTimes.length ? `median ${fmtHrs(median(respTimes))} to respond` : "of applications answered")}
+        ${anTile("Offer acceptance", offersDone.length ? `${pct(accepted, offersDone.length)}%` : "–", `${accepted} of ${offersDone.length} offers accepted`)}
+        ${anTile("Applicants per post", approvedEver.length ? (apps.length / approvedEver.length).toFixed(1) : "–", `${fmtN(chatsActive)} chats active this week`)}
+        ${anTile("Open reports", fmtN(reports.length), reports.length ? `<a href="#/admin" data-goto-tab="reports">Review</a>` : "all clear")}
+        ${anTile("Support inbox", fmtN(support.length), support.length ? `<a href="#/admin" data-goto-tab="support">Reply</a>` : "all clear")}
+      </div>
+      <h2 class="an-h">Growth <span class="an-sub">${weekly ? "per week" : "per day"}, ${rangeLbl}</span></h2>
+      <div class="an-grid three">
+        ${anBars(series(users, (u) => u.createdAt, splitRole), { title: "Sign-ups" })}
+        ${anBars(series(jobs, (j) => j.createdAt), { title: "Job posts submitted" })}
+        ${anBars(series(apps, (a) => a.createdAt), { title: "Applications" })}
+      </div>
+      <h2 class="an-h">Hiring <span class="an-sub">applications from the ${rangeLbl}</span></h2>
+      <div class="an-grid two">
+        <div class="an-card"><h3>Hiring funnel</h3><p class="an-sub">How far applications got</p>
+          <ul class="an-funnel">${funnel.map(([l, v], i) => `<li data-tip="${esc(`${l}: ${v} (${pct(v, funnel[0][1])}% of applications)`)}"><span class="an-rl">${l}</span><span class="an-rb"><i style="width:${funnel[0][1] ? (v / funnel[0][1]) * 100 : 0}%"></i></span><span class="an-rv">${fmtN(v)} <em>${i ? `${pct(v, funnel[0][1])}%` : ""}</em></span></li>`).join("")}</ul></div>
+        ${anRank(topJobs, { title: "Most-applied live jobs", sub: "All-time applicants" })}
+      </div>
+      <h2 class="an-h">What's in demand</h2>
+      <div class="an-grid two">
+        ${anRank(catJobs, { title: "Posts by category", sub: newJobs.length ? rangeLbl : "all time" })}
+        ${anRank(catApps, { title: "Applications by category", sub: rangeLbl })}
+        ${anRank(cityJobs, { title: "Live jobs by city" })}
+        ${anRank(citySeekers, { title: "Jobseekers by city" })}
+        ${anRank(payRows, { title: "Median monthly pay by category", sub: "Day and hourly pay converted to monthly" })}
+        <div class="an-card"><h3>Jobseeker profile quality</h3><p class="an-sub">${photoPct}% have a profile photo</p>
+          <div class="an-stack" role="img" aria-label="${levels.map((l) => `${l} ${lv[l]}`).join(", ")}">${levels.map((l) => lv[l] ? `<i class="s-${l.toLowerCase()}" style="flex:${lv[l]}" data-tip="${l}: ${lv[l]} (${pct(lv[l], seekers.length)}%)"></i>` : "").join("") || `<i class="empty-bar" style="flex:1"></i>`}</div>
+          <ul class="an-legend">${levels.map((l) => `<li><span class="sw s-${l.toLowerCase()}"></span>${l} <strong>${lv[l]}</strong> <em>${pct(lv[l], seekers.length)}%</em></li>`).join("")}</ul></div>
+      </div>
+      <h2 class="an-h">Needs attention <span class="an-sub">${att.length ? `${att.length} item${att.length === 1 ? "" : "s"}` : ""}</span></h2>
+      <div class="an-card">${att.length ? `<ul class="an-att">${att.map(([why, j, when]) => `<li><span class="an-why">${esc(why)}</span><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.employerName || "")} · ${esc(j.city)} · ${esc(when)}</span></li>`).join("")}</ul>` : `<p class="muted">Nothing needs attention right now.</p>`}</div>
+      <div id="an-tip" class="an-tip" hidden></div>`;
+
+    body.querySelectorAll("[data-range]").forEach((b) => b.addEventListener("click", () => { anRange = Number(b.dataset.range); draw(); }));
+    body.querySelectorAll("[data-goto-tab]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); adminTab = a.dataset.gotoTab; viewAdmin(); }));
+    $("#an-refresh").addEventListener("click", () => renderAnalytics(body));
+    $("#an-csv").addEventListener("click", () => {
+      const rows = [["Job ID", "Title", "Employer", "Category", "City", "Workplace", "Status", "Posted", "Pay (monthly equiv.)", "Applicants", "Hired"]].concat(jobs.map((j) => [j.id, j.title, j.employerName, j.category, j.city, j.workplace, j.status, j.createdAt ? new Date(j.createdAt).toISOString().slice(0, 10) : "", Math.round(monthlyEquivalent(j)), appsPer(j), apps.filter((a) => a.jobId === j.id && a.status === "hired").length]));
+      const csv = rows.map((r) => r.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+      const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = `jsph-jobs-${new Date().toISOString().slice(0, 10)}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    });
+    const tip = $("#an-tip");
+    body.onpointermove = (e) => {
+      const t = e.target.closest("[data-tip]"); if (!t) { tip.hidden = true; return; }
+      tip.textContent = t.dataset.tip; tip.hidden = false;
+      const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8); tip.style.left = `${x}px`; tip.style.top = `${e.clientY - tip.offsetHeight - 12}px`;
+    };
+    body.onpointerleave = () => { tip.hidden = true; };
+  };
+  draw();
+}
+
 async function viewAdmin() {
   document.title = "Admin | Job Search PH";
   const { user, isAdmin } = getAuthState();
   if (!user) return goSignIn("Admin sign in");
   if (!isAdmin) { app.innerHTML = `<div class="empty"><h1>Not authorized</h1><p class="muted">This account is not an admin.</p></div>`; return; }
-  const tabs = { pending: "Pending", approved: "Live", reports: "Reports", support: "Support", rejected: "Rejected", closed: "Closed" };
+  const tabs = { analytics: "Analytics", pending: "Pending", approved: "Live", reports: "Reports", support: "Support", rejected: "Rejected", closed: "Closed" };
   app.innerHTML = `
     <div class="page-head"><h1>Admin</h1></div>
-    <div class="tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<button role="tab" class="tab ${adminTab === k ? "active" : ""}" data-tab="${k}">${v}</button>`).join("")}</div>
+    <div class="tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<button role="tab" class="tab ${adminTab === k ? "active" : ""}" data-tab="${k}">${v}${k === "pending" && pendingForAdmin ? ` <span class="count">${pendingForAdmin}</span>` : ""}</button>`).join("")}</div>
     <div id="admin-body">${SK.rows(4)}</div>`;
   app.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { adminTab = b.dataset.tab; viewAdmin(); }));
 
   const body = $("#admin-body");
+  if (adminTab === "analytics") return renderAnalytics(body);
   if (adminTab === "support") {
     const items = await store.listSupport();
     body.innerHTML = items.length ? `<div class="table">${items.map((m) => `
@@ -2178,7 +2357,7 @@ async function route() {
   if (page === "messages") return viewMessages();
   if (page === "support") return viewSupport();
   if (page === "chat" && arg) return viewChat(decodeURIComponent(arg));
-  if (page === "admin") return viewAdmin();
+  if (page === "admin") { if (["analytics", "pending", "approved", "reports", "support", "rejected", "closed"].includes(arg)) adminTab = arg; return viewAdmin(); }
   if (["safety", "terms", "privacy"].includes(page)) return viewStatic(page);
   location.hash = "#/";
 }

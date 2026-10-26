@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792999207";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793000152";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -287,6 +287,12 @@ export const store = {
     b.set(F.doc(F.collection(db, "support")), { ...d, uid: uid(), createdAt: F.serverTimestamp() });
     await this._bump(b, "support");
     await b.commit();
+  },
+  // Admin analytics: everything in one go (fine at early scale; capped per collection).
+  async adminAll() {
+    const q = async (c) => (await F.getDocs(F.query(F.collection(db, c), F.limit(5000)))).docs.map(norm);
+    const [users, jobs, apps, reports, support] = await Promise.all([q("users"), q("jobs"), q("applications"), q("reports").catch(() => []), q("support").catch(() => [])]);
+    return { users, jobs, apps, reports, support };
   },
   async listSupport() {
     const s = await F.getDocs(F.query(F.collection(db, "support"), F.orderBy("createdAt", "desc"), F.limit(200)));
