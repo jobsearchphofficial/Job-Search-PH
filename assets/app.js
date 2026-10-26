@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792989682";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792991279";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -139,6 +139,71 @@ function shrinkPhoto(file) {
       resolve(out);
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That photo couldn't be read. Try another one.")); };
+    img.src = url;
+  });
+}
+// Crop dialog: drag to move, slider/scroll/pinch to zoom. Resolves a 256px JPEG data URL, or null on cancel.
+function cropPhoto(file) {
+  return new Promise((resolve, reject) => {
+    if (!/^image\//.test(file.type)) return reject(new Error("Choose a photo (JPG or PNG)."));
+    const url = URL.createObjectURL(file); const img = new Image();
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That photo couldn't be read. Try another one.")); };
+    img.onload = () => {
+      const V = 280; // viewport size in CSS px
+      const wrap = document.createElement("div"); wrap.className = "dlg-backdrop";
+      wrap.innerHTML = `<div class="dlg crop-dlg" role="dialog" aria-modal="true" aria-labelledby="crop-t">
+        <h2 id="crop-t">Crop your photo</h2>
+        <p>Drag to move. Use the slider to zoom.</p>
+        <div class="crop-stage"><canvas width="${V * 2}" height="${V * 2}" style="width:${V}px;height:${V}px"></canvas><div class="crop-ring" aria-hidden="true"></div></div>
+        <label class="crop-zoom"><span aria-hidden="true">−</span><input type="range" min="1" max="4" step="0.01" value="1" aria-label="Zoom"><span aria-hidden="true">+</span></label>
+        <div class="dlg-actions"><button class="btn btn-ghost" data-crop="cancel">Cancel</button><button class="btn btn-primary" data-crop="save">Save photo</button></div>
+      </div>`;
+      document.body.appendChild(wrap);
+      const cv = wrap.querySelector("canvas"), ctx = cv.getContext("2d"), range = wrap.querySelector("input[type=range]");
+      const base = V / Math.min(img.width, img.height); // scale that just covers the viewport
+      let zoom = 1, cx = img.width / 2, cy = img.height / 2; // image point at viewport centre
+      const clamp = () => {
+        const half = V / 2 / (base * zoom);
+        cx = Math.min(Math.max(cx, half), img.width - half); cy = Math.min(Math.max(cy, half), img.height - half);
+      };
+      const draw = () => {
+        clamp(); const k = base * zoom * 2;
+        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+        ctx.drawImage(img, cv.width / 2 - cx * k, cv.height / 2 - cy * k, img.width * k, img.height * k);
+      };
+      draw();
+      const setZoom = (z) => { zoom = Math.min(4, Math.max(1, z)); range.value = zoom; draw(); };
+      range.addEventListener("input", () => setZoom(Number(range.value)));
+      cv.addEventListener("wheel", (e) => { e.preventDefault(); setZoom(zoom * (e.deltaY < 0 ? 1.08 : 0.93)); }, { passive: false });
+      const pts = new Map(); let pinch = 0;
+      cv.addEventListener("pointerdown", (e) => { cv.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); });
+      cv.addEventListener("pointermove", (e) => {
+        if (!pts.has(e.pointerId)) return;
+        const [px, py] = pts.get(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]);
+        if (pts.size === 2) {
+          const [a, b] = [...pts.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+          if (pinch) setZoom(zoom * (d / pinch)); pinch = d; return;
+        }
+        const k = base * zoom; cx -= (e.clientX - px) / k; cy -= (e.clientY - py) / k; draw();
+      });
+      const up = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = 0; };
+      cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
+      const done = (val) => { wrap.remove(); URL.revokeObjectURL(url); document.removeEventListener("keydown", onKey); resolve(val); };
+      const onKey = (e) => { if (e.key === "Escape") done(null); };
+      document.addEventListener("keydown", onKey);
+      wrap.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-crop]"); if (!b) return;
+        if (b.dataset.crop === "cancel") return done(null);
+        const out = document.createElement("canvas"); out.width = out.height = 256; const o = out.getContext("2d");
+        const k = base * zoom, half = V / 2 / k;
+        o.fillStyle = "#fff"; o.fillRect(0, 0, 256, 256);
+        o.drawImage(img, cx - half, cy - half, half * 2, half * 2, 0, 0, 256, 256);
+        let q = 0.85, data = out.toDataURL("image/jpeg", q);
+        while (data.length > 55000 && q > 0.4) { q -= 0.1; data = out.toDataURL("image/jpeg", q); }
+        done(data);
+      });
+      wrap.querySelector("[data-crop=save]").focus();
+    };
     img.src = url;
   });
 }
@@ -920,8 +985,13 @@ function viewProfile() {
     if (role) bindForm();
     $("#photo-in")?.addEventListener("change", async (e) => {
       const file = e.target.files?.[0]; if (!file) return;
-      try { collect(); p.photo = await shrinkPhoto(file); draw(); toast(isNew ? "Photo added" : "Photo ready. Save to keep it."); }
-      catch (err) { toast(err.message); }
+      e.target.value = "";
+      try {
+        const cropped = await cropPhoto(file);
+        if (!cropped) return;
+        collect(); p.photo = cropped; draw();
+        toast(isNew ? "Photo added" : "Photo updated. Tap Save changes to keep it.");
+      } catch (err) { toast(err.message); }
     });
     $("#photo-remove")?.addEventListener("click", () => { collect(); p.photo = ""; draw(); });
   };
