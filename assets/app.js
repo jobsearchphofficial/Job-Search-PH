@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792997316";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792998208";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -1363,7 +1363,9 @@ function viewPost() {
     const single = (val("salaryPeriod") || "month") !== "month";
     $("#pay-to").hidden = single; $("#pay-from-label").textContent = single ? `Pay per ${val("salaryPeriod")} *` : "From *";
     $(".pay-row").classList.toggle("single", single);
-    f.hours.value = hoursText();
+    const liveIn = workplace() === "household" && val("arrangement") === "Live-in";
+    $(".hours-fld").hidden = liveIn;
+    f.hours.value = liveIn ? "" : hoursText();
     const len = Number($("#h-len").value);
     $("#h-out").innerHTML = `<strong>${esc(hoursText())}</strong> <span class="h-tag ${len <= 8 ? "ok" : len === 10 ? "warn" : "mid"}">${len < 8 ? "Short day" : len === 8 ? "Recommended" : len === 9 ? "Long day" : "Discouraged: 10 hours is the most allowed"}</span>`;
     const n = f.description.value.trim().length; counter.textContent = n < 30 ? `${n}/30 characters minimum` : `${n} characters`;
