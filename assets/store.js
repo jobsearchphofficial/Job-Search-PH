@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792951034";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792989682";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -18,7 +18,7 @@ export const uploadsEnabled = RESUME_UPLOADS;
 export const JOB_FIELDS = ["title", "category", "employerName", "city", "area", "employmentType", "salaryMin", "salaryMax", "salaryPeriod", "hours", "daysOff", "openings", "startDate", "description", "requirements"];
 export const PROFILE_FIELDS = {
   common: ["role", "fullName", "phone", "city", "messenger"],
-  jobseeker: ["birthDate", "gender", "jobCategories", "jobTypes", "experienceYears", "skills", "workHistory", "education", "availability", "resumeUrl", "resumeFileUrl", "resumeFileName"],
+  jobseeker: ["photo", "birthDate", "gender", "jobCategories", "jobTypes", "experienceYears", "skills", "workHistory", "education", "availability", "resumeUrl", "resumeFileUrl", "resumeFileName"],
   employer: ["companyName"],
 };
 
@@ -50,7 +50,26 @@ async function loadProfile(user) {
   return { profile: p?.exists() ? norm(p) : null, isAdmin: !!a?.exists() };
 }
 
+export const LIMITS = { applies: 10, posts: 5, messages: 200, reports: 5, support: 3 };
+const phDay = () => Math.floor((Date.now() + 8 * 3600000) / 86400000);
+export class LimitError extends Error { constructor(kind) { super(`limit:${kind}`); this.kind = kind; this.code = "limit-reached"; } }
+
 export const store = {
+  async usage() {
+    if (!uid()) return { day: phDay(), applies: 0, posts: 0, messages: 0, reports: 0, support: 0 };
+    const s = await F.getDoc(F.doc(db, "limits", uid())).catch(() => null);
+    const d = s?.exists() ? s.data() : null;
+    if (!d || d.day !== phDay()) return { day: phDay(), applies: 0, posts: 0, messages: 0, reports: 0, support: 0, msgAt: d?.msgAt ?? null };
+    return { applies: 0, posts: 0, messages: 0, reports: 0, support: 0, ...d };
+  },
+  // Adds "bump the daily counter" to a batch. Throws LimitError when the cap is reached.
+  async _bump(batch, kind, extra = {}) {
+    const u = await this.usage();
+    if ((u[kind] || 0) >= LIMITS[kind]) throw new LimitError(kind);
+    const next = { day: phDay(), applies: u.applies || 0, posts: u.posts || 0, messages: u.messages || 0, reports: u.reports || 0, support: u.support || 0, [kind]: (u[kind] || 0) + 1, ...extra };
+    if (u.msgAt && !("msgAt" in extra)) next.msgAt = u.msgAt;
+    batch.set(F.doc(db, "limits", uid()), next);
+  },
   async init() {
     const mods = [import(`${CDN}/firebase-app.js`), import(`${CDN}/firebase-auth.js`), import(`${CDN}/firebase-firestore.js`)];
     if (RESUME_UPLOADS) mods.push(import(`${CDN}/firebase-storage.js`));
@@ -114,11 +133,12 @@ export const store = {
     catch { return null; }
   },
   async createJob(data, contact) {
-    const ref = await F.addDoc(F.collection(db, "jobs"), {
-      ...data, ownerUid: uid(), status: "pending", featured: false,
-      createdAt: F.serverTimestamp(), updatedAt: F.serverTimestamp(), approvedAt: null, expiresAt: null,
-    });
-    await F.setDoc(F.doc(db, "jobs", ref.id, "private", "contact"), contact);
+    const ref = F.doc(F.collection(db, "jobs"));
+    const b = F.writeBatch(db);
+    b.set(ref, { ...data, ownerUid: uid(), status: "pending", featured: false, createdAt: F.serverTimestamp(), updatedAt: F.serverTimestamp(), approvedAt: null, expiresAt: null });
+    b.set(F.doc(db, "jobs", ref.id, "private", "contact"), contact);
+    if (!state.isAdmin) await this._bump(b, "posts");
+    await b.commit();
     return { id: ref.id };
   },
   async myJobs() { return jobsQ(F.where("ownerUid", "==", uid())); },
@@ -144,14 +164,17 @@ export const store = {
       jobCategories: p.jobCategories || [], experienceYears: p.experienceYears ?? null,
       skills: p.skills || "", workHistory: p.workHistory || "", education: p.education || "",
       availability: p.availability || "", resumeUrl: p.resumeUrl || "",
-      resumeFileUrl: p.resumeFileUrl || "", resumeFileName: p.resumeFileName || "",
+      resumeFileUrl: p.resumeFileUrl || "", resumeFileName: p.resumeFileName || "", photo: p.photo || "",
     };
     const appId = `${job.id}_${uid()}`;
-    await F.setDoc(F.doc(db, "applications", appId), {
+    const b = F.writeBatch(db);
+    b.set(F.doc(db, "applications", appId), {
       jobId: job.id, jobTitle: job.title, jobCity: job.city, jobSchedule: job.schedule || job.employmentType || "",
       jobArrangement: job.arrangement || "", employerName: job.employerName || "", employerUid: job.ownerUid, applicantUid: uid(),
       applicant, message: message || "", status: "new", createdAt: F.serverTimestamp(), updatedAt: F.serverTimestamp(),
     });
+    await this._bump(b, "applies");
+    await b.commit();
     await this.notify(job.ownerUid, { type: "application", title: `New applicant for ${job.title}`, body: `${p.fullName} applied.`, link: `#/applicants/${job.id}`, appId, jobId: job.id }).catch(() => {});
   },
   async myApplications() { return appsQ(F.where("applicantUid", "==", uid())); },
@@ -187,7 +210,12 @@ export const store = {
   },
   async sendMessage(a, text) {
     const me = uid(); const iAmEmployer = a.employerUid === me;
-    await F.addDoc(F.collection(db, "applications", a.id, "messages"), { fromUid: me, text, createdAt: F.serverTimestamp() });
+    const u = await this.usage();
+    if (u.msgAt && typeof u.msgAt.toMillis === "function" && Date.now() - u.msgAt.toMillis() < 2500) throw Object.assign(new Error("slow"), { code: "too-fast" });
+    const b = F.writeBatch(db);
+    b.set(F.doc(F.collection(db, "applications", a.id, "messages")), { fromUid: me, text, createdAt: F.serverTimestamp() });
+    await this._bump(b, "messages", { msgAt: F.serverTimestamp() });
+    await b.commit();
     const otherSeen = iAmEmployer ? a.applicantSeenAt : a.employerSeenAt;
     const otherCaughtUp = !a.lastMessageAt || a.lastMessageFrom === (iAmEmployer ? a.applicantUid : a.employerUid) || (otherSeen && otherSeen >= a.lastMessageAt);
     await F.updateDoc(F.doc(db, "applications", a.id), {
@@ -221,7 +249,11 @@ export const store = {
 
   /* ---- Support ---- */
   async sendSupport(d) {
-    await F.addDoc(F.collection(db, "support"), { ...d, uid: uid() || "", createdAt: F.serverTimestamp() });
+    if (!uid()) return void (await F.addDoc(F.collection(db, "support"), { ...d, uid: "", createdAt: F.serverTimestamp() }));
+    const b = F.writeBatch(db);
+    b.set(F.doc(F.collection(db, "support")), { ...d, uid: uid(), createdAt: F.serverTimestamp() });
+    await this._bump(b, "support");
+    await b.commit();
   },
   async listSupport() {
     const s = await F.getDocs(F.query(F.collection(db, "support"), F.orderBy("createdAt", "desc"), F.limit(200)));
@@ -231,7 +263,10 @@ export const store = {
 
   /* ---- Reports ---- */
   async report(jobId, reason, details) {
-    await F.addDoc(F.collection(db, "reports"), { jobId, reason, details, createdAt: F.serverTimestamp() });
+    const b = F.writeBatch(db);
+    b.set(F.doc(F.collection(db, "reports")), { jobId, reason, details, createdAt: F.serverTimestamp() });
+    await this._bump(b, "reports");
+    await b.commit();
   },
   async listReports() {
     const s = await F.getDocs(F.query(F.collection(db, "reports"), F.orderBy("createdAt", "desc"), F.limit(200)));

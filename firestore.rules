@@ -12,12 +12,28 @@ service cloud.firestore {
     function optNum(v) { return v == null || (v is number && v >= 0 && v <= 10000000); }
     function jobDoc(jobId) { return get(/databases/$(database)/documents/jobs/$(jobId)); }
 
+    /* ---------- Daily limits (anti-spam) ----------
+       Each signed-in user has limits/{uid} with today's counters (Philippine day).
+       Every limited write must bump its counter in the same batch, and counters
+       can only go up by one per write and never past the cap. */
+    function today() { return math.floor((request.time.toMillis() + 28800000) / 86400000); }
+    function limPath() { return /databases/$(database)/documents/limits/$(me()); }
+    function prevCount(f) {
+      return exists(limPath()) && get(limPath()).data.day == today() ? get(limPath()).data.get(f, 0) : 0;
+    }
+    function bumped(f) {
+      return existsAfter(limPath())
+          && getAfter(limPath()).data.day == today()
+          && getAfter(limPath()).data.get(f, 0) == prevCount(f) + 1;
+    }
+    function validPhoto(p) { return p == null || p == '' || (p is string && p.size() <= 60000 && p.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+')); }
+
     /* ---------- Profiles ---------- */
     function validProfile(d) {
       return d.keys().hasOnly([
           'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
           'birthDate','gender','jobCategories','jobTypes','experienceYears','skills','workHistory',
-          'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName'])
+          'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo'])
         && d.role in ['jobseeker', 'employer']
         && str(d.fullName, 2, 80)
         && str(d.phone, 7, 20)
@@ -36,7 +52,8 @@ service cloud.firestore {
         && optStr(d.get('resumeUrl', null), 500)
         && optStr(d.get('resumeFileUrl', null), 1000)
         && optStr(d.get('resumeFileName', null), 200)
-        && optStr(d.get('companyName', null), 100);
+        && optStr(d.get('companyName', null), 100)
+        && validPhoto(d.get('photo', null));
     }
 
     match /users/{uid} {
@@ -90,7 +107,8 @@ service cloud.firestore {
                     && request.resource.data.featured == false
                     && request.resource.data.createdAt == request.time
                     && request.resource.data.approvedAt == null
-                    && request.resource.data.expiresAt == null;
+                    && request.resource.data.expiresAt == null
+                    && (isAdmin() || bumped('posts'));
       // Owners may only close their own post. Admins can change anything.
       allow update: if isAdmin()
                     || (signedIn()
@@ -105,7 +123,7 @@ service cloud.firestore {
                     || (signedIn() && (jobDoc(jobId).data.ownerUid == me()
                         || exists(/databases/$(database)/documents/applications/$(jobId + '_' + me()))));
         allow create, update: if signedIn() && docId == 'contact'
-                    && jobDoc(jobId).data.ownerUid == me()
+                    && getAfter(/databases/$(database)/documents/jobs/$(jobId)).data.ownerUid == me()
                     && request.resource.data.keys().hasOnly(['contactMethod', 'contactValue'])
                     && request.resource.data.contactMethod in ['messenger', 'phone', 'email']
                     && str(request.resource.data.contactValue, 3, 200);
@@ -128,6 +146,8 @@ service cloud.firestore {
                     && request.resource.data.applicant is map
                     && str(request.resource.data.applicant.fullName, 2, 80)
                     && str(request.resource.data.applicant.phone, 7, 20)
+                    && validPhoto(request.resource.data.applicant.get('photo', null))
+                    && bumped('applies')
                     && str(request.resource.data.message, 0, 1000)
                     && request.resource.data.status == 'new'
                     && request.resource.data.createdAt == request.time;
@@ -161,7 +181,11 @@ service cloud.firestore {
                       && request.resource.data.keys().hasOnly(['fromUid', 'text', 'createdAt'])
                       && request.resource.data.fromUid == me()
                       && str(request.resource.data.text, 1, 1000)
-                      && request.resource.data.createdAt == request.time;
+                      && request.resource.data.createdAt == request.time
+                      && bumped('messages')
+                      && getAfter(limPath()).data.msgAt == request.time
+                      && (!exists(limPath()) || get(limPath()).data.get('msgAt', null) == null
+                          || request.time > get(limPath()).data.msgAt + duration.value(2, 's'));
       }
       // Applicants can mark a job they were hired for as ended.
       allow update: if signedIn() && resource.data.applicantUid == me()
@@ -204,19 +228,36 @@ service cloud.firestore {
                     && str(request.resource.data.reply, 5, 120)
                     && str(request.resource.data.message, 10, 2000)
                     && str(request.resource.data.page, 0, 200)
-                    && (request.resource.data.uid == '' || (signedIn() && request.resource.data.uid == me()))
+                    && ((request.resource.data.uid == '' && !signedIn())
+                        || (signedIn() && request.resource.data.uid == me() && bumped('support')))
                     && request.resource.data.createdAt == request.time;
       allow read, delete: if isAdmin();
     }
 
     /* ---------- Reports ---------- */
     match /reports/{reportId} {
-      allow create: if request.resource.data.keys().hasOnly(['jobId', 'reason', 'details', 'createdAt'])
+      allow create: if signedIn() && bumped('reports')
+                    && request.resource.data.keys().hasOnly(['jobId', 'reason', 'details', 'createdAt'])
                     && str(request.resource.data.jobId, 1, 64)
                     && request.resource.data.reason in ['fee', 'scam', 'illegal', 'wrong', 'filled', 'other']
                     && str(request.resource.data.details, 0, 500)
                     && request.resource.data.createdAt == request.time;
       allow read, delete: if isAdmin();
+    }
+
+    match /limits/{uid} {
+      function cnt(f, cap) {
+        let before = resource != null && resource.data.day == today() ? resource.data.get(f, 0) : 0;
+        let after = request.resource.data.get(f, 0);
+        return after is int && after >= before && after <= before + 1 && after <= cap;
+      }
+      allow read: if signedIn() && me() == uid;
+      allow create, update: if signedIn() && me() == uid
+                    && request.resource.data.keys().hasOnly(['day', 'applies', 'posts', 'messages', 'reports', 'support', 'msgAt'])
+                    && request.resource.data.day == today()
+                    && cnt('applies', 10) && cnt('posts', 5) && cnt('messages', 200) && cnt('reports', 5) && cnt('support', 3)
+                    && (request.resource.data.get('msgAt', null) == (resource == null ? null : resource.data.get('msgAt', null))
+                        || request.resource.data.msgAt == request.time);
     }
 
     match /admins/{uid} {

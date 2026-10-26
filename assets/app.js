@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled } from "./store.js?v=1792951034";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792989682";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -107,6 +107,48 @@ function conditionsHtml(j) {
 }
 
 /* ---------------- Helpers ---------------- */
+// Skeleton placeholders shown while data loads.
+const SK = {
+  line: (w = 100, h = 12) => `<span class="sk" style="width:${w}%;height:${h}px"></span>`,
+  card: () => `<div class="card sk-card" aria-hidden="true"><span class="sk" style="width:38%;height:10px"></span><span class="sk" style="width:72%;height:18px"></span><span class="sk" style="width:48%;height:12px"></span><span class="sk" style="width:58%;height:12px"></span><div class="sk-row"><span class="sk pill-sk"></span><span class="sk pill-sk"></span></div><div class="card-foot"><span class="sk" style="width:40%;height:14px"></span><span class="sk" style="width:18%;height:12px"></span></div></div>`,
+  cards: (n = 6) => Array.from({ length: n }, SK.card).join(""),
+  rows: (n = 4) => `<div class="table" aria-hidden="true">${Array.from({ length: n }, () => `<div class="trow"><div style="display:grid;gap:8px"><span class="sk" style="width:55%;height:14px"></span><span class="sk" style="width:35%;height:11px"></span></div><span class="sk pill-sk"></span><span class="sk" style="width:90px;height:32px;border-radius:10px"></span></div>`).join("")}</div>`,
+  threads: (n = 5) => `<div class="inbox" aria-hidden="true">${Array.from({ length: n }, () => `<div class="thread"><span class="sk" style="width:40px;height:40px;border-radius:13px;flex:none"></span><span style="display:grid;gap:7px;flex:1"><span class="sk" style="width:40%;height:13px"></span><span class="sk" style="width:65%;height:11px"></span></span></div>`).join("")}</div>`,
+  job: () => `<p><span class="sk" style="width:70px;height:14px"></span></p><article class="job" aria-hidden="true"><div class="job-main" style="display:grid;gap:12px"><span class="sk" style="width:60%;height:32px"></span><span class="sk" style="width:35%;height:14px"></span><span class="sk" style="width:45%;height:14px"></span><div class="sk-row"><span class="sk pill-sk"></span><span class="sk pill-sk"></span><span class="sk pill-sk"></span></div><span class="sk" style="width:100%;height:62px;border-radius:14px"></span><span class="sk" style="width:30%;height:18px"></span>${SK.line(95)}${SK.line(88)}${SK.line(70)}</div><aside class="job-side"><div class="panel" style="display:grid;gap:10px"><span class="sk" style="width:60%;height:18px"></span>${SK.line(90)}<span class="sk" style="width:100%;height:44px;border-radius:12px"></span></div></aside></article>`,
+  panel: () => `<div style="display:grid;gap:10px" aria-hidden="true"><span class="sk" style="width:60%;height:18px"></span>${SK.line(90)}${SK.line(70)}<span class="sk" style="width:100%;height:44px;border-radius:12px"></span></div>`,
+  chat: () => `<div style="display:grid;gap:10px" aria-hidden="true"><span class="sk" style="width:55%;height:38px;border-radius:16px"></span><span class="sk" style="width:40%;height:38px;border-radius:16px;justify-self:end"></span><span class="sk" style="width:60%;height:38px;border-radius:16px"></span></div>`,
+  page: () => `<div style="display:grid;gap:14px" aria-hidden="true"><span class="sk" style="width:40%;height:30px"></span>${SK.line(30)}${SK.rows(3)}</div>`,
+};
+// Round avatar: photo when there is one, otherwise the first letter.
+function avatar(name, photo, cls = "sm") {
+  const ok = typeof photo === "string" && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(photo);
+  return ok ? `<img class="avatar ${cls} photo" src="${photo}" alt="">` : `<span class="avatar ${cls}" aria-hidden="true">${esc((String(name || "?").trim().charAt(0) || "?").toUpperCase())}</span>`;
+}
+// Shrink a picked image to a 256px square JPEG data URL (about 15–25 KB).
+function shrinkPhoto(file) {
+  return new Promise((resolve, reject) => {
+    if (!/^image\//.test(file.type)) return reject(new Error("Choose a photo (JPG or PNG)."));
+    const img = new Image(); const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const size = 256, c = document.createElement("canvas"); c.width = c.height = size;
+      const s = Math.min(img.width, img.height), sx = (img.width - s) / 2, sy = (img.height - s) / 2;
+      const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, size, size);
+      ctx.drawImage(img, sx, sy, s, s, 0, 0, size, size); URL.revokeObjectURL(url);
+      let q = 0.82, out = c.toDataURL("image/jpeg", q);
+      while (out.length > 55000 && q > 0.4) { q -= 0.1; out = c.toDataURL("image/jpeg", q); }
+      resolve(out);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That photo couldn't be read. Try another one.")); };
+    img.src = url;
+  });
+}
+const limitMsg = {
+  applies: `You've applied to ${LIMITS.applies} jobs today, the daily limit. You can apply again tomorrow.`,
+  posts: `You've posted ${LIMITS.posts} jobs today, the daily limit. You can post again tomorrow.`,
+  messages: `You've sent ${LIMITS.messages} messages today, the daily limit. You can chat again tomorrow.`,
+  reports: `You've sent ${LIMITS.reports} reports today. Contact support if something urgent needs attention.`,
+  support: `You've sent ${LIMITS.support} support messages today. We'll reply to those first.`,
+};
 const $ = (s, el = document) => el.querySelector(s);
 const app = $("#app");
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -322,7 +364,7 @@ function renderGear() {
   wrap.innerHTML = `
     <button class="bell" id="gear-btn" aria-label="Settings" aria-expanded="${open}">${GI.gear}</button>
     <div class="set-panel" ${open ? "" : "hidden"}>
-      <div class="set-user"><span class="avatar sm" aria-hidden="true">${esc(name.trim().charAt(0).toUpperCase())}</span>
+      <div class="set-user">${avatar(name, profile?.photo)}
         <div><strong>${esc(name)}</strong><span>${esc(user.email || "")}${profile ? ` · ${profile.role === "employer" ? "Employer" : "Jobseeker"}` : ""}</span></div></div>
       <div class="set-group">
         <a class="set-item" href="#/profile">${GI.user}${profile ? "My profile" : "Set up profile"}</a>
@@ -411,7 +453,7 @@ async function viewList() {
       </div>
     </div>
     <div id="active-filters" class="active-filters"></div>
-    <section id="results" class="cards"><p class="muted">Loading jobs…</p></section>
+    <section id="results" class="cards">${SK.cards(6)}</section>
     <aside class="notice"><strong>Stay safe:</strong> legitimate employers never ask you to pay to apply, train or get hired. <a href="#/safety">Read safety tips</a></aside>`;
 
   let applied = new Set();
@@ -500,7 +542,7 @@ function card(j, applied, km) {
 
 /* ---------------- Job detail + apply ---------------- */
 async function viewJob(id) {
-  app.innerHTML = `<p class="muted">Loading…</p>`;
+  app.innerHTML = SK.job();
   const here = location.hash;
   const j = await store.getJob(id);
   if (location.hash !== here) return;
@@ -526,18 +568,18 @@ async function viewJob(id) {
         ${requirementsHtml(j)}
       </div>
       <aside class="job-side">
-        <div class="panel" id="apply-panel"><p class="muted">Loading…</p></div>
+        <div class="panel" id="apply-panel">${SK.panel()}</div>
         <div class="panel panel-warn">
           <strong>Never pay to get a job.</strong>
           <p>If the employer asks for a fee, deposit or your ID before an interview, stop and report the post.</p>
         </div>
         <details class="panel report">
           <summary>Report this post</summary>
-          <form id="report-form">
+          ${!user ? `<p class="small muted">Sign in to report a post. <a href="#/signin" data-action="gosignin" data-purpose="Sign in to report">Sign in</a></p>` : `<form id="report-form">
             <label for="r-reason">Reason</label><select id="r-reason" name="reason" required>${Object.entries(REPORT_REASONS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select>
             <label for="r-details">Details (optional)</label><textarea id="r-details" name="details" maxlength="500" rows="3"></textarea>
             <button class="btn btn-danger btn-sm" type="submit">Send report</button>
-          </form>
+          </form>`}
         </details>
         <button class="btn btn-ghost btn-block" id="share">Share this job</button>
       </aside>
@@ -549,11 +591,11 @@ async function viewJob(id) {
       else { await navigator.clipboard.writeText(location.href); toast("Link copied"); }
     } catch {}
   });
-  $("#report-form").addEventListener("submit", async (e) => {
+  $("#report-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const f = e.target;
     try { await store.report(j.id, f.reason.value, f.details.value.trim().slice(0, 500)); f.closest("details").innerHTML = `<p>Thanks. We'll review this post.</p>`; }
-    catch { toast("Could not send report. Try again."); }
+    catch (err) { toast(err.code === "limit-reached" ? limitMsg.reports : "Could not send report. Try again."); }
   });
   renderApplyPanel(j, isOwner);
 }
@@ -620,9 +662,15 @@ async function renderApplyPanel(j, isOwner) {
       <p class="small muted">Did that job end? Update it in <a href="#/applications">My applications</a>.</p>`;
     return;
   }
+  const usage = await store.usage().catch(() => ({ applies: 0 }));
+  if ((usage.applies || 0) >= LIMITS.applies) {
+    panel.innerHTML = `<h2>Daily limit reached</h2><p class="muted">${limitMsg.applies}</p><p class="small muted">The limit keeps the site fair for everyone and stops spam.</p>`;
+    return;
+  }
   const age = ageFrom(profile.birthDate);
   panel.innerHTML = `
     <h2>Apply for this job</h2>
+    <p class="usage">${usage.applies || 0} of ${LIMITS.applies} applications used today</p>
     <p class="muted small">The employer will see your profile: <strong>${esc(profile.fullName)}</strong>${age ? `, ${age}` : ""}, ${esc(profile.city)}, ${esc(profile.phone)}, plus your experience${profile.resumeUrl || profile.resumeFileUrl ? " and resume" : ""}. <a href="#/profile">Edit profile</a></p>
     <form id="apply-form">
       <label for="a-msg" class="small"><strong>Message to the employer</strong> (optional)</label>
@@ -633,7 +681,11 @@ async function renderApplyPanel(j, isOwner) {
     e.preventDefault();
     const btn = e.target.querySelector("button"); btn.disabled = true; btn.textContent = "Sending…";
     try { await store.apply(j, e.target.message.value.trim()); myAppsCache = null; toast("Application sent"); renderApplyPanel(j, false); }
-    catch (err) { console.error(err); btn.disabled = false; btn.textContent = "Apply now"; toast(`Could not apply (${err.code || "error"}). Try again.`); }
+    catch (err) {
+      console.error(err); btn.disabled = false; btn.textContent = "Apply now";
+      if (err.code === "limit-reached") { renderApplyPanel(j, false); return toast(limitMsg.applies); }
+      toast(`Could not apply (${err.code || "error"}). Try again.`);
+    }
   });
 }
 
@@ -787,7 +839,7 @@ function viewProfile() {
       if (ph.length < 10 || ph.length > 13) return fail("Enter a complete mobile number, e.g. 0917 123 4567.", f.phone);
       if (!p.city) return fail("Choose your city or municipality.", f.city);
       if (p.messenger && !messengerUrl(p.messenger)) return fail("That Messenger username or link doesn't look right.", f.messenger);
-      const data = { role, fullName, phone, city: p.city, messenger: (p.messenger || "").trim() };
+      const data = { role, fullName, phone, city: p.city, messenger: (p.messenger || "").trim(), photo: p.photo || "" };
       if (role === "jobseeker") {
         const age = ageFrom(p.birthDate);
         if (!p.birthDate || age === null) return fail("Enter your birthdate.", f.birthDate);
@@ -847,7 +899,7 @@ function viewProfile() {
     app.innerHTML = `
       <div class="profile-wrap">
         <header class="profile-head">
-          <span class="avatar" aria-hidden="true">${esc((name || user.email || "?").trim().charAt(0).toUpperCase())}</span>
+          <div class="photo-col"><label class="photo-pick" title="Change photo">${avatar(name || user.email, p.photo, "lg")}<span class="photo-edit">${p.photo ? "Change" : "Add photo"}</span><input type="file" id="photo-in" accept="image/*" hidden></label>${p.photo ? `<button type="button" class="linkbtn small" id="photo-remove">Remove</button>` : ""}</div>
           <div>
             ${isNew ? `<p class="kicker">${guided ? "Create your profile" : `Step ${step} of 2`}</p>` : `<p class="kicker">${role === "employer" ? "Employer" : "Jobseeker"} profile</p>`}
             <h1>${isNew ? `Welcome${name ? `, ${esc(firstName(name))}` : ""}` : "My profile"}</h1>
@@ -866,6 +918,12 @@ function viewProfile() {
       if (first) $("#profile-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }));
     if (role) bindForm();
+    $("#photo-in")?.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0]; if (!file) return;
+      try { collect(); p.photo = await shrinkPhoto(file); draw(); toast(isNew ? "Photo added" : "Photo ready. Save to keep it."); }
+      catch (err) { toast(err.message); }
+    });
+    $("#photo-remove")?.addEventListener("click", () => { collect(); p.photo = ""; draw(); });
   };
   draw();
 }
@@ -899,7 +957,7 @@ function viewPost() {
   const stepper = (name, val, min, max) => `<div class="stepper"><button type="button" data-step="-1" data-for="${name}" aria-label="Less">−</button><input name="${name}" type="number" inputmode="numeric" min="${min}" max="${max}" value="${val}"><button type="button" data-step="1" data-for="${name}" aria-label="More">+</button></div>`;
 
   app.innerHTML = `
-    <div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1><p class="muted">Free to post. Reviewed within a day, then live for 30 days.</p></div></div>
+    <div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1><p class="muted">Free to post. Reviewed within a day, then live for 30 days.</p><p class="usage" id="post-usage"></p></div></div>
     <div class="post-layout">
       <form id="post-form" class="form post-form" novalidate>
         <section class="pcard">
@@ -990,6 +1048,7 @@ function viewPost() {
       </aside>
     </div>`;
 
+  if (!getAuthState().isAdmin) store.usage().then((u) => { const el = $("#post-usage"); if (el) el.textContent = `${u.posts || 0} of ${LIMITS.posts} posts used today`; }).catch(() => {});
   const f = $("#post-form");
   const val = (n) => f.querySelector(`[name=${n}]:checked`)?.value ?? "";
   const workplace = () => val("workplace");
@@ -1104,7 +1163,7 @@ function viewPost() {
       $("#again").addEventListener("click", (ev) => { ev.preventDefault(); viewPost(); });
     } catch (ex) {
       console.error(ex); btn.disabled = false; btn.textContent = "Submit for review";
-      fail(ex.code === "permission-denied"
+      fail(ex.code === "limit-reached" ? limitMsg.posts : ex.code === "permission-denied"
         ? "The database rejected this post. If you just updated the site, publish the latest database rules in Firebase, then try again."
         : `Could not submit (${ex.code || ex.message || "unknown error"}). Please try again.`);
     }
@@ -1117,7 +1176,7 @@ async function viewMy() {
   const { user, profile } = getAuthState();
   if (!user) return goSignIn("Sign in to manage your posts");
   if (!profile) { location.hash = "#/profile"; return; }
-  app.innerHTML = `<div class="page-head"><h1>My posts</h1><a class="btn btn-primary" href="#/post">Post a job</a></div><div id="mine"><p class="muted">Loading…</p></div>`;
+  app.innerHTML = `<div class="page-head"><h1>My posts</h1><a class="btn btn-primary" href="#/post">Post a job</a></div><div id="mine">${SK.rows(4)}</div>`;
   const draw = async () => {
     const [list, apps] = await Promise.all([store.myJobs(), store.applicationsForEmployer().catch(() => [])]);
     if (!$("#mine")) return;
@@ -1149,8 +1208,8 @@ function applicantCard(a) {
   return `
   <article class="applicant ${a.status === "new" ? "is-new" : ""} ${a.status === "not_selected" ? "declined" : ""}">
     <header>
-      <div><h3>${esc(x.fullName)}${x.age ? `, ${x.age}` : ""}</h3>
-        <p class="muted small">${x.gender ? `${esc(x.gender)} · ` : ""}${esc(x.city || "")}${x.experienceYears != null ? ` · ${x.experienceYears} yr${x.experienceYears === 1 ? "" : "s"} experience` : ""}${x.availability ? ` · ${esc(x.availability)}` : ""} · applied ${ago(a.createdAt)}</p></div>
+      <div class="app-who">${avatar(x.fullName, x.photo)}<div><h3>${esc(x.fullName)}${x.age ? `, ${x.age}` : ""}</h3>
+        <p class="muted small">${x.gender ? `${esc(x.gender)} · ` : ""}${esc(x.city || "")}${x.experienceYears != null ? ` · ${x.experienceYears} yr${x.experienceYears === 1 ? "" : "s"} experience` : ""}${x.availability ? ` · ${esc(x.availability)}` : ""} · applied ${ago(a.createdAt)}</p></div></div>
       ${appBadge(a.status, true)}
     </header>
     ${a.message ? `<blockquote>${nl2br(a.message)}</blockquote>` : ""}
@@ -1183,7 +1242,7 @@ async function viewApplicants(jobId) {
   document.title = "Applicants | Job Search PH";
   const { user } = getAuthState();
   if (!user) return goSignIn("Sign in to see applicants");
-  app.innerHTML = `<p class="muted">Loading…</p>`;
+  app.innerHTML = SK.page();
   const job = await store.getJob(jobId);
   if (!job || job.ownerUid !== user.uid) { app.innerHTML = `<div class="empty"><h1>Not found</h1><p class="muted">This post isn't yours or no longer exists.</p></div>`; return; }
   let tab = "all";
@@ -1233,7 +1292,7 @@ async function viewApplications() {
   const { user, profile } = getAuthState();
   if (!user) return goSignIn("Sign in to see your applications");
   if (!profile) { location.hash = "#/profile"; return; }
-  app.innerHTML = `<div class="page-head"><h1>My applications</h1><a class="btn btn-ghost" href="#/">Find more jobs</a></div><div id="apps"><p class="muted">Loading…</p></div>`;
+  app.innerHTML = `<div class="page-head"><h1>My applications</h1><a class="btn btn-ghost" href="#/">Find more jobs</a></div><div id="apps">${SK.rows(4)}</div>`;
   myAppsCache = null;
   const apps = (await getMyApps()).sort((a, b) => b.createdAt - a.createdAt);
   if (!$("#apps")) return;
@@ -1292,7 +1351,7 @@ function viewMessages() {
   const { user, profile } = getAuthState();
   if (!user) return goSignIn("Sign in to see your messages");
   if (!profile) { location.hash = "#/profile"; return; }
-  app.innerHTML = `<div class="page-head"><div><h1>Messages</h1><p class="muted">${profile.role === "employer" ? "Chat with people who applied to your jobs." : "Chat with employers you applied to."}</p></div></div><div id="inbox"><p class="muted">Loading…</p></div>`;
+  app.innerHTML = `<div class="page-head"><div><h1>Messages</h1><p class="muted">${profile.role === "employer" ? "Chat with people who applied to your jobs." : "Chat with employers you applied to."}</p></div></div><div id="inbox">${inbox.length || !inboxRole ? "" : SK.threads(5)}</div>`;
   drawInbox();
 }
 function drawInbox() {
@@ -1303,7 +1362,7 @@ function drawInbox() {
     const st = chatState(a); const unread = isUnread(a);
     const name = otherName(a);
     return `<a class="thread ${unread ? "unread" : ""} ${st.declined ? "declined" : ""}" href="#/chat/${encodeURIComponent(a.id)}">
-      <span class="avatar sm" aria-hidden="true">${esc(name.trim().charAt(0).toUpperCase() || "?")}</span>
+      ${avatar(name, getAuthState().user?.uid === a.employerUid ? a.applicant?.photo : "")}
       <span class="thread-main">
         <span class="thread-top"><strong>${esc(name)}</strong><small>${a.lastMessageAt ? ago(a.lastMessageAt) : ""}</small></span>
         <span class="thread-job">${esc(a.jobTitle)}${a.jobCity ? ` · ${esc(a.jobCity)}` : ""} ${st.declined ? `<em class="closing">${chatClosedText(st)}</em>` : appBadge(a.status, a.employerUid === me)}</span>
@@ -1319,7 +1378,7 @@ async function viewChat(appId) {
   document.title = "Chat | Job Search PH";
   const { user } = getAuthState();
   if (!user) return goSignIn("Sign in to see your messages");
-  app.innerHTML = `<p class="muted">Loading…</p>`;
+  app.innerHTML = `<div class="chat-wrap"><div class="chat-body">${SK.chat()}</div></div>`;
   const here = location.hash;
   let a = await store.getApplication(appId);
   if (location.hash !== here) return;
@@ -1331,13 +1390,13 @@ async function viewChat(appId) {
     <div class="chat-wrap">
       <header class="chat-head">
         <a href="#/messages" class="back" aria-label="Back to messages">←</a>
-        <span class="avatar sm" aria-hidden="true">${esc(name.charAt(0).toUpperCase())}</span>
+        ${avatar(name, iAmEmployer ? x.photo : "")}
         <div class="chat-who"><strong>${esc(name)}</strong>
           <span class="muted small">${iAmEmployer ? `${x.age ? `${x.age} · ` : ""}${esc(x.city || "")} · ` : ""}<a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a></span></div>
         <span id="chat-badge"></span>
       </header>
       <div id="chat-banner"></div>
-      <div class="chat-body" id="chat-body"><p class="muted center small">Loading messages…</p></div>
+      <div class="chat-body" id="chat-body">${SK.chat()}</div>
       <form class="chat-form" id="chat-form">
         <textarea id="chat-input" name="text" rows="1" maxlength="1000" placeholder="Write a message…" aria-label="Message"></textarea>
         <button class="btn btn-primary" type="submit" aria-label="Send">Send</button>
@@ -1383,7 +1442,7 @@ async function viewChat(appId) {
     try { await store.sendMessage(a, text); a = (await store.getApplication(a.id)) || a; }
     catch (err) {
       console.error(err); input.value = text;
-      toast(err.code === "permission-denied" ? "This chat is closed, so the message wasn't sent." : "Message not sent. Check your connection.");
+      toast(err.code === "limit-reached" ? limitMsg.messages : err.code === "too-fast" ? "Slow down a little. Wait a moment before sending again." : err.code === "permission-denied" ? "This chat is closed, so the message wasn't sent." : "Message not sent. Check your connection.");
       const fresh = await store.getApplication(a.id); if (fresh) { a = fresh; paintState(); }
     }
   });
@@ -1402,7 +1461,7 @@ async function viewAdmin() {
   app.innerHTML = `
     <div class="page-head"><h1>Admin</h1></div>
     <div class="tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<button role="tab" class="tab ${adminTab === k ? "active" : ""}" data-tab="${k}">${v}</button>`).join("")}</div>
-    <div id="admin-body"><p class="muted">Loading…</p></div>`;
+    <div id="admin-body">${SK.rows(4)}</div>`;
   app.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { adminTab = b.dataset.tab; viewAdmin(); }));
 
   const body = $("#admin-body");
@@ -1500,7 +1559,7 @@ function viewSupport() {
     if (data.message.length < 10) { err.textContent = "Write a bit more so we can help."; err.hidden = false; return; }
     const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Sending…";
     try { await store.sendSupport(data); app.innerHTML = `<div class="empty"><h1>Message sent</h1><p class="muted">Thanks, ${esc(firstName(data.name))}. We'll get back to you at ${esc(data.reply)}.</p><p><a class="btn btn-primary" href="#/">Back to jobs</a></p></div>`; }
-    catch (ex) { btn.disabled = false; btn.textContent = "Send to support"; err.textContent = `Could not send (${ex.code || "error"}). Please try again.`; err.hidden = false; }
+    catch (ex) { btn.disabled = false; btn.textContent = "Send to support"; err.textContent = ex.code === "limit-reached" ? limitMsg.support : `Could not send (${ex.code || "error"}). Please try again.`; err.hidden = false; }
   });
 }
 
