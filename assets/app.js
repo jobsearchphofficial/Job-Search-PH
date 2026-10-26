@@ -167,6 +167,25 @@ function strengthCard(p, compact = false) {
   </div>`;
 }
 
+/* ---------------- Pay sanity check (catches typos like 85,000 instead of 8,500) ---------------- */
+const PAY_CEIL = { household: { month: 25000, day: 1000, hour: 150 }, business: { month: 60000, day: 2500, hour: 350 } };
+function payWarning(d) {
+  const per = d.salaryPeriod || "month", ceil = (PAY_CEIL[d.workplace] || PAY_CEIL.business)[per];
+  const lo = Number(d.salaryMin) || 0, hi = Number(d.salaryMax) || 0;
+  const peso = (n) => `₱${Math.round(n).toLocaleString("en-PH")}`;
+  const shown = hi && hi !== lo ? `${peso(lo)}–${peso(hi)}` : peso(lo);
+  if (hi && lo && hi > lo * 2.5) {
+    const guess = hi / 10 >= lo ? ` Did you mean ${peso(hi / 10)}?` : "";
+    return { msg: `${shown} per ${per} is a very wide range. The top is much higher than the starting pay.${guess}`, field: "salaryMax" };
+  }
+  const top = Math.max(lo, hi);
+  if (top > ceil) {
+    const guess = top / 10 >= 1 ? ` Did you mean ${peso(top / 10)}?` : "";
+    return { msg: `${shown} per ${per} is much higher than usual for ${d.workplace === "household" ? "household work" : "this kind of job"} in Negros Occidental.${guess}`, field: hi > ceil ? "salaryMax" : "salaryMin" };
+  }
+  return null;
+}
+
 /* ---------------- Drafts: keep unsaved form input across refreshes ---------------- */
 const draftKey = (k) => { const u = getAuthState().user?.uid; return u ? `jsph-draft:${k}:${u}` : null; };
 function saveDraft(k, form) {
@@ -1414,8 +1433,11 @@ function viewPost() {
     else {
       const ok = pay >= min.amount;
       box.className = `wage-box ${pay ? (ok ? "ok" : "low") : ""}`;
+      const pw = pay ? payWarning({ workplace: workplace(), salaryPeriod: per, salaryMin: f.salaryMin.value, salaryMax: per === "month" ? f.salaryMax.value : "" }) : null;
+      if (pw) box.className = "wage-box odd";
       box.innerHTML = `<strong>Legal minimum: ₱${min.amount.toLocaleString("en-PH")} / ${per}</strong>
         <span class="small">${esc(min.basis)} in ${esc(min.region)}, effective ${esc(min.since)}.${per !== "month" ? ` Converted using ${WORK_DAYS} working days a month${per === "hour" ? " and 8 hours a day" : ""}.` : ""}</span>
+        ${pw ? `<span class="verdict odd">⚠ Please double-check: ${esc(pw.msg)}</span>` : ""}
         ${pay ? `<span class="verdict">${ok ? `${ICON.check} Your pay meets the minimum` : `Below the legal minimum. Raise it to at least ₱${min.amount.toLocaleString("en-PH")}.`}</span>` : ""}`;
     }
     const d = collect();
@@ -1492,6 +1514,11 @@ function viewPost() {
     const contact = { contactMethod: val("contactMethod"), contactValue: f.contactValue.value.trim() };
     if (!contactLink(contact)) return fail("That contact doesn't look right. Check the username, number or email.", f.contactValue);
     if (contact.contactMethod === "phone" && digits(contact.contactValue).length < 10) return fail("Please enter a complete phone number.", f.contactValue);
+    const pw = payWarning(data);
+    if (pw) {
+      const sure = await showDialog({ title: "Is the pay correct?", body: `${esc(pw.msg)} Applicants will see exactly what you enter, so a typo can attract the wrong people or look like a scam.`, actions: [{ label: "Let me fix it", value: false, primary: true }, { label: "Yes, it's correct", value: true }] });
+      if (!sure) { const el = f[pw.field]; el.classList.add("invalid"); el.scrollIntoView({ block: "center", behavior: "smooth" }); setTimeout(() => el.focus({ preventScroll: true }), 300); return; }
+    }
     const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Submitting…";
     try {
       if (!data.address) delete data.address; // older rules don't know this field yet
