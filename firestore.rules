@@ -143,7 +143,9 @@ service cloud.firestore {
                     && jobDoc(request.resource.data.jobId).data.status == 'approved'
                     && request.resource.data.employerUid == jobDoc(request.resource.data.jobId).data.ownerUid
                     && request.resource.data.employerUid != me()
+                    && request.resource.data.jobTitle == jobDoc(request.resource.data.jobId).data.title
                     && request.resource.data.applicant is map
+                    && request.resource.data.applicant.keys().size() <= 30
                     && str(request.resource.data.applicant.fullName, 2, 80)
                     && str(request.resource.data.applicant.phone, 7, 20)
                     && validPhoto(request.resource.data.applicant.get('photo', null))

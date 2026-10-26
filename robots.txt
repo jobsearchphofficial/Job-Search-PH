@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /firestore.rules
+Disallow: /storage.rules
+Sitemap: https://jobsearchph.com/sitemap.xml

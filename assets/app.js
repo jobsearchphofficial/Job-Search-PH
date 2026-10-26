@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792993616";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792995019";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -1395,8 +1395,8 @@ function applicantCard(a) {
   return `
   <article class="applicant ${a.status === "new" ? "is-new" : ""} ${DECLINED.includes(a.status) ? "declined" : ""}">
     <header>
-      <div class="app-who">${avatar(x.fullName, x.photo)}<div><h3>${esc(x.fullName)}${x.age ? `, ${x.age}` : ""}</h3>
-        <p class="muted small">${x.gender ? `${esc(x.gender)} · ` : ""}${esc(x.city || "")}${x.experienceYears != null ? ` · ${x.experienceYears} yr${x.experienceYears === 1 ? "" : "s"} experience` : ""}${x.availability ? ` · ${esc(x.availability)}` : ""} · applied ${ago(a.createdAt)}</p></div></div>
+      <div class="app-who">${avatar(x.fullName, x.photo)}<div><h3>${esc(x.fullName)}${x.age ? `, ${esc(x.age)}` : ""}</h3>
+        <p class="muted small">${x.gender ? `${esc(x.gender)} · ` : ""}${esc(x.city || "")}${x.experienceYears != null ? ` · ${esc(x.experienceYears)} yr${x.experienceYears === 1 ? "" : "s"} experience` : ""}${x.availability ? ` · ${esc(x.availability)}` : ""} · applied ${ago(a.createdAt)}</p></div></div>
       ${appBadge(a.status, true)}
     </header>
     ${a.message ? `<blockquote>${nl2br(a.message)}</blockquote>` : ""}
@@ -1408,7 +1408,7 @@ function applicantCard(a) {
       ${m ? `<a class="btn btn-ghost btn-sm" href="${esc(m)}" target="_blank" rel="noopener nofollow">Messenger</a>` : ""}
       ${x.email ? `<a class="btn btn-ghost btn-sm" href="mailto:${esc(x.email)}">Email</a>` : ""}
     </div>
-    ${(x.jobCategories || []).length ? `<ul class="meta">${x.jobCategories.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
+    ${Array.isArray(x.jobCategories) && x.jobCategories.length ? `<ul class="meta">${x.jobCategories.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
     <details><summary>Experience &amp; resume</summary>
       ${x.skills ? `<p class="small"><strong>Skills:</strong> ${esc(x.skills)}</p>` : ""}
       ${x.workHistory ? `<p class="small"><strong>Work history:</strong><br>${nl2br(x.workHistory)}</p>` : ""}
@@ -1647,7 +1647,7 @@ async function viewChat(appId) {
         <a href="#/messages" class="back" aria-label="Back to messages">←</a>
         ${avatar(name, iAmEmployer ? x.photo : "")}
         <div class="chat-who"><strong>${esc(name)}</strong>
-          <span class="muted small">${iAmEmployer ? `${x.age ? `${x.age} · ` : ""}${esc(x.city || "")} · ` : ""}<a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a></span></div>
+          <span class="muted small">${iAmEmployer ? `${x.age ? `${esc(x.age)} · ` : ""}${esc(x.city || "")} · ` : ""}<a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a></span></div>
         <span id="chat-badge"></span>
       </header>
       <div id="chat-banner"></div>
@@ -1953,7 +1953,7 @@ async function route() {
   window.scrollTo(0, 0);
   const { user, profile } = getAuthState();
   // New accounts finish their profile first; browsing jobs and reading info pages still work.
-  if (user && !profile && !["", "job", "profile", "signin", "safety", "terms", "privacy"].includes(page || "")) {
+  if (user && !profile && !["", "job", "profile", "signin", "safety", "terms", "privacy", "support"].includes(page || "")) {
     if (!returnTo) returnTo = location.hash;
     location.hash = "#/profile"; return;
   }

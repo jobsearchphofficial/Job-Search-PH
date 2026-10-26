@@ -664,3 +664,13 @@ img.brand-mark { display: block; width: 38px; height: 38px; border-radius: 50%; 
 .ccard:hover { border-color: var(--line-strong); }
 .ccard span { color: var(--slate); font-size: .86rem; overflow-wrap: anywhere; }
 .form-h { font-size: 1.05rem; margin: 0 0 12px; }
+/* Small phones: keep the full name visible in the header. */
+@media (max-width: 400px) {
+  .header-inner { gap: 8px; }
+  .brand { gap: 8px; font-size: .95rem; white-space: nowrap; }
+  .brand-mark { width: 32px; height: 32px; }
+  .bell { width: 38px; height: 38px; }
+  .gear-wrap, .nav-toggle { margin-left: 6px !important; }
+  .nav-toggle { padding: 6px 10px; }
+}
+@media (max-width: 350px) { .brand span { font-size: .85rem; } }
