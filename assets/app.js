@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792991563";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792991821";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -7,11 +7,32 @@ const CATEGORIES = [
   "Construction / Skilled trade", "Security", "Office / Admin", "Other",
 ];
 const TYPES = ["Live-in", "Stay-out", "Full-time", "Part-time", "Project-based"];
+// Negros Occidental only for now: 13 cities and 19 municipalities.
 const CITIES = [
   "Bacolod City", "Talisay City", "Silay City", "Bago City", "Victorias City", "Cadiz City",
   "Sagay City", "La Carlota City", "Kabankalan City", "San Carlos City", "Escalante City",
-  "Himamaylan City", "Sipalay City", "Murcia", "Valladolid", "Pulupandan", "E.B. Magalona",
-  "Manapla", "Iloilo City", "Roxas City", "Dumaguete City", "Other",
+  "Himamaylan City", "Sipalay City",
+  "Binalbagan", "Calatrava", "Candoni", "Cauayan", "E.B. Magalona", "Hinigaran", "Hinoba-an",
+  "Ilog", "Isabela", "La Castellana", "Manapla", "Moises Padilla", "Murcia", "Pontevedra",
+  "Pulupandan", "Salvador Benedicto", "San Enrique", "Toboso", "Valladolid", "Other",
+];
+// Common barangays and areas people search for, shown as "Barangay · City".
+const AREAS = [
+  ["Mandalagan", "Bacolod City"], ["Villamonte", "Bacolod City"], ["Taculing", "Bacolod City"], ["Bata", "Bacolod City"],
+  ["Alijis", "Bacolod City"], ["Estefania", "Bacolod City"], ["Granada", "Bacolod City"], ["Singcang-Airport", "Bacolod City"],
+  ["Tangub", "Bacolod City"], ["Sum-ag", "Bacolod City"], ["Banago", "Bacolod City"], ["Handumanan", "Bacolod City"],
+  ["Mansilingan", "Bacolod City"], ["Pahanocoy", "Bacolod City"], ["Vista Alegre", "Bacolod City"], ["Alangilan", "Bacolod City"],
+  ["Felisa", "Bacolod City"], ["Cabug", "Bacolod City"], ["Montevista", "Bacolod City"], ["Punta Taytay", "Bacolod City"],
+  ["Tangub", "Bacolod City"], ["Villa Esperanza", "Bacolod City"], ["Lacson Street", "Bacolod City"], ["Capitol Shopping Area", "Bacolod City"],
+  ["Concepcion", "Talisay City"], ["Zone 12", "Talisay City"], ["Matab-ang", "Talisay City"], ["Efigenio Lizares", "Talisay City"],
+  ["Balaring", "Silay City"], ["Guinhalaran", "Silay City"], ["Mambulac", "Silay City"],
+];
+// Job titles people search for most, used for "What" suggestions.
+const POPULAR_TITLES = [
+  "Kasambahay", "Yaya", "Caregiver", "Caretaker", "Cook", "Family driver", "Driver", "Housekeeper", "Nanny",
+  "Elderly caregiver", "Laundry helper", "Gardener", "All-around helper", "Kitchen helper", "Waiter", "Waitress",
+  "Cashier", "Sales lady", "Delivery rider", "Security guard", "Construction worker", "Carpenter", "Electrician",
+  "Utility worker", "Barista", "Office staff", "Encoder", "Store helper", "Janitor", "Mason", "Welder", "Tutor",
 ];
 const AVAILABILITY = ["Available now", "Within 2 weeks", "Within a month", "Not sure yet"];
 const PERIODS = { month: "/ month", day: "/ day", hour: "/ hour" };
@@ -48,6 +69,10 @@ const CITY_COORDS = {
   "Sipalay City": [9.7516, 122.4041], "Murcia": [10.605, 123.042], "Valladolid": [10.46, 122.83], "Pulupandan": [10.52, 122.8],
   "E.B. Magalona": [10.87, 123.03], "Manapla": [10.96, 123.12], "Iloilo City": [10.7202, 122.5621], "Roxas City": [11.5853, 122.7511],
   "Dumaguete City": [9.3068, 123.3054],
+  "Binalbagan": [10.19, 122.86], "Calatrava": [10.6, 123.48], "Candoni": [9.83, 122.6], "Cauayan": [9.97, 122.62],
+  "Hinigaran": [10.27, 122.85], "Hinoba-an": [9.6, 122.47], "Ilog": [10.03, 122.77], "Isabela": [10.2, 122.99],
+  "La Castellana": [10.32, 123.02], "Moises Padilla": [10.27, 123.08], "Pontevedra": [10.37, 122.88],
+  "Salvador Benedicto": [10.59, 123.22], "San Enrique": [10.42, 122.86], "Toboso": [10.72, 123.51],
 };
 function kmBetween([a, b], [c, d]) {
   const r = (x) => (x * Math.PI) / 180, R = 6371;
@@ -463,6 +488,34 @@ document.addEventListener("click", async (e) => {
   if (a.dataset.action === "gosignin") { e.preventDefault(); goSignIn(a.dataset.purpose, a.dataset.intent); }
 });
 
+/* ---------------- Search helpers ---------------- */
+const PAY_MIN = 6500, PAY_MAX = 30000;
+const payLabel = (v) => (Number(v) > PAY_MIN ? `₱${Number(v).toLocaleString("en-PH")}+ / month` : "Any (₱6,500+)");
+const hl = (text, t) => { const i = text.toLowerCase().indexOf(t); return i < 0 ? esc(text) : `${esc(text.slice(0, i))}<mark>${esc(text.slice(i, i + t.length))}</mark>${esc(text.slice(i + t.length))}`; };
+// Lightweight combobox: shows suggestions as you type; arrows + Enter to pick, Esc to close.
+function autocomplete(input, list, suggest, onPick) {
+  let items = [], active = -1;
+  const close = () => { list.hidden = true; input.setAttribute("aria-expanded", "false"); active = -1; };
+  const paint = () => {
+    list.innerHTML = items.map((it, i) => `<li role="option" id="${list.id}-${i}" class="${i === active ? "on" : ""}" aria-selected="${i === active}" data-i="${i}"><span>${it.html}</span>${it.meta ? `<small>${esc(it.meta)}</small>` : ""}</li>`).join("");
+    list.hidden = !items.length; input.setAttribute("aria-expanded", String(!!items.length));
+    if (active >= 0) input.setAttribute("aria-activedescendant", `${list.id}-${active}`); else input.removeAttribute("aria-activedescendant");
+  };
+  const open = () => { items = suggest(input.value); active = -1; paint(); };
+  const pick = (i) => { const it = items[i]; if (!it) return; input.value = it.value; close(); onPick(it.value); };
+  input.addEventListener("input", open);
+  input.addEventListener("focus", () => { if (input.value) open(); });
+  input.addEventListener("keydown", (e) => {
+    if (list.hidden) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); active = (active + 1) % items.length; paint(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); active = (active - 1 + items.length) % items.length; paint(); }
+    else if (e.key === "Enter" && active >= 0) { e.preventDefault(); pick(active); }
+    else if (e.key === "Escape") close();
+  });
+  list.addEventListener("mousedown", (e) => { const li = e.target.closest("li"); if (li) { e.preventDefault(); pick(Number(li.dataset.i)); } });
+  input.addEventListener("blur", () => setTimeout(close, 120));
+}
+
 /* ---------------- Jobs list ---------------- */
 let jobsCache = null;
 let myAppsCache = null;
@@ -482,14 +535,15 @@ async function viewList() {
   app.innerHTML = `
     <section class="hero">
       <span class="eyebrow">Free for jobseekers · No fees, ever</span>
-      <h1>Find work near you in <em>Negros &amp; Western Visayas</em></h1>
-      <p>Household, service and local jobs from employers in Bacolod and nearby cities. Every post is checked and must pay at least the legal minimum wage.</p>
+      <h1>Find work near you in <em>Negros Occidental</em></h1>
+      <p>Household, service and local jobs from employers in Bacolod and nearby towns. Every post is checked and must pay at least the legal minimum wage.</p>
       <form class="search2" id="search" role="search">
-        <label class="field"><span class="ico">${ICON.search}</span><span class="sr">What</span>
-          <input type="search" id="q" name="q" placeholder="Job title or keyword" value="${esc(filters.q)}" autocomplete="off"></label>
-        <label class="field"><span class="ico">${ICON.pin}</span><span class="sr">Where</span>
-          <input type="search" id="where" name="where" list="city-list" placeholder="City, town or barangay" value="${esc(filters.where)}" autocomplete="off"></label>
-        <datalist id="city-list">${cityList.map((c) => `<option value="${esc(c)}"></option>`).join("")}</datalist>
+        <div class="field ac"><span class="ico">${ICON.search}</span><label class="sr" for="q">What</label>
+          <input type="search" id="q" name="q" placeholder="Job title or keyword" value="${esc(filters.q)}" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="q-list" aria-autocomplete="list">
+          <ul class="ac-list" id="q-list" role="listbox" hidden></ul></div>
+        <div class="field ac"><span class="ico">${ICON.pin}</span><label class="sr" for="where">Where</label>
+          <input type="search" id="where" name="where" placeholder="City, town or barangay" value="${esc(filters.where)}" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="where-list" aria-autocomplete="list">
+          <ul class="ac-list" id="where-list" role="listbox" hidden></ul></div>
         <button class="btn btn-primary" type="submit">Search</button>
       </form>
       <div class="hero-row">
@@ -506,10 +560,8 @@ async function viewList() {
       <span id="count" class="muted"></span>
       <div class="toolbar-filters">
         <select id="f-type" name="type" aria-label="Job type"><option value="">Any type</option>${opts(TYPES, filters.type)}</select>
-        <select id="f-pay" name="minPay" aria-label="Minimum pay">
-          <option value="">Any pay</option>
-          ${[8000, 10000, 15000, 20000].map((v) => `<option value="${v}" ${String(filters.minPay) === String(v) ? "selected" : ""}>₱${v.toLocaleString("en-PH")}+ / month</option>`).join("")}
-        </select>
+        <label class="pay-slider"><span class="ps-label">Pay <strong id="pay-out">${payLabel(filters.minPay)}</strong></span>
+          <input type="range" id="f-pay" min="${PAY_MIN}" max="${PAY_MAX}" step="500" value="${filters.minPay || PAY_MIN}" aria-label="Minimum monthly pay"></label>
         <select id="f-sort" name="sort" aria-label="Sort">
           <option value="new" ${filters.sort === "new" ? "selected" : ""}>Newest</option>
           <option value="pay" ${filters.sort === "pay" ? "selected" : ""}>Highest pay</option>
@@ -529,7 +581,7 @@ async function viewList() {
     let list = (jobsCache || []).filter(isLive)
       .filter((j) => !filters.category || j.category === filters.category)
       .filter((j) => !filters.type || j.employmentType === filters.type || j.schedule === filters.type)
-      .filter((j) => !filters.minPay || monthlyEquivalent(j) >= Number(filters.minPay))
+      .filter((j) => !(Number(filters.minPay) > PAY_MIN) || monthlyEquivalent(j) >= Number(filters.minPay))
       .filter((j) => !where || [j.city, j.area].join(" ").toLowerCase().includes(where.replace(/ city$/, "")))
       .filter((j) => !q || [j.title, j.category, j.employerName, j.description, (j.benefits || []).join(" ")].join(" ").toLowerCase().includes(q));
     const by = {
@@ -541,13 +593,41 @@ async function viewList() {
     $("#count").textContent = `${list.length} job${list.length === 1 ? "" : "s"}${where ? ` in or near “${filters.where.trim()}”` : ""}`;
     const chips = [
       filters.q && ["q", `“${filters.q}”`], filters.where && ["where", filters.where], filters.category && ["category", filters.category],
-      filters.type && ["type", filters.type], filters.minPay && ["minPay", `₱${Number(filters.minPay).toLocaleString("en-PH")}+`],
+      filters.type && ["type", filters.type], Number(filters.minPay) > PAY_MIN && ["minPay", `${payLabel(filters.minPay)}`],
     ].filter(Boolean);
     $("#active-filters").innerHTML = chips.length ? chips.map(([k, v]) => `<button class="fchip" data-clear="${k}">${esc(v)} <span aria-hidden="true">×</span></button>`).join("") + `<button class="linkbtn" data-clear="all">Clear all</button>` : "";
     $("#results").innerHTML = list.length ? list.map((j) => card(j, applied.has(j.id), distanceOf(j))).join("") :
       `<div class="empty"><p><strong>No jobs match yet.</strong></p><p class="muted">Try a nearby city, another category, or clear your filters.</p></div>`;
   };
   const sync = () => { const f = $("#search"); filters.q = f.q.value; filters.where = f.where.value; draw(); };
+  const payIn = $("#f-pay");
+  const paintPay = () => { const pct = ((payIn.value - PAY_MIN) / (PAY_MAX - PAY_MIN)) * 100; payIn.style.setProperty("--fill", `${pct}%`); $("#pay-out").textContent = payLabel(payIn.value); };
+  payIn.addEventListener("input", () => { filters.minPay = Number(payIn.value) > PAY_MIN ? payIn.value : ""; paintPay(); draw(); });
+  paintPay();
+  // Suggestions under the two search boxes.
+  const live = () => (jobsCache || []).filter(isLive);
+  autocomplete($("#q"), $("#q-list"), (term) => {
+    const t = term.trim().toLowerCase(); if (!t) return [];
+    const counts = new Map();
+    const add = (label, n, sub) => { const k = label.toLowerCase(); const cur = counts.get(k); counts.set(k, { label, n: (cur?.n || 0) + n, sub: sub || cur?.sub }); };
+    live().forEach((j) => { add(j.title, 3); add(j.category.split(" / ")[0], 1, "Category"); });
+    POPULAR_TITLES.forEach((x, i) => add(x, (POPULAR_TITLES.length - i) / 100));
+    const starts = (s) => s.toLowerCase().split(/[\s/-]+/).some((w) => w.startsWith(t)) || s.toLowerCase().startsWith(t);
+    return [...counts.values()].filter((x) => starts(x.label)).sort((a, b) => b.n - a.n).slice(0, 8)
+      .map((x) => { const n = live().filter((j) => `${j.title} ${j.category}`.toLowerCase().includes(x.label.toLowerCase())).length; return { value: x.label, html: hl(x.label, t), meta: n ? `${n} open` : "" }; });
+  }, (v) => { filters.q = v; draw(); });
+  autocomplete($("#where"), $("#where-list"), (term) => {
+    const t = term.trim().toLowerCase().replace(/ city$/, ""); if (!t) return [];
+    const jobsIn = (pred) => live().filter(pred).length;
+    const cityHits = CITIES.filter((c) => c !== "Other" && c.toLowerCase().startsWith(t) || c.toLowerCase().split(/[\s.-]+/).some((w) => w && w.startsWith(t) && c !== "Other"))
+      .map((c) => ({ value: c, html: hl(c, t), meta: (() => { const n = jobsIn((j) => j.city === c); return n ? `${n} job${n === 1 ? "" : "s"}` : "City / town"; })(), n: jobsIn((j) => j.city === c) + 0.5 }));
+    const areaSet = new Map();
+    AREAS.forEach(([a, c]) => areaSet.set(`${a}|${c}`, [a, c]));
+    live().forEach((j) => { if (j.area) areaSet.set(`${j.area}|${j.city}`, [j.area, j.city]); });
+    const areaHits = [...areaSet.values()].filter(([a]) => a.toLowerCase().split(/[\s-]+/).some((w) => w.startsWith(t)) || a.toLowerCase().startsWith(t))
+      .map(([a, c]) => ({ value: a, html: `${hl(a, t)} <span class="ac-sub">· ${esc(c)}</span>`, meta: (() => { const n = jobsIn((j) => (j.area || "").toLowerCase() === a.toLowerCase()); return n ? `${n} job${n === 1 ? "" : "s"}` : "Barangay"; })(), n: jobsIn((j) => (j.area || "").toLowerCase() === a.toLowerCase()) }));
+    return [...cityHits, ...areaHits].sort((a, b) => Math.floor(b.n) - Math.floor(a.n)).slice(0, 8);
+  }, (v) => { filters.where = v; draw(); });
   $("#search").addEventListener("submit", (e) => { e.preventDefault(); sync(); $("#results").scrollIntoView({ behavior: "smooth", block: "start" }); });
   $("#q").addEventListener("input", sync);
   $("#where").addEventListener("input", sync);

@@ -597,3 +597,25 @@ html, body { max-width: 100%; overflow-x: clip; }
 .emp-state.ended { color: var(--slate); }
 .emp-row { align-items: center; }
 .chat-banner.emp { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--indigo-soft); color: var(--navy); }
+
+/* ---------- Search suggestions ---------- */
+.hero { overflow: visible; z-index: 2; }
+.hero::after { inset: 0; right: 0; top: 0; width: auto; height: auto; border-radius: inherit; background: radial-gradient(circle at 100% 0%, rgba(61, 79, 214, .14), transparent 42%); }
+.field.ac { position: relative; }
+.ac-list { position: absolute; left: -6px; right: -6px; top: calc(100% + 10px); z-index: 40; list-style: none; margin: 0; padding: 6px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 24px 50px -18px rgba(22, 32, 70, .35); max-height: 340px; overflow-y: auto; }
+.ac-list li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; cursor: pointer; font-size: .92rem; color: var(--navy); }
+.ac-list li:hover, .ac-list li.on { background: var(--indigo-soft); }
+.ac-list mark { background: none; color: var(--indigo-deep); font-weight: 700; }
+.ac-list small { flex: none; font-size: .74rem; color: var(--slate-soft); }
+.ac-sub { color: var(--slate); font-size: .84rem; }
+@media (max-width: 720px) { .ac-list { left: -8px; right: -8px; top: calc(100% + 4px); } }
+
+/* ---------- Pay slider ---------- */
+.pay-slider { display: grid; gap: 4px; min-width: 220px; padding: 6px 12px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.ps-label { font-size: .78rem; color: var(--slate); display: flex; justify-content: space-between; gap: 8px; }
+.ps-label strong { color: var(--navy); font-weight: 600; }
+.pay-slider input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; padding: 0; border: 0; border-radius: 999px; box-shadow: none !important;
+  background: linear-gradient(90deg, var(--indigo) var(--fill, 0%), var(--line) var(--fill, 0%)); cursor: pointer; }
+.pay-slider input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: var(--card); border: 3px solid var(--indigo); box-shadow: var(--shadow-sm); }
+.pay-slider input[type=range]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--card); border: 3px solid var(--indigo); }
+@media (max-width: 640px) { .toolbar-filters { grid-template-columns: 1fr 1fr; } .pay-slider { grid-column: 1 / -1; order: -1; min-width: 0; } }
