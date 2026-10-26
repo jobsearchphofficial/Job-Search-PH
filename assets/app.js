@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793021475";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793025560";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -754,7 +754,9 @@ async function viewList() {
       const here = [pos.coords.latitude, pos.coords.longitude];
       let best = null, bestKm = Infinity;
       for (const [c, xy] of Object.entries(CITY_COORDS)) { const k = kmBetween(here, xy); if (k < bestKm) { bestKm = k; best = c; } }
-      filters.near = here; filters.nearCity = best; filters.sort = "near";
+      if (bestKm > 60) { label.textContent = "Use my location"; toast("You seem to be outside Negros Occidental. Type a city instead."); return; }
+      filters.near = here; filters.nearCity = best; filters.sort = "near"; filters.where = best;
+      const w = $("#where"); if (w) w.value = best;
       label.textContent = `Near ${best}`; $("#f-sort").value = "near"; draw();
     }, () => { label.textContent = "Use my location"; toast("Couldn't get your location. Type your city instead."); }, { timeout: 10000, maximumAge: 600000 });
   };
