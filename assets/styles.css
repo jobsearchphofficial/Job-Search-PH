@@ -619,3 +619,9 @@ html, body { max-width: 100%; overflow-x: clip; }
 .pay-slider input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: var(--card); border: 3px solid var(--indigo); box-shadow: var(--shadow-sm); }
 .pay-slider input[type=range]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--card); border: 3px solid var(--indigo); }
 @media (max-width: 640px) { .toolbar-filters { grid-template-columns: 1fr 1fr; } .pay-slider { grid-column: 1 / -1; order: -1; min-width: 0; } }
+.empty-hero { display: grid; justify-items: center; gap: 8px; padding: 44px 20px; }
+.empty-hero h2 { margin: 6px 0 0; font-size: 1.25rem; }
+.empty-hero p { max-width: 460px; margin: 0; }
+.empty-art { width: 64px; height: 64px; border-radius: 20px; display: grid; place-items: center; background: var(--indigo-soft); color: var(--indigo); }
+.empty-art svg { width: 30px; height: 30px; }
+.empty-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 8px !important; }

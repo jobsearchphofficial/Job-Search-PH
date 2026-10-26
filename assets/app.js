@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792991821";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792992364";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -16,17 +16,16 @@ const CITIES = [
   "Ilog", "Isabela", "La Castellana", "Manapla", "Moises Padilla", "Murcia", "Pontevedra",
   "Pulupandan", "Salvador Benedicto", "San Enrique", "Toboso", "Valladolid", "Other",
 ];
-// Common barangays and areas people search for, shown as "Barangay · City".
-const AREAS = [
-  ["Mandalagan", "Bacolod City"], ["Villamonte", "Bacolod City"], ["Taculing", "Bacolod City"], ["Bata", "Bacolod City"],
-  ["Alijis", "Bacolod City"], ["Estefania", "Bacolod City"], ["Granada", "Bacolod City"], ["Singcang-Airport", "Bacolod City"],
-  ["Tangub", "Bacolod City"], ["Sum-ag", "Bacolod City"], ["Banago", "Bacolod City"], ["Handumanan", "Bacolod City"],
-  ["Mansilingan", "Bacolod City"], ["Pahanocoy", "Bacolod City"], ["Vista Alegre", "Bacolod City"], ["Alangilan", "Bacolod City"],
-  ["Felisa", "Bacolod City"], ["Cabug", "Bacolod City"], ["Montevista", "Bacolod City"], ["Punta Taytay", "Bacolod City"],
-  ["Tangub", "Bacolod City"], ["Villa Esperanza", "Bacolod City"], ["Lacson Street", "Bacolod City"], ["Capitol Shopping Area", "Bacolod City"],
-  ["Concepcion", "Talisay City"], ["Zone 12", "Talisay City"], ["Matab-ang", "Talisay City"], ["Efigenio Lizares", "Talisay City"],
-  ["Balaring", "Silay City"], ["Guinhalaran", "Silay City"], ["Mambulac", "Silay City"],
-];
+// Barangays for the major cities (Metro Bacolod: Bacolod, Talisay, Silay, Bago), shown as "Barangay · City".
+const BARANGAYS = {
+  "Bacolod City": ["Alangilan", "Alijis", "Banago", "Bata", "Cabug", "Estefania", "Felisa", "Granada", "Handumanan", "Mandalagan",
+    "Mansilingan", "Montevista", "Pahanocoy", "Punta Taytay", "Singcang-Airport", "Sum-ag", "Taculing", "Tangub", "Villamonte", "Vista Alegre"],
+  "Talisay City": ["Bubog", "Cabatangan", "Concepcion", "Dos Hermanas", "Efigenio Lizares", "Katilingban", "Matab-ang", "San Fernando"],
+  "Silay City": ["Bagtic", "Balaring", "E. Lopez", "Guimbala-on", "Guinhalaran", "Hawaiian", "Kapitan Ramon", "Lantad", "Mambulac", "Patag", "Rizal"],
+  "Bago City": ["Abuanan", "Alianza", "Atipuluan", "Bacong-Montilla", "Bagroy", "Balingasag", "Binubuhan", "Busay", "Calumangan", "Caridad",
+    "Don Jorge L. Araneta", "Dulao", "Ilijan", "Lag-Asan", "Ma-ao", "Mailum", "Malingin", "Napoles", "Pacol", "Poblacion", "Sagasa", "Sampinit", "Tabunan", "Taloc"],
+};
+const AREAS = Object.entries(BARANGAYS).flatMap(([city, list]) => list.map((b) => [b, city]));
 // Job titles people search for most, used for "What" suggestions.
 const POPULAR_TITLES = [
   "Kasambahay", "Yaya", "Caregiver", "Caretaker", "Cook", "Family driver", "Driver", "Housekeeper", "Nanny",
@@ -596,8 +595,26 @@ async function viewList() {
       filters.type && ["type", filters.type], Number(filters.minPay) > PAY_MIN && ["minPay", `${payLabel(filters.minPay)}`],
     ].filter(Boolean);
     $("#active-filters").innerHTML = chips.length ? chips.map(([k, v]) => `<button class="fchip" data-clear="${k}">${esc(v)} <span aria-hidden="true">×</span></button>`).join("") + `<button class="linkbtn" data-clear="all">Clear all</button>` : "";
-    $("#results").innerHTML = list.length ? list.map((j) => card(j, applied.has(j.id), distanceOf(j))).join("") :
-      `<div class="empty"><p><strong>No jobs match yet.</strong></p><p class="muted">Try a nearby city, another category, or clear your filters.</p></div>`;
+    const anyLive = (jobsCache || []).some(isLive);
+    const { user: u, profile: pr } = getAuthState();
+    $("#results").innerHTML = list.length ? list.map((j) => card(j, applied.has(j.id), distanceOf(j))).join("") : !anyLive ? `
+      <div class="empty empty-hero">
+        <div class="empty-art" aria-hidden="true">${ICON.home}</div>
+        <h2>Be the first to post a job here</h2>
+        <p class="muted">Job Search PH just opened in Negros Occidental. Hiring a kasambahay, yaya, driver or cook? Post it free and reach local jobseekers.</p>
+        <p class="empty-actions">
+          ${!u || pr?.role === "employer" ? `<a class="btn btn-primary" href="#/post" ${u ? "" : `data-action="gosignin" data-intent="employer" data-purpose="Sign in to post a job"`}>Post a job for free</a>` : ""}
+          ${!u ? `<a class="btn btn-ghost" href="#/signin" data-action="gosignin" data-intent="jobseeker" data-purpose="Create your free profile">I'm looking for work</a>` : pr?.role === "jobseeker" ? `<a class="btn btn-ghost" href="#/profile">Complete my profile</a>` : ""}
+        </p>
+        ${pr?.role === "jobseeker" ? `<p class="small muted">New jobs are added every week. Your profile is ready, so you can apply as soon as one fits.</p>` : ""}
+      </div>` : `
+      <div class="empty empty-hero">
+        <div class="empty-art" aria-hidden="true">${ICON.search}</div>
+        <h2>No jobs match your search yet</h2>
+        <p class="muted">Try a nearby town, a different job, or lower the pay filter. New jobs are posted every week.</p>
+        <p class="empty-actions"><button class="btn btn-ghost" data-clear="all" id="empty-clear">Clear all filters</button></p>
+      </div>`;
+    $("#empty-clear")?.addEventListener("click", () => { Object.assign(filters, { q: "", where: "", category: "", type: "", minPay: "" }); viewList(); });
   };
   const sync = () => { const f = $("#search"); filters.q = f.q.value; filters.where = f.where.value; draw(); };
   const payIn = $("#f-pay");
