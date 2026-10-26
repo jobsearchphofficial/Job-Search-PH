@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792998208";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792998261";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -1251,8 +1251,11 @@ function viewPost() {
               <div class="hours-ticks" aria-hidden="true">${[4, 5, 6, 7, 8, 9, 10].map((h) => `<span class="${h === 8 ? "rec" : h === 10 ? "warn" : ""}">${h}</span>`).join("")}</div>
             </div>
             <div class="hours-row">
-              <label class="hours-start">Starts at<select id="h-start">${Array.from({ length: 17 }, (_, i) => i + 5).map((h) => `<option value="${h}" ${h === 8 ? "selected" : ""}>${clock(h)}</option>`).join("")}</select></label>
               <p id="h-out" class="hours-out" aria-live="polite"></p>
+            </div>
+            <div class="start-pick" role="radiogroup" aria-label="Start time"><span class="label">Starts at</span>
+              ${[["Morning", [5, 6, 7, 8, 9, 10, 11]], ["Afternoon", [12, 13, 14, 15, 16, 17]], ["Evening", [18, 19, 20, 21]]].map(([g, hs]) => `
+              <div class="sp-group"><span class="sp-label">${g}</span><div class="sp-times">${hs.map((h) => `<label class="sp"><input type="radio" name="hStart" value="${h}" ${h === 8 ? "checked" : ""}><span>${clock(h).replace(":00 ", " ")}</span></label>`).join("")}</div></div>`).join("")}
             </div>
             <input type="hidden" name="hours">
           </div>
@@ -1355,7 +1358,7 @@ function viewPost() {
   const ph = { messenger: "Messenger username or m.me link", phone: "e.g. 0917 123 4567", email: "you@example.com" };
 
   const hoursText = () => {
-    const len = Number($("#h-len").value), st = Number($("#h-start").value);
+    const len = Number($("#h-len").value), st = Number(f.querySelector("[name=hStart]:checked")?.value || 8);
     const end = st + len + (len > 5 ? 1 : 0);
     return `${len} hours a day, ${clock(st)}–${clock(end)}${len > 5 ? " (1-hr break)" : ""}`;
   };
@@ -1409,7 +1412,7 @@ function viewPost() {
     return list.filter((b) => !t || b.toLowerCase().startsWith(t) || b.toLowerCase().split(/[\s.-]+/).some((w) => w.startsWith(t)))
       .map((b) => ({ value: b, html: hl(b, t), meta: "Barangay" }));
   }, () => refresh(), true);
-  $("#h-len").addEventListener("input", refresh); $("#h-start").addEventListener("change", refresh);
+  $("#h-len").addEventListener("input", refresh);
   renderOptions(); refresh();
 
   f.addEventListener("submit", async (e) => {
