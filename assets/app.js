@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793025560";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793029875";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -778,7 +778,7 @@ function card(j, applied, km) {
   return `
   <a class="card ${j.featured ? "card-featured" : ""}" href="#/job/${encodeURIComponent(j.id)}">
     <div class="card-top">
-      <span class="cat-tag">${esc(j.category)}</span>
+      <span class="cat-tag">${esc(j.category === "Other" && j.categoryOther ? j.categoryOther : j.category)}</span>
       ${j.featured ? `<span class="badge badge-featured">Featured</span>` : applied ? `<span class="badge badge-app-new">Applied</span>` : ""}
     </div>
     <h3>${esc(j.title)}</h3>
@@ -810,7 +810,7 @@ async function viewJob(id) {
         <h1>${esc(j.title)}</h1>
         <p class="employer">${esc(j.employerName)}</p>
         <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}</span></p>
-        <ul class="meta"><li>${esc(j.employmentType)}</li>${j.workplace === "household" && j.schedule ? `<li>${esc(j.schedule)}</li>` : ""}<li>${esc(j.category)}</li><li>Posted ${ago(j.approvedAt || j.createdAt)}</li></ul>
+        <ul class="meta"><li>${esc(j.employmentType)}</li>${j.workplace === "household" && j.schedule ? `<li>${esc(j.schedule)}</li>` : ""}<li>${esc(j.category === "Other" && j.categoryOther ? j.categoryOther : j.category)}</li><li>Posted ${ago(j.approvedAt || j.createdAt)}</li></ul>
         <div class="pay-box"><span class="salary salary-lg">${salaryText(j)}</span>${(() => { const m = j.workplace && j.salaryMin ? minimumPay(j.city, j.workplace, j.salaryPeriod) : null; return m && j.salaryMin >= m.amount ? `<span class="minok">${ICON.check}Meets the legal minimum wage</span>` : ""; })()}</div>
         <h2>About the job</h2><p>${nl2br(j.description)}</p>
         ${conditionsHtml(j)}
@@ -1275,7 +1275,8 @@ function viewPost() {
         <section class="pcard" data-needs-workplace>
           <header><span class="num">2</span><div><h2>The job</h2></div></header>
           <label class="fld">Job title *<input name="title" required minlength="3" maxlength="100" placeholder="e.g. Live-in Kasambahay"></label>
-          <div class="fld"><span class="label">Category *</span><div id="cat-pills" class="pills wrap-pills" role="radiogroup"></div></div>
+          <div class="fld"><span class="label">Category *</span><div id="cat-pills" class="pills wrap-pills" role="radiogroup"></div>
+            <label class="fld" id="cat-other" hidden>What kind of job is it? *<input name="categoryOther" maxlength="40" placeholder="e.g. Tutor, Massage therapist, Farm worker"><span class="hint">This helps us add new categories later.</span></label></div>
           <div class="fld" id="arr-field"><span class="label">Live-in or stay-out? *</span>${radioPills("arrangement", [["Live-in", "Live-in"], ["Stay-out", "Stay-out"]], "")}</div>
           <div class="fld"><span class="label">Schedule *</span><div id="sched-pills"></div></div>
         </section>
@@ -1393,7 +1394,7 @@ function viewPost() {
     const arrangement = wp === "household" ? val("arrangement") : "";
     const schedule = val("schedule");
     return {
-      title: g("title"), category: val("category"), employerName: g("employerName"), city: g("city"), area: g("area"),
+      title: g("title"), category: val("category"), categoryOther: val("category") === "Other" ? g("categoryOther").replace(/\s+/g, " ").replace(/^./, (c) => c.toUpperCase()) : "", employerName: g("employerName"), city: g("city"), area: g("area"),
       address: wp === "business" ? g("address") : "",
       workplace: wp, arrangement, schedule,
       employmentType: wp === "household" ? (arrangement || "Live-in") : (schedule || "Full-time"),
@@ -1417,6 +1418,7 @@ function viewPost() {
     return `${len} hours a day, ${clock(st)}–${clock(end)}${len > 5 ? " (1-hr break)" : ""}`;
   };
   const refresh = () => {
+    { const other = val("category") === "Other"; $("#cat-other").hidden = !other; f.categoryOther.required = other; }
     const single = (val("salaryPeriod") || "month") !== "month";
     $("#pay-to").hidden = single; $("#pay-from-label").textContent = single ? `Pay per ${val("salaryPeriod")} *` : "From *";
     $(".pay-row").classList.toggle("single", single);
@@ -1506,6 +1508,7 @@ function viewPost() {
     }
     const okCity = cityOf(f.city.value);
     if (!okCity) return fail("Pick a city or town in Negros Occidental from the list.", f.city);
+    if (val("category") === "Other" && f.categoryOther.value.trim().length < 2) return fail("Tell us what kind of job it is.", f.categoryOther);
     if (workplace() === "business" && f.address.value.trim().length < 8) return fail("Add your full business address: building or unit, and street.", f.address);
     f.city.value = okCity;
     const data = collect();
@@ -1524,6 +1527,7 @@ function viewPost() {
     const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Submitting…";
     try {
       if (!data.address) delete data.address; // older rules don't know this field yet
+      if (!data.categoryOther) delete data.categoryOther;
       await store.createJob(data, contact);
       clearDraft("post");
       jobsCache = null;
@@ -2181,6 +2185,12 @@ async function renderAnalytics(body) {
     seekers.forEach((u) => lv[profileStrength(u).level]++);
     const photoPct = pct(seekers.filter((u) => u.photo).length, seekers.length);
 
+    // "Other" categories typed by employers (normalized so "tutor" and "Tutor " count together)
+    const otherJobs = jobs.filter((j) => j.category === "Other" && j.categoryOther);
+    const otherTotal = otherJobs.length;
+    const otherMap = new Map(); otherJobs.forEach((j) => { const k = j.categoryOther.trim().toLowerCase().replace(/\s+/g, " "); const e = otherMap.get(k) || { label: j.categoryOther.trim().replace(/^./, (c) => c.toUpperCase()), v: 0 }; e.v++; otherMap.set(k, e); });
+    const otherTypes = [...otherMap.values()].sort((a, b) => b.v - a.v).slice(0, 10);
+    const otherLatest = [...otherJobs].sort((a, b) => b.createdAt - a.createdAt).slice(0, 8);
     // funnel (applications in range, by furthest stage reached)
     const reached = (a, stages) => stages.includes(a.status);
     const funnel = [
@@ -2247,6 +2257,9 @@ async function renderAnalytics(body) {
           <div class="an-stack" role="img" aria-label="${levels.map((l) => `${l} ${lv[l]}`).join(", ")}">${levels.map((l) => lv[l] ? `<i class="s-${l.toLowerCase()}" style="flex:${lv[l]}" data-tip="${l}: ${lv[l]} (${pct(lv[l], seekers.length)}%)"></i>` : "").join("") || `<i class="empty-bar" style="flex:1"></i>`}</div>
           <ul class="an-legend">${levels.map((l) => `<li><span class="sw s-${l.toLowerCase()}"></span>${l} <strong>${lv[l]}</strong> <em>${pct(lv[l], seekers.length)}%</em></li>`).join("")}</ul></div>
       </div>
+      <h2 class="an-h">"Other" job types <span class="an-sub">what employers typed when no category fit, all time — promote the common ones to real categories</span></h2>
+      <div class="an-grid two">${anRank(otherTypes, { title: "Most requested", sub: otherTypes.length ? `${otherTotal} post${otherTotal === 1 ? "" : "s"} used “Other”` : "" })}
+        <div class="an-card"><h3>Latest entries</h3>${otherLatest.length ? `<ul class="an-att">${otherLatest.map((j) => `<li><span class="an-why">${esc(j.categoryOther)}</span><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.city)} · ${ago(j.createdAt)}</span></li>`).join("")}</ul>` : `<p class="muted small">No “Other” posts yet.</p>`}</div></div>
       <h2 class="an-h">Needs attention <span class="an-sub">${att.length ? `${att.length} item${att.length === 1 ? "" : "s"}` : ""}</span></h2>
       <div class="an-card">${att.length ? `<ul class="an-att">${att.map(([why, j, when]) => `<li><span class="an-why">${esc(why)}</span><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.employerName || "")} · ${esc(j.city)} · ${esc(when)}</span></li>`).join("")}</ul>` : `<p class="muted">Nothing needs attention right now.</p>`}</div>
       <div id="an-tip" class="an-tip" hidden></div>`;
@@ -2255,7 +2268,7 @@ async function renderAnalytics(body) {
     body.querySelectorAll("[data-goto-tab]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); adminTab = a.dataset.gotoTab; viewAdmin(); }));
     $("#an-refresh").addEventListener("click", () => renderAnalytics(body));
     $("#an-csv").addEventListener("click", () => {
-      const rows = [["Job ID", "Title", "Employer", "Category", "City", "Workplace", "Status", "Posted", "Pay (monthly equiv.)", "Applicants", "Hired"]].concat(jobs.map((j) => [j.id, j.title, j.employerName, j.category, j.city, j.workplace, j.status, j.createdAt ? new Date(j.createdAt).toISOString().slice(0, 10) : "", Math.round(monthlyEquivalent(j)), appsPer(j), apps.filter((a) => a.jobId === j.id && a.status === "hired").length]));
+      const rows = [["Job ID", "Title", "Employer", "Category", "Other type", "City", "Workplace", "Status", "Posted", "Pay (monthly equiv.)", "Applicants", "Hired"]].concat(jobs.map((j) => [j.id, j.title, j.employerName, j.category, j.categoryOther || "", j.city, j.workplace, j.status, j.createdAt ? new Date(j.createdAt).toISOString().slice(0, 10) : "", Math.round(monthlyEquivalent(j)), appsPer(j), apps.filter((a) => a.jobId === j.id && a.status === "hired").length]));
       const csv = rows.map((r) => r.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
       const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = `jsph-jobs-${new Date().toISOString().slice(0, 10)}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     });
@@ -2311,7 +2324,7 @@ async function viewAdmin() {
     body.innerHTML = list.length ? list.map((j) => `
       <div class="admin-item">
         <div><strong>${esc(j.title)}</strong> ${statusBadge(j)} ${j.featured ? `<span class="badge badge-featured">Featured</span>` : ""}
-          <div class="muted small">${esc(j.employerName)} · ${esc(j.city)} · ${esc(j.category)} · ${esc(j.employmentType)} · ${salaryText(j)} · submitted ${ago(j.createdAt)}</div></div>
+          <div class="muted small">${esc(j.employerName)} · ${esc(j.city)} · ${esc(j.category)}${j.categoryOther ? ` (${esc(j.categoryOther)})` : ""} · ${esc(j.employmentType)} · ${salaryText(j)} · submitted ${ago(j.createdAt)}</div></div>
         <details data-contact="${esc(j.id)}"><summary>View details</summary>
           <p>${nl2br(j.description)}</p>${j.requirements ? `<p class="small"><strong>Requirements:</strong><br>${nl2br(j.requirements)}</p>` : ""}
           <p class="small contact-line"><strong>Contact:</strong> <span>loading…</span> · <strong>Owner UID:</strong> ${esc(j.ownerUid)}</p>

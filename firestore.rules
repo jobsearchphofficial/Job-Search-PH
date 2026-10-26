@@ -78,13 +78,14 @@ service cloud.firestore {
     /* ---------- Jobs ---------- */
     function validJob(d) {
       return d.keys().hasOnly([
-          'title','category','employerName','city','employmentType',
+          'title','category','categoryOther','employerName','city','employmentType',
           'salaryMin','salaryMax','salaryPeriod','description','requirements',
           'area','address','workplace','arrangement','schedule','hours','daysOff','daysOffPer','openings','startDate','benefits',
           'reqExperience','reqEducation','reqList',
           'ownerUid','status','featured','createdAt','updatedAt','approvedAt','expiresAt'])
         && str(d.title, 3, 100)
         && str(d.category, 1, 40)
+        && optStr(d.get('categoryOther', null), 40)
         && str(d.employerName, 1, 80)
         && str(d.city, 1, 60)
         && str(d.employmentType, 1, 30)

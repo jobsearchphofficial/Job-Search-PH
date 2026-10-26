@@ -918,3 +918,9 @@ body > .site-footer { flex-shrink: 0; }
 .au-facts > div:last-child { grid-column: 1 / -1; }
 .suspended { text-align: center; }
 .suspended .empty-art { margin: 0 auto 8px; }
+/* Subtle beta label */
+.beta { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 6px; font-size: .62rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--slate); border: 1px solid var(--line); background: transparent; vertical-align: middle; line-height: 1.5; }
+.brand .beta { position: relative; top: -1px; }
+.beta-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--slate-soft); font-size: .8rem; }
+.beta-line .beta { margin-left: 0; }
+@media (max-width: 400px) { .brand .beta { display: none; } }
