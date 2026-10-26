@@ -10,6 +10,8 @@ service cloud.firestore {
     function str(v, min, max) { return v is string && v.size() >= min && v.size() <= max; }
     function optStr(v, max) { return v == null || (v is string && v.size() <= max); }
     function optNum(v) { return v == null || (v is number && v >= 0 && v <= 10000000); }
+    // Banned users can still sign in and read, but can't post, apply, message, report or edit their profile.
+    function notBanned() { return !exists(/databases/$(database)/documents/bans/$(me())); }
     function jobDoc(jobId) { return get(/databases/$(database)/documents/jobs/$(jobId)); }
 
     /* ---------- Daily limits (anti-spam) ----------
@@ -43,7 +45,7 @@ service cloud.firestore {
       return d.keys().hasOnly([
           'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
           'birthDate','gender','jobCategories','jobTypes','experienceYears','skills','workHistory',
-          'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo'])
+          'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email'])
         && d.role in ['jobseeker', 'employer']
         && str(d.fullName, 2, 80)
         && str(d.phone, 7, 20)
@@ -63,12 +65,13 @@ service cloud.firestore {
         && optStr(d.get('resumeFileUrl', null), 1000)
         && optStr(d.get('resumeFileName', null), 200)
         && optStr(d.get('companyName', null), 100)
-        && validPhoto(d.get('photo', null));
+        && validPhoto(d.get('photo', null))
+        && optStr(d.get('email', null), 200);
     }
 
     match /users/{uid} {
       allow read: if (signedIn() && me() == uid) || isAdmin();
-      allow create, update: if signedIn() && me() == uid && validProfile(request.resource.data);
+      allow create, update: if signedIn() && me() == uid && notBanned() && validProfile(request.resource.data);
       allow delete: if (signedIn() && me() == uid) || isAdmin();
     }
 
@@ -111,7 +114,7 @@ service cloud.firestore {
       allow read: if resource.data.status == 'approved'
                   || (signedIn() && resource.data.ownerUid == me())
                   || isAdmin();
-      allow create: if signedIn()
+      allow create: if signedIn() && notBanned()
                     && validJob(request.resource.data)
                     && request.resource.data.ownerUid == me()
                     && request.resource.data.status == 'pending'
@@ -134,7 +137,7 @@ service cloud.firestore {
                     || (signedIn() && (jobDoc(jobId).data.ownerUid == me()
                         || (exists(/databases/$(database)/documents/applications/$(jobId + '_' + me()))
                             && get(/databases/$(database)/documents/applications/$(jobId + '_' + me())).data.status == 'hired')));
-        allow create, update: if signedIn() && docId == 'contact'
+        allow create, update: if signedIn() && notBanned() && docId == 'contact'
                     && getAfter(/databases/$(database)/documents/jobs/$(jobId)).data.ownerUid == me()
                     && request.resource.data.keys().hasOnly(['contactMethod', 'contactValue'])
                     && request.resource.data.contactMethod in ['messenger', 'phone', 'email']
@@ -146,7 +149,7 @@ service cloud.firestore {
     /* ---------- Applications ---------- */
     match /applications/{appId} {
       allow read: if (signedIn() && (resource.data.applicantUid == me() || resource.data.employerUid == me())) || isAdmin();
-      allow create: if signedIn()
+      allow create: if signedIn() && notBanned()
                     && appId == request.resource.data.jobId + '_' + me()
                     && request.resource.data.keys().hasOnly([
                          'jobId','jobTitle','jobCity','jobSchedule','jobArrangement','employerName','employerUid','applicantUid','applicant',
@@ -175,7 +178,7 @@ service cloud.firestore {
                               ? request.resource.data.declinedAt == request.time
                               : request.resource.data.get('declinedAt', null) == null));
       // The jobseeker accepts or declines a job offer. Only they can make someone "hired".
-      allow update: if signedIn() && resource.data.applicantUid == me()
+      allow update: if signedIn() && notBanned() && resource.data.applicantUid == me()
                     && resource.data.status == 'offered'
                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'acceptedAt', 'declinedAt'])
                     && ((request.resource.data.status == 'hired' && request.resource.data.acceptedAt == request.time)
@@ -197,7 +200,7 @@ service cloud.firestore {
               || (app().get('declinedAt', null) != null && request.time < app().declinedAt + duration.value(48, 'h'));
         }
         allow read: if party() || isAdmin();
-        allow create: if party()
+        allow create: if party() && notBanned()
                       && chatOpen()
                       && request.resource.data.keys().hasOnly(['fromUid', 'text', 'createdAt'])
                       && request.resource.data.fromUid == me()
@@ -241,7 +244,7 @@ service cloud.firestore {
       allow update: if signedIn() && resource.data.toUid == me()
                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
       // Only people connected through an application (or admins) can notify someone.
-      allow create: if signedIn()
+      allow create: if signedIn() && notBanned()
                     && request.resource.data.keys().hasOnly(['toUid','fromUid','type','title','body','link','appId','jobId','read','createdAt'])
                     && request.resource.data.fromUid == me()
                     && request.resource.data.toUid != me()
@@ -275,7 +278,7 @@ service cloud.firestore {
 
     /* ---------- Reports ---------- */
     match /reports/{reportId} {
-      allow create: if signedIn() && bumped('reports')
+      allow create: if signedIn() && notBanned() && bumped('reports')
                     && request.resource.data.keys().hasOnly(['jobId', 'reason', 'details', 'createdAt'])
                     && str(request.resource.data.jobId, 1, 64)
                     && request.resource.data.reason in ['fee', 'scam', 'illegal', 'wrong', 'filled', 'other']
@@ -303,6 +306,14 @@ service cloud.firestore {
                     && cnt('applies', 10) && cnt('posts', 5) && mcnt('postsM', 5) && cnt('messages', 200) && cnt('reports', 5) && cnt('support', 3)
                     && (request.resource.data.get('msgAt', null) == (resource == null ? null : resource.data.get('msgAt', null))
                         || request.resource.data.msgAt == request.time);
+    }
+
+    match /bans/{uid} {
+      allow read: if signedIn() && (me() == uid || isAdmin());
+      allow create, update: if isAdmin()
+                    && request.resource.data.keys().hasOnly(['reason', 'note', 'bannedAt', 'bannedBy', 'name'])
+                    && str(request.resource.data.reason, 1, 80) && str(request.resource.data.get('note', ''), 0, 500);
+      allow delete: if isAdmin();
     }
 
     match /admins/{uid} {

@@ -1,12 +1,12 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793000152";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793021475";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
 const USE_EMULATORS = ["localhost", "127.0.0.1"].includes(location.hostname) && new URLSearchParams(location.search).has("emu");
 
 let A, F, S, auth, db, storage;
-let state = { user: null, profile: null, isAdmin: false, ready: false };
+let state = { user: null, profile: null, isAdmin: false, banned: null, ready: false };
 const listeners = new Set();
 const emit = () => listeners.forEach((cb) => cb({ ...state }));
 
@@ -26,7 +26,7 @@ const toMs = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : v ??
 const norm = (snap) => {
   const d = snap.data();
   const out = { id: snap.id, ...d };
-  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt", "endRequestedAt", "endedAt", "acceptedAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
+  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt", "endRequestedAt", "endedAt", "acceptedAt", "bannedAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
   return out;
 };
 const jobsQ = async (...c) => (await F.getDocs(F.query(F.collection(db, "jobs"), ...c))).docs.map(norm);
@@ -42,12 +42,13 @@ export function ageFrom(birthDate) {
 }
 
 async function loadProfile(user) {
-  if (!user) return { profile: null, isAdmin: false };
-  const [p, a] = await Promise.all([
+  if (!user) return { profile: null, isAdmin: false, banned: null };
+  const [p, a, b] = await Promise.all([
     F.getDoc(F.doc(db, "users", user.uid)).catch(() => null),
     F.getDoc(F.doc(db, "admins", user.uid)).catch(() => null),
+    F.getDoc(F.doc(db, "bans", user.uid)).catch(() => null),
   ]);
-  return { profile: p?.exists() ? norm(p) : null, isAdmin: !!a?.exists() };
+  return { profile: p?.exists() ? norm(p) : null, isAdmin: !!a?.exists(), banned: b?.exists() ? norm(b) : null };
 }
 
 // applies, messages, reports, support: per day. posts: per calendar month (Pro may raise this later; also update the 5 in firestore.rules mcnt).
@@ -111,7 +112,7 @@ export const store = {
   async saveProfile(data) {
     const ref = F.doc(db, "users", uid());
     const exists = !!state.profile;
-    const payload = { ...data, consent: true, updatedAt: F.serverTimestamp() };
+    const payload = { ...data, consent: true, email: auth.currentUser?.email || "", updatedAt: F.serverTimestamp() };
     if (!exists) payload.createdAt = F.serverTimestamp();
     await F.setDoc(ref, payload, { merge: true });
     const extra = await loadProfile(auth.currentUser);
@@ -291,9 +292,21 @@ export const store = {
   // Admin analytics: everything in one go (fine at early scale; capped per collection).
   async adminAll() {
     const q = async (c) => (await F.getDocs(F.query(F.collection(db, c), F.limit(5000)))).docs.map(norm);
-    const [users, jobs, apps, reports, support] = await Promise.all([q("users"), q("jobs"), q("applications"), q("reports").catch(() => []), q("support").catch(() => [])]);
-    return { users, jobs, apps, reports, support };
+    const [users, jobs, apps, reports, support, bans] = await Promise.all([q("users"), q("jobs"), q("applications"), q("reports").catch(() => []), q("support").catch(() => []), q("bans").catch(() => [])]);
+    return { users, jobs, apps, reports, support, bans };
   },
+  async adminUser(id) {
+    const [u, b, posts, applied] = await Promise.all([
+      F.getDoc(F.doc(db, "users", id)), F.getDoc(F.doc(db, "bans", id)).catch(() => null),
+      jobsQ(F.where("ownerUid", "==", id)), appsQ(F.where("applicantUid", "==", id)),
+    ]);
+    const received = (await appsQ(F.where("employerUid", "==", id)).catch(() => []));
+    return { user: u.exists() ? norm(u) : null, ban: b?.exists() ? norm(b) : null, posts, applied, received };
+  },
+  async ban(id, { reason, note, name }) {
+    await F.setDoc(F.doc(db, "bans", id), { reason, note: note || "", name: name || "", bannedAt: F.serverTimestamp(), bannedBy: uid() });
+  },
+  async unban(id) { await F.deleteDoc(F.doc(db, "bans", id)); },
   async listSupport() {
     const s = await F.getDocs(F.query(F.collection(db, "support"), F.orderBy("createdAt", "desc"), F.limit(200)));
     return s.docs.map(norm);

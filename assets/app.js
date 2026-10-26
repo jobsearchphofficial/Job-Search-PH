@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793000152";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793021475";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -1951,6 +1951,146 @@ async function viewChat(appId) {
 let adminTab = "analytics";
 let anRange = 30;
 const adminJobs = {};
+/* ---------------- Suspended accounts ---------------- */
+function viewSuspended(ban) {
+  document.title = "Account suspended | Job Search PH";
+  app.innerHTML = `<div class="empty suspended">
+    <div class="empty-art">${GI.shield}</div>
+    <h1>Your account is suspended</h1>
+    <p class="muted">You can't post jobs, apply, send messages or edit your profile right now.</p>
+    ${ban.reason ? `<p><strong>Reason:</strong> ${esc(ban.reason)}</p>` : ""}
+    <p class="muted small">If you think this is a mistake, contact us and we'll review it.</p>
+    <p><a class="btn btn-primary" href="#/support">Contact support</a> <button class="btn btn-ghost" id="sus-out">Sign out</button></p></div>`;
+  $("#sus-out").addEventListener("click", async () => { await store.signOut(); location.hash = "#/"; });
+}
+
+/* ---------------- Admin: users ---------------- */
+const BAN_REASONS = ["Scam or asking for money", "Fake or misleading job posts", "Harassment or abusive messages", "Fake profile or impersonation", "Spam", "Underage user", "Other"];
+let usersFilter = { q: "", role: "all", sort: "new" };
+async function renderUsers(body) {
+  body.innerHTML = SK.rows(6);
+  let data;
+  try { data = await store.adminAll(); } catch (e) { console.error(e); body.innerHTML = `<div class="empty"><p>Couldn't load users (${esc(e.code || e.message)}).</p></div>`; return; }
+  const bans = Object.fromEntries(data.bans.map((b) => [b.id, b]));
+  const postsBy = {}, appsBy = {}, reportsBy = {};
+  data.jobs.forEach((j) => (postsBy[j.ownerUid] = (postsBy[j.ownerUid] || 0) + 1));
+  data.apps.forEach((a) => (appsBy[a.applicantUid] = (appsBy[a.applicantUid] || 0) + 1));
+  const jobOwner = Object.fromEntries(data.jobs.map((j) => [j.id, j.ownerUid]));
+  data.reports.forEach((r) => { const o = jobOwner[r.jobId]; if (o) reportsBy[o] = (reportsBy[o] || 0) + 1; });
+  const draw = () => {
+    const q = usersFilter.q.trim().toLowerCase();
+    let list = data.users.filter((u) => {
+      if (usersFilter.role === "banned") { if (!bans[u.id]) return false; }
+      else if (usersFilter.role === "reported") { if (!reportsBy[u.id]) return false; }
+      else if (usersFilter.role !== "all" && u.role !== usersFilter.role) return false;
+      return !q || [u.fullName, u.email, u.phone, u.city, u.companyName, u.id].some((v) => String(v || "").toLowerCase().includes(q));
+    });
+    list.sort(usersFilter.sort === "name" ? (a, b) => String(a.fullName).localeCompare(String(b.fullName)) : (a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const n = (f) => data.users.filter(f).length;
+    const chips = [["all", "All", data.users.length], ["jobseeker", "Jobseekers", n((u) => u.role === "jobseeker")], ["employer", "Employers", n((u) => u.role === "employer")], ["reported", "Reported", n((u) => reportsBy[u.id])], ["banned", "Banned", n((u) => bans[u.id])]];
+    body.innerHTML = `
+      <div class="us-bar">
+        <label class="us-search">${ICON.search}<input type="search" id="us-q" placeholder="Search name, email, phone or city" value="${esc(usersFilter.q)}" autocomplete="off"></label>
+        <select id="us-sort" aria-label="Sort"><option value="new" ${usersFilter.sort === "new" ? "selected" : ""}>Newest first</option><option value="name" ${usersFilter.sort === "name" ? "selected" : ""}>Name A–Z</option></select>
+      </div>
+      <div class="seg-mini us-chips" role="radiogroup">${chips.map(([k, l, c]) => `<button type="button" role="radio" aria-checked="${usersFilter.role === k}" class="${usersFilter.role === k ? "on" : ""}" data-role-f="${k}">${l} <span class="count">${c}</span></button>`).join("")}</div>
+      <p class="an-sub us-count">${list.length} user${list.length === 1 ? "" : "s"}</p>
+      ${list.length ? `<div class="us-list">${list.slice(0, 300).map((u) => `
+        <a class="us-row ${bans[u.id] ? "is-banned" : ""}" href="#/admin/user/${encodeURIComponent(u.id)}">
+          ${avatar(u.fullName, u.photo, "sm")}
+          <span class="us-main"><strong>${esc(u.fullName || "(no name)")}</strong>${u.role === "employer" && u.companyName ? ` <span class="muted">· ${esc(u.companyName)}</span>` : ""}
+            <span class="muted small">${esc(u.email || u.phone || "")}${u.city ? ` · ${esc(u.city)}` : ""} · joined ${u.createdAt ? ago(u.createdAt) : "–"}</span></span>
+          <span class="us-tags">
+            <span class="badge ${u.role === "employer" ? "badge-app-shortlisted" : "badge-app-new"}">${u.role === "employer" ? "Employer" : "Jobseeker"}</span>
+            ${u.role === "jobseeker" ? strengthChip(u) : ""}
+            <span class="muted small">${u.role === "employer" ? `${postsBy[u.id] || 0} post${postsBy[u.id] === 1 ? "" : "s"}` : `${appsBy[u.id] || 0} application${appsBy[u.id] === 1 ? "" : "s"}`}</span>
+            ${reportsBy[u.id] ? `<span class="badge badge-app-shortlisted">${reportsBy[u.id]} report${reportsBy[u.id] === 1 ? "" : "s"}</span>` : ""}
+            ${bans[u.id] ? `<span class="badge badge-banned">Banned</span>` : ""}
+          </span>
+        </a>`).join("")}</div>${list.length > 300 ? `<p class="muted small">Showing the first 300. Search to narrow it down.</p>` : ""}` : `<div class="empty"><p>No users match.</p></div>`}`;
+    const qi = $("#us-q");
+    qi.addEventListener("input", () => { usersFilter.q = qi.value; const pos = qi.selectionStart; draw(); const n2 = $("#us-q"); n2.focus(); n2.setSelectionRange(pos, pos); });
+    $("#us-sort").addEventListener("change", (e) => { usersFilter.sort = e.target.value; draw(); });
+    body.querySelectorAll("[data-role-f]").forEach((b) => b.addEventListener("click", () => { usersFilter.role = b.dataset.roleF; draw(); }));
+  };
+  draw();
+}
+
+async function viewAdminUser(id) {
+  document.title = "User | Admin | Job Search PH";
+  const { user, isAdmin } = getAuthState();
+  if (!user) return goSignIn("Admin sign in");
+  if (!isAdmin) { app.innerHTML = `<div class="empty"><h1>Not authorized</h1></div>`; return; }
+  app.innerHTML = SK.rows(5);
+  let d;
+  try { d = await store.adminUser(id); } catch (e) { console.error(e); app.innerHTML = `<div class="empty"><p>Couldn't load this user (${esc(e.code || e.message)}).</p></div>`; return; }
+  const u = d.user;
+  if (!u) { app.innerHTML = `<div class="empty"><h1>User not found</h1><p class="muted">They may have deleted their profile.</p><p><a class="btn btn-ghost" href="#/admin/users">Back to users</a></p></div>`; return; }
+  const ban = d.ban; const isSeeker = u.role === "jobseeker";
+  const fact = (k, v) => `<div><dt>${k}</dt><dd>${v || `<span class="none">Not added</span>`}</dd></div>`;
+  const m = messengerUrl(u.messenger);
+  const live = d.posts.filter((j) => isLive(j));
+  const facts = [
+    fact("Email", u.email ? `<a href="mailto:${esc(u.email)}">${esc(u.email)}</a>` : ""), fact("Phone", u.phone ? `<span class="copyable">${esc(u.phone)}</span>` : ""),
+    fact("Messenger", m ? `<a href="${esc(m)}" target="_blank" rel="noopener nofollow">${esc(u.messenger)}</a>` : ""), fact("City", esc(u.city || "")),
+    fact("Joined", u.createdAt ? new Date(u.createdAt).toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }) : ""),
+    fact("Last updated", u.updatedAt ? ago(u.updatedAt) : ""),
+    ...(isSeeker ? [fact("Age", ageFrom(u.birthDate) != null ? `${ageFrom(u.birthDate)} (born ${esc(u.birthDate)})` : ""), fact("Gender", esc(u.gender || "")),
+      fact("Experience", u.experienceYears != null && u.experienceYears !== "" ? `${esc(u.experienceYears)} years` : ""), fact("Can start", esc(u.availability || "")),
+      fact("Education", esc(u.education || "")), fact("Resume", safeUrl(u.resumeUrl) ? `<a href="${esc(safeUrl(u.resumeUrl))}" target="_blank" rel="noopener nofollow">Open link</a>` : "")]
+      : [fact("Household / business", esc(u.companyName || "")), fact("Job posts", `${d.posts.length} total · ${live.length} live`)]),
+    fact("User ID", `<span class="copyable small">${esc(u.id)}</span>`),
+  ];
+  const appRow = (a, who) => `<li><a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a><span class="muted small">${who} · ${ago(a.createdAt)}</span>${appBadge(a.status, true)}</li>`;
+  app.innerHTML = `
+    <p><a href="#/admin/users" class="back">← Users</a></p>
+    <div class="au-wrap">
+      <section class="au-main">
+        <header class="au-head ${ban ? "is-banned" : ""}">
+          ${avatar(u.fullName, u.photo, "lg")}
+          <div><h1>${esc(u.fullName || "(no name)")}</h1>
+            <p class="muted">${isSeeker ? "Jobseeker" : "Employer"}${u.companyName && !isSeeker ? ` · ${esc(u.companyName)}` : ""}${u.city ? ` · ${esc(u.city)}` : ""}</p>
+            <div class="au-tags">${isSeeker ? strengthChip(u) : ""}${ban ? `<span class="badge badge-banned">Banned</span>` : `<span class="badge badge-approved">Active</span>`}</div></div>
+        </header>
+        <dl class="ap-facts au-facts">${facts.join("")}</dl>
+        ${isSeeker ? `<div class="ap-long au-long">
+          <div><span class="label">Jobs they want</span>${Array.isArray(u.jobCategories) && u.jobCategories.length ? `<ul class="meta">${u.jobCategories.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : `<p><span class="none">Not added</span></p>`}</div>
+          <div><span class="label">Skills</span><p>${u.skills ? esc(u.skills) : `<span class="none">Not added</span>`}</p></div>
+          <div><span class="label">Work history</span><p>${u.workHistory ? nl2br(u.workHistory) : `<span class="none">Not added</span>`}</p></div></div>` : ""}
+        ${!isSeeker ? `<h2>Job posts (${d.posts.length})</h2>${d.posts.length ? `<ul class="au-list">${d.posts.sort((a, b) => b.createdAt - a.createdAt).map((j) => `<li><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.city)} · ${salaryText(j)} · ${ago(j.createdAt)} · ${d.received.filter((a) => a.jobId === j.id).length} applicants</span>${statusBadge(j)}</li>`).join("")}</ul>` : `<p class="muted">No posts.</p>`}` : ""}
+        ${isSeeker ? `<h2>Applications (${d.applied.length})</h2>${d.applied.length ? `<ul class="au-list">${d.applied.sort((a, b) => b.createdAt - a.createdAt).map((a) => appRow(a, esc(a.employerName || ""))).join("")}</ul>` : `<p class="muted">No applications.</p>`}` : ""}
+      </section>
+      <aside class="au-side">
+        <div class="an-card au-ban">
+          ${ban ? `<h3>Banned</h3><p class="small"><strong>Reason:</strong> ${esc(ban.reason)}</p>${ban.note ? `<p class="small muted">${esc(ban.note)}</p>` : ""}<p class="small muted">Since ${ban.bannedAt ? ago(ban.bannedAt) : "–"}</p>
+            <button class="btn btn-ghost btn-block" id="au-unban">Lift ban</button>`
+          : `<h3>Ban this user</h3><p class="small muted">They'll still be able to sign in, but can't post, apply, message, report or edit their profile. They'll see a "suspended" screen with a link to support.</p>
+            <label class="small">Reason<select id="au-reason">${BAN_REASONS.map((r) => `<option>${esc(r)}</option>`).join("")}</select></label>
+            <label class="small">Note (optional, shown only to admins)<textarea id="au-note" rows="2" maxlength="500" placeholder="What happened?"></textarea></label>
+            ${!isSeeker && live.length ? `<label class="check small"><input type="checkbox" id="au-close" checked><span>Also close their ${live.length} live post${live.length === 1 ? "" : "s"}</span></label>` : ""}
+            <button class="btn btn-danger btn-block" id="au-ban">Ban user</button>`}
+        </div>
+        ${user.uid === id ? `<p class="small muted">This is your own account.</p>` : ""}
+      </aside>
+    </div>`;
+  $("#au-ban")?.addEventListener("click", async () => {
+    if (id === user.uid) return toast("You can't ban yourself.");
+    const reason = $("#au-reason").value, note = $("#au-note").value.trim(), closeAll = $("#au-close")?.checked;
+    const ok = await showDialog({ title: `Ban ${esc(u.fullName || "this user")}?`, body: `Reason: ${esc(reason)}.${closeAll ? ` Their ${live.length} live post${live.length === 1 ? "" : "s"} will be closed.` : ""} You can lift the ban later.`, actions: [{ label: "Cancel", value: false }, { label: "Ban user", value: true, primary: true }] });
+    if (!ok) return;
+    try {
+      await store.ban(id, { reason, note, name: u.fullName || "" });
+      if (closeAll) await Promise.all(live.map(async (j) => { await store.updateJob(j.id, { status: "closed" }); await store.clearReportsFor(j.id).catch(() => {}); }));
+      jobsCache = null; toast("User banned"); viewAdminUser(id);
+    } catch (e) { console.error(e); toast(e.code === "permission-denied" ? "Couldn't ban. Publish the latest database rules first." : "Couldn't ban. Try again."); }
+  });
+  $("#au-unban")?.addEventListener("click", async () => {
+    const ok = await showDialog({ title: "Lift the ban?", body: "They'll be able to use Job Search PH normally again. Closed posts stay closed.", actions: [{ label: "Cancel", value: false }, { label: "Lift ban", value: true, primary: true }] });
+    if (!ok) return;
+    try { await store.unban(id); toast("Ban lifted"); viewAdminUser(id); } catch (e) { console.error(e); toast("Couldn't lift the ban. Try again."); }
+  });
+}
+
 /* ---------------- Admin analytics ---------------- */
 const DAYMS = 86400000;
 const phDayOf = (ms) => Math.floor((ms + 8 * 3600000) / DAYMS);
@@ -2133,7 +2273,7 @@ async function viewAdmin() {
   const { user, isAdmin } = getAuthState();
   if (!user) return goSignIn("Admin sign in");
   if (!isAdmin) { app.innerHTML = `<div class="empty"><h1>Not authorized</h1><p class="muted">This account is not an admin.</p></div>`; return; }
-  const tabs = { analytics: "Analytics", pending: "Pending", approved: "Live", reports: "Reports", support: "Support", rejected: "Rejected", closed: "Closed" };
+  const tabs = { analytics: "Analytics", users: "Users", pending: "Pending", approved: "Live", reports: "Reports", support: "Support", rejected: "Rejected", closed: "Closed" };
   app.innerHTML = `
     <div class="page-head"><h1>Admin</h1></div>
     <div class="tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<button role="tab" class="tab ${adminTab === k ? "active" : ""}" data-tab="${k}">${v}${k === "pending" && pendingForAdmin ? ` <span class="count">${pendingForAdmin}</span>` : ""}</button>`).join("")}</div>
@@ -2142,6 +2282,7 @@ async function viewAdmin() {
 
   const body = $("#admin-body");
   if (adminTab === "analytics") return renderAnalytics(body);
+  if (adminTab === "users") return renderUsers(body);
   if (adminTab === "support") {
     const items = await store.listSupport();
     body.innerHTML = items.length ? `<div class="table">${items.map((m) => `
@@ -2365,9 +2506,10 @@ let lastUid;
 async function route() {
   renderNav();
   $("#nav").classList.remove("open"); $("#nav-toggle").setAttribute("aria-expanded", "false");
-  const [, page, arg] = (location.hash || "#/").split("/");
+  const [, page, arg, arg2] = (location.hash || "#/").split("/");
   window.scrollTo(0, 0);
-  const { user, profile } = getAuthState();
+  const { user, profile, banned, isAdmin } = getAuthState();
+  if (user && banned && !isAdmin && !["support", "safety", "terms", "privacy"].includes(page || "")) return viewSuspended(banned);
   // New accounts finish their profile first; browsing jobs and reading info pages still work.
   if (user && !profile && !["", "job", "profile", "signin", "safety", "terms", "privacy", "support"].includes(page || "")) {
     if (!returnTo) returnTo = location.hash;
@@ -2384,7 +2526,8 @@ async function route() {
   if (page === "messages") return viewMessages();
   if (page === "support") return viewSupport();
   if (page === "chat" && arg) return viewChat(decodeURIComponent(arg));
-  if (page === "admin") { if (["analytics", "pending", "approved", "reports", "support", "rejected", "closed"].includes(arg)) adminTab = arg; return viewAdmin(); }
+  if (page === "admin" && arg === "user" && arg2) return viewAdminUser(decodeURIComponent(arg2));
+  if (page === "admin") { if (["analytics", "users", "pending", "approved", "reports", "support", "rejected", "closed"].includes(arg)) adminTab = arg; return viewAdmin(); }
   if (["safety", "terms", "privacy"].includes(page)) return viewStatic(page);
   location.hash = "#/";
 }
