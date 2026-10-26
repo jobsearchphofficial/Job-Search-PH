@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792998261";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792998350";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -1260,7 +1260,7 @@ function viewPost() {
             <input type="hidden" name="hours">
           </div>
           <div class="row row-3">
-            <div class="fld"><span class="label">Days off per month</span>${stepper("daysOff", 4, 0, 15)}</div>
+            <div class="fld"><span class="label">Days off per month</span>${stepper("daysOff", 4, 2, 15)}</div>
             <div class="fld"><span class="label">Openings (max 3)</span>${stepper("openings", 1, 1, 3)}</div>
           </div>
           <label class="fld half">Start date (optional)<input name="startDate" type="date"></label>
@@ -1345,7 +1345,7 @@ function viewPost() {
       employmentType: wp === "household" ? (arrangement || "Live-in") : (schedule || "Full-time"),
       salaryMin: g("salaryMin") ? Number(g("salaryMin")) : null, salaryMax: g("salaryMax") && (val("salaryPeriod") || "month") === "month" ? Number(g("salaryMax")) : null,
       salaryPeriod: val("salaryPeriod") || "month", hours: g("hours"),
-      daysOff: g("daysOff") === "" ? null : Math.max(0, Math.min(15, Number(g("daysOff")))), daysOffPer: "month",
+      daysOff: g("daysOff") === "" ? null : Math.max(2, Math.min(15, Number(g("daysOff")))), daysOffPer: "month",
       openings: Math.max(1, Math.min(3, Number(g("openings")) || 1)), startDate: g("startDate"),
       benefits: [...f.querySelectorAll("[name=benefits]:checked")].map((i) => i.value),
       reqExperience: Number(val("reqExperience") || 0), reqEducation: val("reqEducation") || "Any",
@@ -1443,7 +1443,7 @@ function viewPost() {
     if (data.salaryMax && data.salaryMax < data.salaryMin) return fail("The 'To' amount should be higher than 'From'.", f.salaryMax);
     const min = currentMin();
     if (min && data.salaryMin < min.amount) return fail(`The pay is below the legal minimum of ₱${min.amount.toLocaleString("en-PH")} per ${data.salaryPeriod}. Please raise it.`, f.salaryMin);
-    if (data.workplace === "household" && !(data.daysOff >= 4)) return fail("Household workers are entitled to a rest day every week, so give at least 4 days off a month.", f.daysOff);
+    if (!(data.daysOff >= 2)) return fail("The minimum is 2 days off per month.", f.daysOff);
     const contact = { contactMethod: val("contactMethod"), contactValue: f.contactValue.value.trim() };
     if (!contactLink(contact)) return fail("That contact doesn't look right. Check the username, number or email.", f.contactValue);
     if (contact.contactMethod === "phone" && digits(contact.contactValue).length < 10) return fail("Please enter a complete phone number.", f.contactValue);
