@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792998350";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792998889";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -166,6 +166,34 @@ function strengthCard(p, compact = false) {
     ${next.length ? `<div class="strength-next">${next.map((it) => `<button type="button" class="s-step" data-goto="${it.k}"><span>${esc(it.todo)}</span><em>+${it.pts}</em></button>`).join("")}</div>` : ""}
   </div>`;
 }
+
+/* ---------------- Drafts: keep unsaved form input across refreshes ---------------- */
+const draftKey = (k) => { const u = getAuthState().user?.uid; return u ? `jsph-draft:${k}:${u}` : null; };
+function saveDraft(k, form) {
+  const key = draftKey(k); if (!key || !form) return;
+  const d = {};
+  form.querySelectorAll("input[name], textarea[name], select[name]").forEach((el) => {
+    if (el.type === "file" || el.type === "password") return;
+    if (el.type === "checkbox") { (d[el.name] ||= []); if (el.checked) d[el.name].push(el.value); }
+    else if (el.type === "radio") { if (el.checked) d[el.name] = el.value; }
+    else d[el.name] = el.value;
+  });
+  try { localStorage.setItem(key, JSON.stringify({ t: Date.now(), d })); } catch {}
+}
+function loadDraft(k) {
+  try { const key = draftKey(k); const r = key && JSON.parse(localStorage.getItem(key) || "null"); if (r && Date.now() - r.t < 7 * 86400000) return r.d; } catch {}
+  return null;
+}
+function applyDraft(form, d) {
+  Object.entries(d || {}).forEach(([n, v]) => form.querySelectorAll(`[name="${CSS.escape(n)}"]`).forEach((el) => {
+    if (el.type === "checkbox") el.checked = Array.isArray(v) && v.includes(el.value);
+    else if (el.type === "radio") el.checked = el.value === v;
+    else if (el.type !== "file") el.value = v;
+  }));
+}
+function clearDraft(k) { try { const key = draftKey(k); if (key) localStorage.removeItem(key); } catch {} }
+function autosave(k, form) { let t; const go = () => { clearTimeout(t); t = setTimeout(() => saveDraft(k, form), 300); }; form.addEventListener("input", go); form.addEventListener("change", go); form.addEventListener("click", (e) => { if (e.target.closest("button[type=button]")) go(); }); }
+const draftNote = () => `<p class="draft-note">${ICON.check}<span>We restored what you typed before. </span><button type="button" class="linkbtn" data-draft-clear>Start over</button></p>`;
 
 /* ---------------- Helpers ---------------- */
 // Skeleton placeholders shown while data loads.
@@ -881,10 +909,11 @@ async function renderApplyPanel(j, isOwner) {
       <textarea id="a-msg" name="message" rows="3" maxlength="1000" placeholder="e.g. I have 3 years experience as a yaya and can start next week."></textarea>
       <button class="btn btn-primary btn-block" type="submit">Apply now</button>
     </form>`;
+  { const af = $("#apply-form"); const d = loadDraft(`apply:${j.id}`); if (d) applyDraft(af, d); autosave(`apply:${j.id}`, af); }
   $("#apply-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const btn = e.target.querySelector("button"); btn.disabled = true; btn.textContent = "Sending…";
-    try { await store.apply(j, e.target.message.value.trim()); myAppsCache = null; toast("Application sent"); renderApplyPanel(j, false); }
+    const btn = e.target.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Sending…";
+    try { await store.apply(j, e.target.message.value.trim()); clearDraft(`apply:${j.id}`); myAppsCache = null; toast("Application sent"); renderApplyPanel(j, false); }
     catch (err) {
       console.error(err); btn.disabled = false; btn.textContent = "Apply now";
       if (err.code === "limit-reached") { renderApplyPanel(j, false); return toast(limitMsg.applies); }
@@ -959,6 +988,7 @@ function viewProfile() {
   if (!p.fullName) p.fullName = pendingName || user.displayName || "";
   const isNew = !profile;
   let role = p.role || (isNew ? signupIntent : "") || "";
+  if (isNew && !role) { try { const k = draftKey("role"); role = (k && localStorage.getItem(k)) || ""; } catch {} }
   const guided = isNew && !!signupIntent; // came from "Create a profile", "Apply" or "Post a job"
 
   const maxBirth = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 18); return d.toISOString().slice(0, 10); })();
@@ -1026,7 +1056,15 @@ function viewProfile() {
       if (f.querySelectorAll("[name=jobCategories]:checked").length > 5) { cb.checked = false; toast("Pick up to 5 jobs"); }
     }));
     f.addEventListener("input", (e) => e.target.classList?.remove("invalid"));
+    const pd = loadDraft(`profile:${role}`);
+    if (pd) {
+      applyDraft(f, pd); f.insertAdjacentHTML("afterbegin", draftNote());
+      f.querySelector("[data-draft-clear]").addEventListener("click", () => { clearDraft(`profile:${role}`); location.reload(); });
+      const a = ageFrom(f.birthDate?.value); if (f.birthDate && a != null) $("#age-out").textContent = `${a} years old`;
+    }
+    autosave(`profile:${role}`, f);
     const paintStrength = () => { const box = $("#strength"); if (!box) return; collect(); box.outerHTML = strengthCard(p); };
+    if (pd && role === "jobseeker") setTimeout(paintStrength);
     if (role === "jobseeker") { f.addEventListener("input", paintStrength); f.addEventListener("change", paintStrength); }
     $(".profile-wrap").addEventListener("click", (e) => {
       const b = e.target.closest("[data-goto]"); if (!b) return;
@@ -1086,6 +1124,7 @@ function viewProfile() {
           data.resumeFileUrl = up.url; data.resumeFileName = up.name;
         }
         await store.saveProfile(data);
+        clearDraft(`profile:${role}`); clearDraft("role");
         myAppsCache = null; pendingName = ""; signupIntent = "";
         toast("Profile saved");
         if (isNew || returnTo) finishAuthFlow(); else viewProfile();
@@ -1113,6 +1152,7 @@ function viewProfile() {
     </button>`;
 
   const draw = () => {
+    if (isNew && role) { try { const k = draftKey("role"); if (k) localStorage.setItem(k, role); } catch {} }
     const name = p.fullName || user.displayName || "";
     const step = !role ? 1 : 2;
     app.innerHTML = `
@@ -1245,25 +1285,19 @@ function viewPost() {
 
         <section class="pcard">
           <header><span class="num">5</span><div><h2>Work conditions</h2></div></header>
-          <div class="fld hours-fld"><span class="label">Working hours per day</span>
-            <div class="hours-pick">
-              <input type="range" id="h-len" min="4" max="10" step="1" value="8" aria-label="Hours per day">
-              <div class="hours-ticks" aria-hidden="true">${[4, 5, 6, 7, 8, 9, 10].map((h) => `<span class="${h === 8 ? "rec" : h === 10 ? "warn" : ""}">${h}</span>`).join("")}</div>
+          <div class="fld hours-fld"><span class="label">Working hours</span>
+            <div class="wh">
+              <div class="wh-part"><span class="wh-cap">Starts</span><div class="wh-step"><button type="button" data-wh="hStart" data-d="-1" aria-label="Earlier">−</button><output id="wh-start">8:00 AM</output><button type="button" data-wh="hStart" data-d="1" aria-label="Later">+</button></div></div>
+              <div class="wh-part"><span class="wh-cap">Hours a day</span><div class="wh-step"><button type="button" data-wh="hLen" data-d="-1" aria-label="Fewer hours">−</button><output id="wh-len">8</output><button type="button" data-wh="hLen" data-d="1" aria-label="More hours">+</button></div></div>
+              <div class="wh-sum" aria-live="polite"><strong id="wh-range"></strong><span id="wh-tag" class="h-tag ok"></span></div>
             </div>
-            <div class="hours-row">
-              <p id="h-out" class="hours-out" aria-live="polite"></p>
-            </div>
-            <div class="start-pick" role="radiogroup" aria-label="Start time"><span class="label">Starts at</span>
-              ${[["Morning", [5, 6, 7, 8, 9, 10, 11]], ["Afternoon", [12, 13, 14, 15, 16, 17]], ["Evening", [18, 19, 20, 21]]].map(([g, hs]) => `
-              <div class="sp-group"><span class="sp-label">${g}</span><div class="sp-times">${hs.map((h) => `<label class="sp"><input type="radio" name="hStart" value="${h}" ${h === 8 ? "checked" : ""}><span>${clock(h).replace(":00 ", " ")}</span></label>`).join("")}</div></div>`).join("")}
-            </div>
-            <input type="hidden" name="hours">
+            <input type="hidden" name="hStart" value="8"><input type="hidden" name="hLen" value="8"><input type="hidden" name="hours">
           </div>
           <div class="row row-3">
             <div class="fld"><span class="label">Days off per month</span>${stepper("daysOff", 4, 2, 15)}</div>
             <div class="fld"><span class="label">Openings (max 3)</span>${stepper("openings", 1, 1, 3)}</div>
+            <label class="fld">Start date (optional)<input name="startDate" type="date"></label>
           </div>
-          <label class="fld half">Start date (optional)<input name="startDate" type="date"></label>
           <div class="fld"><span class="label">Benefits</span>
             <div class="chips">${BENEFITS.map((b) => `<label class="chip ${RECOMMENDED.includes(b) ? "rec" : ""}"><input type="checkbox" name="benefits" value="${esc(b)}"><span>${esc(b)}${RECOMMENDED.includes(b) ? `<em>Recommended</em>` : ""}</span></label>`).join("")}</div>
             <p class="hint" id="ben-hint">Posts with SSS, PhilHealth, Pag-IBIG and 13th month pay get more applicants.</p>
@@ -1330,7 +1364,6 @@ function viewPost() {
     $("#ben-hint").textContent = wp === "household"
       ? "SSS, PhilHealth, Pag-IBIG and 13th month pay are pre-selected because the Kasambahay Law requires them for household workers. Posts that include them get more applicants."
       : "Posts with SSS, PhilHealth, Pag-IBIG and 13th month pay get more applicants.";
-    f.querySelectorAll("[data-needs-workplace]").forEach((s) => s.classList.toggle("dim", !workplace()));
   };
 
   const collect = () => {
@@ -1358,7 +1391,7 @@ function viewPost() {
   const ph = { messenger: "Messenger username or m.me link", phone: "e.g. 0917 123 4567", email: "you@example.com" };
 
   const hoursText = () => {
-    const len = Number($("#h-len").value), st = Number(f.querySelector("[name=hStart]:checked")?.value || 8);
+    const len = Number(f.hLen.value) || 8, st = Number(f.hStart.value) || 8;
     const end = st + len + (len > 5 ? 1 : 0);
     return `${len} hours a day, ${clock(st)}–${clock(end)}${len > 5 ? " (1-hr break)" : ""}`;
   };
@@ -1369,8 +1402,11 @@ function viewPost() {
     const liveIn = workplace() === "household" && val("arrangement") === "Live-in";
     $(".hours-fld").hidden = liveIn;
     f.hours.value = liveIn ? "" : hoursText();
-    const len = Number($("#h-len").value);
-    $("#h-out").innerHTML = `<strong>${esc(hoursText())}</strong> <span class="h-tag ${len <= 8 ? "ok" : len === 10 ? "warn" : "mid"}">${len < 8 ? "Short day" : len === 8 ? "Recommended" : len === 9 ? "Long day" : "Discouraged: 10 hours is the most allowed"}</span>`;
+    { const len = Number(f.hLen.value) || 8, st = Number(f.hStart.value) || 8;
+      $("#wh-start").textContent = clock(st); $("#wh-len").textContent = `${len} hrs`;
+      $("#wh-range").textContent = `${clock(st)} – ${clock(st + len + (len > 5 ? 1 : 0))}${len > 5 ? " · incl. 1-hr break" : ""}`;
+      const tag = $("#wh-tag"); tag.className = `h-tag ${len <= 8 ? "ok" : len === 10 ? "warn" : "mid"}`;
+      tag.textContent = len < 8 ? "Short day" : len === 8 ? "Recommended" : len === 9 ? "Long day" : "Discouraged: 10 hrs is the max"; }
     const n = f.description.value.trim().length; counter.textContent = n < 30 ? `${n}/30 characters minimum` : `${n} characters`;
     f.contactValue.placeholder = ph[val("contactMethod")] || "";
     const box = $("#wage-box"); const min = currentMin(); const pay = Number(f.salaryMin.value) || 0; const per = val("salaryPeriod") || "month";
@@ -1396,6 +1432,8 @@ function viewPost() {
   });
   f.addEventListener("input", (e) => { e.target.classList?.remove("invalid"); refresh(); });
   f.addEventListener("click", (e) => {
+    const w = e.target.closest("[data-wh]");
+    if (w) { const i = f[w.dataset.wh]; const [lo, hi] = w.dataset.wh === "hStart" ? [4, 22] : [4, 10]; i.value = Math.max(lo, Math.min(hi, Number(i.value) + Number(w.dataset.d))); return refresh(); }
     const b = e.target.closest("[data-step]"); if (!b) return;
     const i = f[b.dataset.for]; const v = Math.max(Number(i.min), Math.min(Number(i.max), (Number(i.value) || 0) + Number(b.dataset.step)));
     i.value = v; refresh();
@@ -1412,8 +1450,15 @@ function viewPost() {
     return list.filter((b) => !t || b.toLowerCase().startsWith(t) || b.toLowerCase().split(/[\s.-]+/).some((w) => w.startsWith(t)))
       .map((b) => ({ value: b, html: hl(b, t), meta: "Barangay" }));
   }, () => refresh(), true);
-  $("#h-len").addEventListener("input", refresh);
-  renderOptions(); refresh();
+  renderOptions();
+  const draft = loadDraft("post");
+  if (draft) {
+    applyDraft(f, draft); touchedBenefits = true; renderOptions(); applyDraft(f, draft);
+    f.insertAdjacentHTML("afterbegin", draftNote());
+    f.querySelector("[data-draft-clear]").addEventListener("click", () => { clearDraft("post"); viewPost(); });
+  }
+  autosave("post", f);
+  refresh();
 
   f.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -1451,6 +1496,7 @@ function viewPost() {
     try {
       if (!data.address) delete data.address; // older rules don't know this field yet
       await store.createJob(data, contact);
+      clearDraft("post");
       jobsCache = null;
       app.innerHTML = `<div class="empty"><h1>Thanks! Your post is under review.</h1><p class="muted">We'll check it soon. Applicants will appear under My posts once it's live.</p><p><a class="btn btn-primary" href="#/my">Go to My posts</a> <a class="btn btn-ghost" href="#/post" id="again">Post another</a></p></div>`;
       $("#again").addEventListener("click", (ev) => { ev.preventDefault(); viewPost(); });
