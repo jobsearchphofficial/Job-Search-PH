@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792995019";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792995723";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -491,9 +491,10 @@ document.addEventListener("click", async (e) => {
 /* ---------------- Search helpers ---------------- */
 const PAY_MIN = 6500, PAY_MAX = 30000;
 const payLabel = (v) => (Number(v) > PAY_MIN ? `₱${Number(v).toLocaleString("en-PH")}+ / month` : "Any (₱6,500+)");
+const clock = (h) => { h = ((h % 24) + 24) % 24; return `${h % 12 || 12}:00 ${h < 12 ? "AM" : "PM"}`; };
 const hl = (text, t) => { const i = text.toLowerCase().indexOf(t); return i < 0 ? esc(text) : `${esc(text.slice(0, i))}<mark>${esc(text.slice(i, i + t.length))}</mark>${esc(text.slice(i + t.length))}`; };
 // Lightweight combobox: shows suggestions as you type; arrows + Enter to pick, Esc to close.
-function autocomplete(input, list, suggest, onPick) {
+function autocomplete(input, list, suggest, onPick, openOnFocus = false) {
   let items = [], active = -1;
   const close = () => { list.hidden = true; input.setAttribute("aria-expanded", "false"); active = -1; };
   const paint = () => {
@@ -504,7 +505,7 @@ function autocomplete(input, list, suggest, onPick) {
   const open = () => { items = suggest(input.value); active = -1; paint(); };
   const pick = (i) => { const it = items[i]; if (!it) return; input.value = it.value; close(); onPick(it.value); };
   input.addEventListener("input", open);
-  input.addEventListener("focus", () => { if (input.value) open(); });
+  input.addEventListener("focus", () => { if (input.value || openOnFocus) open(); });
   input.addEventListener("keydown", (e) => {
     if (list.hidden) return;
     if (e.key === "ArrowDown") { e.preventDefault(); active = (active + 1) % items.length; paint(); }
@@ -688,7 +689,7 @@ async function viewList() {
 }
 
 function card(j, applied, km) {
-  const perks = (j.benefits || []).filter((b) => ["Free meals", "Free lodging", "SSS", "13th month pay"].includes(b)).slice(0, 3);
+  const perks = Array.isArray(j.benefits) ? j.benefits : [];
   return `
   <a class="card ${j.featured ? "card-featured" : ""}" href="#/job/${encodeURIComponent(j.id)}">
     <div class="card-top">
@@ -1167,8 +1168,12 @@ function viewPost() {
         <section class="pcard">
           <header><span class="num">3</span><div><h2>Location</h2></div></header>
           <div class="row">
-            <label class="fld">City or municipality *<select name="city" required><option value="">Choose…</option>${opts(cityList, cityList.includes(profile.city) ? profile.city : "")}</select></label>
-            <label class="fld">Barangay or area<input name="area" maxlength="80" placeholder="e.g. Mandalagan"></label>
+            <div class="fld"><label for="p-city">City or municipality *</label><div class="field ac boxed"><span class="ico">${ICON.pin}</span>
+              <input id="p-city" name="city" required autocomplete="off" role="combobox" aria-expanded="false" aria-controls="p-city-list" aria-autocomplete="list" placeholder="Type a city or town" value="${esc(cityList.includes(profile.city) ? profile.city : "")}">
+              <ul class="ac-list" id="p-city-list" role="listbox" hidden></ul></div></div>
+            <div class="fld"><label for="p-area">Barangay or area</label><div class="field ac boxed"><span class="ico">${ICON.pin}</span>
+              <input id="p-area" name="area" maxlength="80" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="p-area-list" aria-autocomplete="list" placeholder="e.g. Mandalagan">
+              <ul class="ac-list" id="p-area-list" role="listbox" hidden></ul></div></div>
           </div>
           <p class="hint">The area helps jobseekers search nearby. Don't include house numbers.</p>
         </section>
@@ -1176,8 +1181,8 @@ function viewPost() {
         <section class="pcard">
           <header><span class="num">4</span><div><h2>Pay</h2></div></header>
           <div class="pay-row">
-            <label class="fld money"><span>From *</span><span class="peso">₱</span><input name="salaryMin" type="number" min="1" step="1" required inputmode="numeric" placeholder="6,500"></label>
-            <label class="fld money"><span>To</span><span class="peso">₱</span><input name="salaryMax" type="number" min="1" step="1" inputmode="numeric" placeholder="Optional"></label>
+            <label class="fld money"><span id="pay-from-label">From *</span><span class="peso">₱</span><input name="salaryMin" type="number" min="1" step="1" required inputmode="numeric" placeholder="6,500"></label>
+            <label class="fld money" id="pay-to"><span>To</span><span class="peso">₱</span><input name="salaryMax" type="number" min="1" step="1" inputmode="numeric" placeholder="Optional"></label>
             <div class="fld"><span class="label">Per</span>${radioPills("salaryPeriod", [["month", "Month"], ["day", "Day"], ["hour", "Hour"]], "month", "tight")}</div>
           </div>
           <div id="wage-box" class="wage-box" aria-live="polite"></div>
@@ -1185,8 +1190,18 @@ function viewPost() {
 
         <section class="pcard">
           <header><span class="num">5</span><div><h2>Work conditions</h2></div></header>
+          <div class="fld hours-fld"><span class="label">Working hours per day</span>
+            <div class="hours-pick">
+              <input type="range" id="h-len" min="4" max="10" step="1" value="8" aria-label="Hours per day">
+              <div class="hours-ticks" aria-hidden="true">${[4, 5, 6, 7, 8, 9, 10].map((h) => `<span class="${h === 8 ? "rec" : h === 10 ? "warn" : ""}">${h}</span>`).join("")}</div>
+            </div>
+            <div class="hours-row">
+              <label class="hours-start">Starts at<select id="h-start">${Array.from({ length: 17 }, (_, i) => i + 5).map((h) => `<option value="${h}" ${h === 8 ? "selected" : ""}>${clock(h)}</option>`).join("")}</select></label>
+              <p id="h-out" class="hours-out" aria-live="polite"></p>
+            </div>
+            <input type="hidden" name="hours">
+          </div>
           <div class="row row-3">
-            <label class="fld">Working hours<input name="hours" maxlength="60" placeholder="e.g. 7am–6pm"></label>
             <div class="fld"><span class="label">Days off per month</span>${stepper("daysOff", 4, 0, 15)}</div>
             <div class="fld"><span class="label">Openings (max 3)</span>${stepper("openings", 1, 1, 3)}</div>
           </div>
@@ -1203,7 +1218,6 @@ function viewPost() {
           <div class="fld"><span class="label">Education</span>${radioPills("reqEducation", REQ_EDUCATION.map((e) => [e, e]), "Any")}</div>
           <div class="fld"><span class="label">Skills &amp; documents</span><div id="req-chips" class="chips"></div></div>
           <label class="fld">Other requirements<textarea name="requirements" maxlength="2000" rows="3" placeholder="Anything else, one per line"></textarea></label>
-          <p class="hint">All applicants are 18 or older. To follow the Anti-Age Discrimination Act, posts can't set an age range.</p>
         </section>
 
         <section class="pcard">
@@ -1268,7 +1282,7 @@ function viewPost() {
       title: g("title"), category: val("category"), employerName: g("employerName"), city: g("city"), area: g("area"),
       workplace: wp, arrangement, schedule,
       employmentType: wp === "household" ? (arrangement || "Live-in") : (schedule || "Full-time"),
-      salaryMin: g("salaryMin") ? Number(g("salaryMin")) : null, salaryMax: g("salaryMax") ? Number(g("salaryMax")) : null,
+      salaryMin: g("salaryMin") ? Number(g("salaryMin")) : null, salaryMax: g("salaryMax") && (val("salaryPeriod") || "month") === "month" ? Number(g("salaryMax")) : null,
       salaryPeriod: val("salaryPeriod") || "month", hours: g("hours"),
       daysOff: g("daysOff") === "" ? null : Math.max(0, Math.min(15, Number(g("daysOff")))), daysOffPer: "month",
       openings: Math.max(1, Math.min(3, Number(g("openings")) || 1)), startDate: g("startDate"),
@@ -1282,7 +1296,18 @@ function viewPost() {
   const counter = document.createElement("p"); counter.className = "hint"; f.description.after(counter);
   const ph = { messenger: "Messenger username or m.me link", phone: "e.g. 0917 123 4567", email: "you@example.com" };
 
+  const hoursText = () => {
+    const len = Number($("#h-len").value), st = Number($("#h-start").value);
+    const end = st + len + (len > 5 ? 1 : 0);
+    return `${len} hours a day, ${clock(st)}–${clock(end)}${len > 5 ? " (1-hr break)" : ""}`;
+  };
   const refresh = () => {
+    const single = (val("salaryPeriod") || "month") !== "month";
+    $("#pay-to").hidden = single; $("#pay-from-label").textContent = single ? `Pay per ${val("salaryPeriod")} *` : "From *";
+    $(".pay-row").classList.toggle("single", single);
+    f.hours.value = hoursText();
+    const len = Number($("#h-len").value);
+    $("#h-out").innerHTML = `<strong>${esc(hoursText())}</strong> <span class="h-tag ${len <= 8 ? "ok" : len === 10 ? "warn" : "mid"}">${len < 8 ? "Short day" : len === 8 ? "Recommended" : len === 9 ? "Long day" : "Discouraged: 10 hours is the most allowed"}</span>`;
     const n = f.description.value.trim().length; counter.textContent = n < 30 ? `${n}/30 characters minimum` : `${n} characters`;
     f.contactValue.placeholder = ph[val("contactMethod")] || "";
     const box = $("#wage-box"); const min = currentMin(); const pay = Number(f.salaryMin.value) || 0; const per = val("salaryPeriod") || "month";
@@ -1312,6 +1337,19 @@ function viewPost() {
     const i = f[b.dataset.for]; const v = Math.max(Number(i.min), Math.min(Number(i.max), (Number(i.value) || 0) + Number(b.dataset.step)));
     i.value = v; refresh();
   });
+  const cityOf = (v) => { const t = String(v || "").trim().toLowerCase().replace(/ city$/, ""); return cityList.find((c) => c.toLowerCase() === t || c.toLowerCase().replace(/ city$/, "") === t) || ""; };
+  autocomplete(f.city, $("#p-city-list"), (term) => {
+    const t = term.trim().toLowerCase().replace(/ city$/, "");
+    return cityList.filter((c) => !t || c.toLowerCase().startsWith(t) || c.toLowerCase().split(/[\s.-]+/).some((w) => w && w.startsWith(t)))
+      .map((c) => ({ value: c, html: hl(c, t), meta: /City$/.test(c) ? "City" : "Town" })).slice(0, 40);
+  }, (v) => { f.area.value = ""; refresh(); f.area.focus(); }, true);
+  f.city.addEventListener("blur", () => setTimeout(() => { const c = cityOf(f.city.value); if (c) f.city.value = c; refresh(); }, 150));
+  autocomplete(f.area, $("#p-area-list"), (term) => {
+    const t = term.trim().toLowerCase(); const list = BARANGAYS[cityOf(f.city.value)] || [];
+    return list.filter((b) => !t || b.toLowerCase().startsWith(t) || b.toLowerCase().split(/[\s.-]+/).some((w) => w.startsWith(t)))
+      .map((b) => ({ value: b, html: hl(b, t), meta: "Barangay" }));
+  }, () => refresh(), true);
+  $("#h-len").addEventListener("input", refresh); $("#h-start").addEventListener("change", refresh);
   renderOptions(); refresh();
 
   f.addEventListener("submit", async (e) => {
@@ -1334,6 +1372,9 @@ function viewPost() {
       if (bad?.type === "radio") { target?.classList.add("flash"); setTimeout(() => target?.classList.remove("flash"), 1600); }
       return fail(msgs[bad?.name] || "Please complete the highlighted field.", bad?.type === "radio" ? null : bad);
     }
+    const okCity = cityOf(f.city.value);
+    if (!okCity) return fail("Pick a city or town in Negros Occidental from the list.", f.city);
+    f.city.value = okCity;
     const data = collect();
     if (data.salaryMax && data.salaryMax < data.salaryMin) return fail("The 'To' amount should be higher than 'From'.", f.salaryMax);
     const min = currentMin();
