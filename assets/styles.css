@@ -256,6 +256,10 @@ legend { font-weight: 600; padding: 4px 12px; background: var(--indigo-soft); co
 .badge-app-shortlisted { background: var(--peach); color: var(--orange-text); }
 .badge-app-hired { background: var(--green-soft); color: var(--green); }
 .badge-app-not_selected { background: var(--line-soft); color: var(--slate); }
+.badge-app-offered { background: var(--green-soft); color: var(--green); outline: 1px dashed currentColor; }
+.badge-app-offer_declined { background: var(--line-soft); color: var(--slate); }
+.notice.filled { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.offer-row { margin: 8px 0 14px; }
 .dot { display: inline-block; margin-left: 4px; background: var(--orange); color: #fff; font-size: .7rem; padding: 1px 7px; border-radius: 999px; }
 .tab .count { font-size: .74rem; opacity: .75; margin-left: 2px; }
 

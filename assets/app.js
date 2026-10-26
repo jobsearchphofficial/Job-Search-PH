@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792993113";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792993616";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -44,7 +44,8 @@ const REPORT_REASONS = {
   other: "Other",
 };
 const STATUS_LABEL = { pending: "Under review", approved: "Live", rejected: "Rejected", closed: "Closed" };
-const APP_STATUS = { new: "Sent", shortlisted: "Shortlisted", not_selected: "Not selected", hired: "Hired" };
+const APP_STATUS = { new: "Sent", shortlisted: "Shortlisted", offered: "Job offer", not_selected: "Not selected", offer_declined: "Offer declined", hired: "Hired" };
+const DECLINED = ["not_selected", "offer_declined"];
 const CAN_SMS = matchMedia("(pointer: coarse)").matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 const IN_APP_BROWSER = /FBAN|FBAV|FB_IAB|Instagram|Messenger|Line\//i.test(navigator.userAgent);
 
@@ -297,7 +298,7 @@ const statusBadge = (j) => {
   const s = j.status === "approved" && !isLive(j) ? "expired" : j.status;
   return `<span class="badge badge-${s}">${s === "expired" ? "Expired" : STATUS_LABEL[s]}</span>`;
 };
-const appBadge = (s, employer) => `<span class="badge badge-app-${s}">${employer && s === "new" ? "New" : APP_STATUS[s] || s}</span>`;
+const appBadge = (s, employer) => `<span class="badge badge-app-${s}">${employer && s === "new" ? "New" : employer && s === "offered" ? "Offer sent" : employer && s === "offer_declined" ? "Declined your offer" : APP_STATUS[s] || s}</span>`;
 
 function authError(err) {
   const code = err?.code || "";
@@ -801,15 +802,17 @@ async function renderApplyPanel(j, isOwner) {
     const contact = await store.getContact(j.id);
     const c = contactLink(contact);
     panel.innerHTML = `
-      <h2>${mine.status === "new" ? "Application sent" : `You applied ${appBadge(mine.status)}`}</h2>
+      <h2>${mine.status === "new" ? "Application sent" : mine.status === "offered" ? "You got a job offer!" : `You applied ${appBadge(mine.status)}`}</h2>
+      ${mine.status === "offered" ? `<p>${esc(mine.employerName || "The employer")} wants to hire you. Accept to start, or decline if it's not right for you.</p><div class="actions offer-row">${offerHtml(mine)}</div>` : ""}
       <p class="muted">Sent ${ago(mine.createdAt)}. The employer can see your profile and may contact you at ${esc(profile.phone)}.</p>
       ${c ? `<p class="small"><strong>Employer contact</strong></p>
         <a class="btn btn-primary btn-block" href="${esc(c.href)}" target="_blank" rel="noopener nofollow">${esc(c.label)}</a>
         ${c.extra ? `<a class="btn btn-ghost btn-block" href="${esc(c.extra)}">Send a text</a>` : ""}
         <p class="small muted copyable">${esc(c.text)}</p>` : ""}
       <a class="btn btn-ghost btn-block" href="#/chat/${encodeURIComponent(mine.id)}">${chatState(mine).open ? "Message the employer" : "View chat"}</a>
-      <button class="btn btn-ghost btn-sm" id="withdraw">Withdraw application</button>`;
-    $("#withdraw").addEventListener("click", async (e) => {
+      ${["hired", "offered"].includes(mine.status) ? "" : `<button class="btn btn-ghost btn-sm" id="withdraw">Withdraw application</button>`}`;
+    panel.querySelector(".offer-row")?.addEventListener("click", (e) => { const b = e.target.closest("[data-offer]"); if (b) handleOffer(b, mine, () => renderApplyPanel(j, false)); });
+    $("#withdraw")?.addEventListener("click", async (e) => {
       if (!confirmInline(e.target, "Click again to withdraw")) return;
       try { await store.withdraw(mine.id); myAppsCache = null; toast("Application withdrawn"); renderApplyPanel(j, false); }
       catch { toast("Could not withdraw. Try again."); }
@@ -1390,7 +1393,7 @@ function applicantCard(a) {
   const resume = [safeUrl(x.resumeUrl) && `<a href="${esc(safeUrl(x.resumeUrl))}" target="_blank" rel="noopener nofollow">Resume link</a>`,
     safeUrl(x.resumeFileUrl) && `<a href="${esc(safeUrl(x.resumeFileUrl))}" target="_blank" rel="noopener">${esc(x.resumeFileName || "Resume file")}</a>`].filter(Boolean).join(" · ");
   return `
-  <article class="applicant ${a.status === "new" ? "is-new" : ""} ${a.status === "not_selected" ? "declined" : ""}">
+  <article class="applicant ${a.status === "new" ? "is-new" : ""} ${DECLINED.includes(a.status) ? "declined" : ""}">
     <header>
       <div class="app-who">${avatar(x.fullName, x.photo)}<div><h3>${esc(x.fullName)}${x.age ? `, ${x.age}` : ""}</h3>
         <p class="muted small">${x.gender ? `${esc(x.gender)} · ` : ""}${esc(x.city || "")}${x.experienceYears != null ? ` · ${x.experienceYears} yr${x.experienceYears === 1 ? "" : "s"} experience` : ""}${x.availability ? ` · ${esc(x.availability)}` : ""} · applied ${ago(a.createdAt)}</p></div></div>
@@ -1399,7 +1402,7 @@ function applicantCard(a) {
     ${a.message ? `<blockquote>${nl2br(a.message)}</blockquote>` : ""}
     <div class="contact-row">
       ${(() => { const st = chatState(a); return st.open ? `<a class="btn btn-primary btn-sm" href="#/chat/${encodeURIComponent(a.id)}">Message${isUnread(inbox.find((i) => i.id === a.id) || a) ? " · new" : ""}</a>` : `<a class="btn btn-ghost btn-sm" href="#/chat/${encodeURIComponent(a.id)}">View chat</a>`; })()}
-      ${a.status === "not_selected" ? `<span class="closing">${chatClosedText(chatState(a))}</span>` : ""}
+      ${DECLINED.includes(a.status) ? `<span class="closing">${chatClosedText(chatState(a))}</span>` : ""}
       <a class="btn btn-ghost btn-sm" href="tel:${esc(digits(x.phone))}">Call ${esc(x.phone)}</a>
       ${CAN_SMS ? `<a class="btn btn-ghost btn-sm" href="sms:${esc(digits(x.phone))}">Text</a>` : ""}
       ${m ? `<a class="btn btn-ghost btn-sm" href="${esc(m)}" target="_blank" rel="noopener nofollow">Messenger</a>` : ""}
@@ -1416,9 +1419,10 @@ function applicantCard(a) {
     </details>
     ${a.status === "hired" ? `<div class="actions emp-row">${employmentHtml(a)}</div>` : ""}
     <div class="actions">
-      ${a.status !== "shortlisted" ? `<button class="btn btn-ghost btn-sm" data-st="shortlisted" data-id="${esc(a.id)}">Shortlist</button>` : ""}
-      ${a.status !== "hired" ? `<button class="btn btn-ghost btn-sm" data-st="hired" data-id="${esc(a.id)}">Mark hired</button>` : ""}
-      ${a.status !== "not_selected" ? `<button class="btn btn-ghost btn-sm" data-st="not_selected" data-id="${esc(a.id)}">Not a fit</button>` : ""}
+      ${a.status === "offered" ? `<span class="emp-state">Waiting for ${esc((a.applicant?.fullName || "them").split(" ")[0])} to accept</span><button class="btn btn-ghost btn-sm" data-st="shortlisted" data-id="${esc(a.id)}">Withdraw offer</button>` : ""}
+      ${["new", "not_selected"].includes(a.status) ? `<button class="btn btn-ghost btn-sm" data-st="shortlisted" data-id="${esc(a.id)}">Shortlist</button>` : ""}
+      ${["new", "shortlisted", "not_selected"].includes(a.status) ? `<button class="btn btn-primary btn-sm" data-st="offered" data-id="${esc(a.id)}">Offer the job</button>` : ""}
+      ${["new", "shortlisted"].includes(a.status) ? `<button class="btn btn-ghost btn-sm" data-st="not_selected" data-id="${esc(a.id)}">Not a fit</button>` : ""}
     </div>
   </article>`;
 }
@@ -1433,42 +1437,50 @@ async function viewApplicants(jobId) {
   let tab = "all";
   const draw = async () => {
     const apps = (await store.applicationsForJob(jobId)).sort((a, b) => b.createdAt - a.createdAt);
-    const counts = { all: apps.length, new: 0, shortlisted: 0, hired: 0, not_selected: 0 };
-    apps.forEach((a) => counts[a.status]++);
-    const shown = tab === "all" ? apps : apps.filter((a) => a.status === tab);
+    const group = (s) => (s === "offer_declined" ? "not_selected" : s);
+    const counts = { all: apps.length, new: 0, shortlisted: 0, offered: 0, hired: 0, not_selected: 0 };
+    apps.forEach((a) => counts[group(a.status)]++);
+    const shown = tab === "all" ? apps : apps.filter((a) => group(a.status) === tab);
+    const openings = Number(job.openings) || 1;
+    const filled = job.status === "approved" && counts.hired >= openings;
     app.innerHTML = `
       <p><a href="#/my" class="back">← My posts</a></p>
       <div class="page-head"><div><h1>Applicants</h1><p class="muted">${esc(job.title)} · ${esc(job.city)} ${statusBadge(job)}</p></div></div>
-      <div class="tabs" role="tablist">${[["all", "All"], ["new", "New"], ["shortlisted", "Shortlisted"], ["hired", "Hired"], ["not_selected", "Not a fit"]]
+      ${filled ? `<div class="notice filled"><div><strong>All ${openings} opening${openings === 1 ? " is" : "s are"} filled.</strong> Close the post so it leaves search and the other applicants know.</div><button class="btn btn-primary btn-sm" id="close-filled">Close the post</button></div>` : ""}
+      <div class="tabs" role="tablist">${[["all", "All"], ["new", "New"], ["shortlisted", "Shortlisted"], ["offered", "Offered"], ["hired", "Hired"], ["not_selected", "Not a fit"]]
         .map(([k, v]) => `<button class="tab ${tab === k ? "active" : ""}" data-tab="${k}">${v} <span class="count">${counts[k]}</span></button>`).join("")}</div>
       <div class="applicants">${shown.length ? shown.map(applicantCard).join("") : `<div class="empty"><p>${apps.length ? "No applicants in this group." : "No applicants yet. Share your post to get more."}</p></div>`}</div>`;
     app.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { tab = b.dataset.tab; draw(); }));
     app.querySelectorAll("[data-emp]").forEach((b) => b.addEventListener("click", () => {
       const a = apps.find((x) => x.id === b.dataset.id); if (a) handleEmployment(b, a, draw);
     }));
+    $("#close-filled")?.addEventListener("click", async () => {
+      const ok = await showDialog({ title: "Close this job post?", body: "It will leave search. Applicants still waiting will be told the position is filled, and their chats close after 48 hours.", actions: [{ label: "Keep it open", value: false }, { label: "Close the post", value: true, primary: true }] });
+      if (!ok) return;
+      try {
+        await store.updateJob(job.id, { status: "closed" }); job.status = "closed"; jobsCache = null;
+        await store.clearReportsFor(job.id).catch(() => {});
+        await Promise.all(apps.filter((x) => ["new", "shortlisted", "offered"].includes(x.status)).map((x) =>
+          store.setApplicationStatus(x, "not_selected", { note: { type: "job_filled", title: "Position filled", body: `${job.title} has been filled. Your chat with the employer stays open for 48 hours.`, link: `#/chat/${x.id}` } }).catch(() => {})));
+        toast("Post closed. Applicants have been told."); draw();
+      } catch (err) { console.error(err); toast("Could not close the post"); }
+    });
     app.querySelectorAll("[data-st]").forEach((b) => b.addEventListener("click", async () => {
       const a = apps.find((x) => x.id === b.dataset.id); const st = b.dataset.st;
+      const first = (a.applicant?.fullName || "them").split(" ")[0];
+      if (st === "offered") {
+        const ok = await showDialog({ title: `Offer the job to ${esc(first)}?`, body: `${esc(first)} will get a notification and can accept or decline. They're only hired once they accept.`, actions: [{ label: "Cancel", value: false }, { label: "Send offer", value: true, primary: true }] });
+        if (!ok) return;
+      }
+      if (st === "shortlisted" && a.status === "offered") {
+        const ok = await showDialog({ title: "Withdraw your offer?", body: `${esc(first)} goes back to Shortlisted and won't be able to accept.`, actions: [{ label: "Keep offer", value: false }, { label: "Withdraw", value: true, primary: true }] });
+        if (!ok) return;
+      }
       try {
-        await store.setApplicationStatus(a, st);
-        if (st !== "hired") { toast(st === "shortlisted" ? "Shortlisted. We let them know." : "Updated. We let them know."); return draw(); }
-        const openings = Number(job.openings) || 1;
-        const hired = apps.filter((x) => x.status === "hired" && x.id !== a.id).length + 1;
-        if (job.status === "approved" && hired >= openings) {
-          const choice = await showDialog({
-            title: "Close this job post?",
-            body: `You've hired ${hired} of ${openings} opening${openings === 1 ? "" : "s"}. Closing removes the post from search and lets the other applicants know the position is filled.`,
-            actions: [{ label: "Keep it open", value: "keep" }, { label: "Close the post", value: "close", primary: true }],
-          });
-          if (choice === "close") {
-            await store.updateJob(job.id, { status: "closed" }); job.status = "closed"; jobsCache = null;
-            await store.clearReportsFor(job.id).catch(() => {});
-            await Promise.all(apps.filter((x) => x.id !== a.id && ["new", "shortlisted"].includes(x.status)).map((x) =>
-              store.setApplicationStatus(x, "not_selected", { note: { type: "job_filled", title: "Position filled", body: `${job.title} has been filled. Your chat with the employer stays open for 48 hours.`, link: `#/chat/${x.id}` } }).catch(() => {})));
-            toast("Post closed. Applicants have been told.");
-          } else toast(`Marked hired (${hired} of ${openings}).`);
-        } else toast(`Marked hired${openings > 1 ? ` (${hired} of ${openings})` : ""}. We let them know.`);
+        await store.setApplicationStatus(a, st, a.status === "offered" && st === "shortlisted" ? { note: { type: "offer_withdrawn", title: "Job offer withdrawn", body: `The employer withdrew the ${a.jobTitle} offer for now.`, link: `#/chat/${a.id}` } } : {});
+        toast({ shortlisted: a.status === "offered" ? "Offer withdrawn." : "Shortlisted. We let them know.", offered: "Offer sent. We'll let you know when they answer.", not_selected: "Updated. We let them know." }[st] || "Updated");
         draw();
-      } catch (err) { console.error(err); toast("Could not update"); }
+      } catch (err) { console.error(err); toast(err.code === "permission-denied" ? "Couldn't update. Make sure the latest database rules are published." : "Could not update"); }
     }));
   };
   draw().catch((e) => { console.error(e); app.innerHTML = `<p class="error">Could not load applicants (${esc(e.code || e.message)}).</p>`; });
@@ -1485,18 +1497,47 @@ async function viewApplications() {
   const apps = (await getMyApps()).sort((a, b) => b.createdAt - a.createdAt);
   if (!$("#apps")) return;
   $("#apps").innerHTML = apps.length ? `<div class="table">${apps.map((a) => `
-    <div class="trow ${a.status === "not_selected" ? "declined" : ""}">
-      <div><a href="#/job/${encodeURIComponent(a.jobId)}"><strong>${esc(a.jobTitle)}</strong></a><div class="muted small">${esc(a.jobCity || "")} · applied ${ago(a.createdAt)}${a.status === "not_selected" ? ` · ${chatClosedText(chatState(a))}` : ""}</div></div>
+    <div class="trow ${DECLINED.includes(a.status) ? "declined" : ""}">
+      <div><a href="#/job/${encodeURIComponent(a.jobId)}"><strong>${esc(a.jobTitle)}</strong></a><div class="muted small">${esc(a.jobCity || "")} · applied ${ago(a.createdAt)}${DECLINED.includes(a.status) ? ` · ${chatClosedText(chatState(a))}` : ""}</div></div>
       <div>${a.status === "hired" && a.employmentEnded ? `<span class="badge badge-closed">Job ended</span>` : appBadge(a.status)}</div>
-      <div class="actions"><a class="btn btn-ghost btn-sm" href="#/chat/${encodeURIComponent(a.id)}">${chatState(a).open ? "Message" : "View chat"}</a><a class="btn btn-ghost btn-sm" href="#/job/${encodeURIComponent(a.jobId)}">View job</a>${a.status === "hired" && !a.employmentEnded ? employmentHtml(a) : ""}</div>
+      <div class="actions"><a class="btn btn-ghost btn-sm" href="#/chat/${encodeURIComponent(a.id)}">${chatState(a).open ? "Message" : "View chat"}</a><a class="btn btn-ghost btn-sm" href="#/job/${encodeURIComponent(a.jobId)}">View job</a>${a.status === "hired" && !a.employmentEnded ? employmentHtml(a) : ""}${offerHtml(a)}</div>
     </div>`).join("")}</div>`
     : `<div class="empty"><p><strong>No applications yet.</strong></p><p class="muted">Find a job you like and tap Apply.</p><p><a class="btn btn-primary" href="#/">Browse jobs</a></p></div>`;
   const hiredNow = apps.find((a) => a.status === "hired" && !a.employmentEnded && isFullTime(a.jobSchedule, a.jobArrangement));
   if (hiredNow) $("#apps").insertAdjacentHTML("beforebegin", `<p class="notice">You're employed full-time as <strong>${esc(hiredNow.jobTitle)}</strong>. You can apply to part-time jobs. To apply for full-time jobs again, tap <strong>Leave this job</strong> below and your employer confirms.</p>`);
   $("#apps").addEventListener("click", async (e) => {
+    const o = e.target.closest("[data-offer]");
+    if (o) { const a = apps.find((x) => x.id === o.dataset.id); if (a) handleOffer(o, a, viewApplications); return; }
     const b = e.target.closest("[data-emp]"); if (!b) return;
     const a = apps.find((x) => x.id === b.dataset.id); if (a) handleEmployment(b, a, viewApplications);
   });
+}
+
+/* ---------------- Job offers (jobseeker accepts or declines) ---------------- */
+function offerHtml(a) {
+  if (a.status !== "offered" || a.employerUid === getAuthState().user?.uid) return "";
+  return `<span class="emp-state ask">You got a job offer</span><button class="btn btn-primary btn-sm" data-offer="accept" data-id="${esc(a.id)}">Accept</button><button class="btn btn-ghost btn-sm" data-offer="decline" data-id="${esc(a.id)}">Decline</button>`;
+}
+async function handleOffer(btn, a, after) {
+  const accept = btn.dataset.offer === "accept";
+  const emp = a.employerName || "the employer";
+  if (accept && isFullTime(a.jobSchedule, a.jobArrangement)) {
+    myAppsCache = null;
+    const other = (await getMyApps()).find((x) => x.id !== a.id && x.status === "hired" && !x.employmentEnded && isFullTime(x.jobSchedule, x.jobArrangement));
+    if (other) {
+      await showDialog({ title: "You already have a full-time job", body: `You're hired as ${esc(other.jobTitle)}. Leave that job first (in My applications), then accept this offer.`, actions: [{ label: "Okay", value: false, primary: true }] });
+      return;
+    }
+  }
+  const ok = await showDialog(accept
+    ? { title: `Accept the ${esc(a.jobTitle)} job?`, body: `${esc(emp)} will be told you accepted, and you'll be marked as hired. Agree on your start date and pay in the chat.`, actions: [{ label: "Back", value: false }, { label: "Accept the job", value: true, primary: true }] }
+    : { title: "Decline this job offer?", body: `${esc(emp)} will be told. You can't undo this, and your chat closes after 48 hours.`, actions: [{ label: "Back", value: false }, { label: "Decline offer", value: true, primary: true }] });
+  if (!ok) return;
+  try {
+    await store.respondOffer(a, accept); myAppsCache = null;
+    toast(accept ? "Congratulations! You accepted the job." : "Offer declined. We let the employer know.");
+    after?.();
+  } catch (err) { console.error(err); toast(err.code === "permission-denied" ? "Couldn't update. The offer may have been withdrawn, or the latest database rules aren't published yet." : "Could not update. Try again."); }
 }
 
 /* ---------------- Ending a job (both sides confirm) ---------------- */
@@ -1533,7 +1574,7 @@ let inbox = [];
 let unwatchInbox = null;
 let inboxRole = null;
 function chatState(a) {
-  if (a.status !== "not_selected") return { open: true, declined: false };
+  if (!DECLINED.includes(a.status)) return { open: true, declined: false };
   const closesAt = (typeof a.declinedAt === "number" ? a.declinedAt : Date.now()) + CHAT_GRACE_MS; // just declined = full 48h
   const left = closesAt - Date.now();
   return { open: left > 0, declined: true, closesAt, hoursLeft: Math.max(0, Math.ceil(left / 3600000)) };
@@ -1620,17 +1661,19 @@ async function viewChat(appId) {
   const body = $("#chat-body"), form = $("#chat-form"), input = $("#chat-input");
   const paintState = () => {
     const st = chatState(a);
-    $("#chat-badge").innerHTML = st.declined ? `<span class="badge badge-app-not_selected">Not selected</span>` : appBadge(a.status, iAmEmployer);
-    const emp = a.status === "hired" && !a.employmentEnded && a.endRequestedBy ? `<div class="chat-banner emp">${employmentHtml(a)}</div>` : "";
+    $("#chat-badge").innerHTML = appBadge(a.status, iAmEmployer);
+    const emp = (a.status === "hired" && !a.employmentEnded && a.endRequestedBy ? `<div class="chat-banner emp">${employmentHtml(a)}</div>` : "")
+      + (a.status === "offered" ? `<div class="chat-banner emp">${iAmEmployer ? `<span class="emp-state">You offered ${esc(name)} the job. Waiting for them to accept.</span>` : offerHtml(a)}</div>` : "");
     $("#chat-banner").innerHTML = emp + (st.declined
       ? `<p class="chat-banner ${st.open ? "" : "closed"}">${st.open
-          ? `${iAmEmployer ? "You marked this applicant as not a fit." : "The employer chose other applicants."} This chat closes in <strong>${st.hoursLeft} hour${st.hoursLeft === 1 ? "" : "s"}</strong>.`
+          ? `${a.status === "offer_declined" ? (iAmEmployer ? `${esc(name)} declined your offer.` : "You declined this offer.") : iAmEmployer ? "You marked this applicant as not a fit." : "The employer chose other applicants."} This chat closes in <strong>${st.hoursLeft} hour${st.hoursLeft === 1 ? "" : "s"}</strong>.`
           : "This chat has closed. You can still read past messages."}</p>` : "");
     input.disabled = !st.open; form.querySelector("button").disabled = !st.open;
     input.placeholder = st.open ? "Write a message…" : "Chat closed";
     form.classList.toggle("closed", !st.open);
   };
   $("#chat-banner").addEventListener("click", (e) => {
+    const o = e.target.closest("[data-offer]"); if (o) return handleOffer(o, a, async () => { a = (await store.getApplication(a.id)) || a; paintState(); });
     const b = e.target.closest("[data-emp]"); if (b) handleEmployment(b, a, async () => { a = (await store.getApplication(a.id)) || a; paintState(); });
   });
   paintState();
@@ -1851,6 +1894,7 @@ function viewStatic(page) {
         ${faq("Someone asked me for money. What do I do?", "Don't pay. Tap <strong>Report this post</strong> on the job, or contact support with the details. We'll review it and may remove the post or restrict the account.")}
         ${faq("How many jobs can I apply to?", "Up to 10 a day. Employers can post up to 5 jobs a day. These limits stop spam and keep the site fair.")}
         ${faq("Why did my chat close?", "If an employer chooses other applicants, the chat stays open for 48 hours so you can say goodbye or ask questions, then it closes. You can still read old messages.")}
+        ${faq("How does hiring work?", "When an employer picks you, they send a <strong>job offer</strong>. You'll get a notification and can <strong>Accept</strong> or <strong>Decline</strong> it from the job page, My applications, or the chat. You're only marked as hired once you accept. If you decline, the employer is told and the chat closes after 48 hours.")}
         ${faq("How do I leave a job I got here?", "Go to <strong>My applications</strong> and tap <strong>Leave this job</strong>. Your employer confirms, and then you can apply to full-time jobs again. Employers can also start this from the applicant card.")}
         ${faq("What's the minimum pay for a kasambahay?", "In Negros Occidental (Western Visayas), it's ₱6,500 a month, effective November 19, 2025. Employers must also give a weekly rest day and 13th month pay.")}
         ${faq("How do I change or delete my profile?", "Open the gear menu → <strong>My profile</strong>. You can edit everything there, or tap <strong>Delete my profile</strong>. To delete your whole account, email us.")}

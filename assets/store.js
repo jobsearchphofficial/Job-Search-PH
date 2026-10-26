@@ -26,7 +26,7 @@ const toMs = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : v ??
 const norm = (snap) => {
   const d = snap.data();
   const out = { id: snap.id, ...d };
-  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt", "endRequestedAt", "endedAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
+  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt", "endRequestedAt", "endedAt", "acceptedAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
   return out;
 };
 const jobsQ = async (...c) => (await F.getDocs(F.query(F.collection(db, "jobs"), ...c))).docs.map(norm);
@@ -186,10 +186,20 @@ export const store = {
     if (note) return this.notify(a.applicantUid, { ...note, appId: a.id, jobId: a.jobId }).catch(() => {});
     const msg = {
       shortlisted: ["You're shortlisted", `The employer shortlisted you for ${a.jobTitle}. Expect a call or message soon.`],
-      hired: ["You got the job!", `You were hired for ${a.jobTitle}. Congratulations!`],
+      offered: ["You got a job offer!", `${a.employerName || "The employer"} offered you the ${a.jobTitle} job. Accept or decline it.`],
       not_selected: ["Application update", `The employer chose other applicants for ${a.jobTitle}. Your chat with them stays open for 48 hours.`],
     }[status];
     if (msg) await this.notify(a.applicantUid, { type: `app_${status}`, title: msg[0], body: msg[1], link: `#/chat/${a.id}`, appId: a.id, jobId: a.jobId }).catch(() => {});
+  },
+  // Jobseeker answers a job offer.
+  async respondOffer(a, accept) {
+    await F.updateDoc(F.doc(db, "applications", a.id), accept
+      ? { status: "hired", acceptedAt: F.serverTimestamp(), updatedAt: F.serverTimestamp() }
+      : { status: "offer_declined", declinedAt: F.serverTimestamp(), updatedAt: F.serverTimestamp() });
+    const who = a.applicant?.fullName || "The applicant";
+    await this.notify(a.employerUid, accept
+      ? { type: "offer_accepted", title: `${who} accepted your offer`, body: `${who} accepted the ${a.jobTitle} job. You're all set!`, link: `#/applicants/${a.jobId}`, appId: a.id, jobId: a.jobId }
+      : { type: "offer_declined", title: `${who} declined your offer`, body: `${who} declined the ${a.jobTitle} job. Your chat stays open for 48 hours.`, link: `#/applicants/${a.jobId}`, appId: a.id, jobId: a.jobId }).catch(() => {});
   },
   // Ending employment needs both sides. kind: "request" | "cancel" | "decline" | "confirm"
   async employment(a, kind) {

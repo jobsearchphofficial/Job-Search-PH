@@ -155,10 +155,17 @@ service cloud.firestore {
       allow update: if isAdmin()
                     || (signedIn() && resource.data.employerUid == me()
                         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'declinedAt'])
-                        && request.resource.data.status in ['new', 'shortlisted', 'not_selected', 'hired']
+                        && request.resource.data.status in ['new', 'shortlisted', 'not_selected', 'offered']
+                        && resource.data.status in ['new', 'shortlisted', 'not_selected', 'offered']
                         && (request.resource.data.status == 'not_selected'
                               ? request.resource.data.declinedAt == request.time
                               : request.resource.data.get('declinedAt', null) == null));
+      // The jobseeker accepts or declines a job offer. Only they can make someone "hired".
+      allow update: if signedIn() && resource.data.applicantUid == me()
+                    && resource.data.status == 'offered'
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'acceptedAt', 'declinedAt'])
+                    && ((request.resource.data.status == 'hired' && request.resource.data.acceptedAt == request.time)
+                        || (request.resource.data.status == 'offer_declined' && request.resource.data.declinedAt == request.time));
       // Chat bookkeeping: each side updates the last message and when they last read it.
       allow update: if signedIn() && resource.data.applicantUid == me()
                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessageAt', 'lastMessageFrom', 'lastMessageText', 'applicantSeenAt'])
@@ -172,7 +179,7 @@ service cloud.firestore {
         function app() { return get(/databases/$(database)/documents/applications/$(appId)).data; }
         function party() { return signedIn() && (app().applicantUid == me() || app().employerUid == me()); }
         function chatOpen() {
-          return app().status != 'not_selected'
+          return !(app().status in ['not_selected', 'offer_declined'])
               || (app().get('declinedAt', null) != null && request.time < app().declinedAt + duration.value(48, 'h'));
         }
         allow read: if party() || isAdmin();
