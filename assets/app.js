@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792995723";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792996279";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -120,6 +120,7 @@ function requirementsHtml(j) {
 function conditionsHtml(j) {
   const rows = [];
   if (j.workplace) rows.push([ICON.home, "Workplace", j.workplace === "household" ? "Private household" : "Business"]);
+  if (j.address) { const q = encodeURIComponent([j.address, j.area, j.city, "Negros Occidental"].filter(Boolean).join(", ")); rows.push([ICON.pin, "Address", `${esc(j.address)}${j.area ? `, ${esc(j.area)}` : ""}, ${esc(j.city)} · <a href="https://www.google.com/maps/search/?api=1&amp;query=${q}" target="_blank" rel="noopener">Open map</a>`]); }
   if (j.hours) rows.push([ICON.clock, "Working hours", esc(j.hours)]);
   if (j.daysOff != null && j.daysOff !== "") rows.push([ICON.cal, "Days off", `${esc(j.daysOff)} day${Number(j.daysOff) === 1 ? "" : "s"} per ${j.daysOffPer === "month" ? "month" : "week"}`]);
   if (j.openings > 1) rows.push([ICON.people, "Openings", `${esc(j.openings)} people`]);
@@ -129,6 +130,38 @@ function conditionsHtml(j) {
   return `<h2>Work conditions</h2>
     ${rows.length ? `<dl class="conds">${rows.map(([i, k, v]) => `<div><dt>${i}${k}</dt><dd>${v}</dd></div>`).join("")}</dl>` : ""}
     ${ben ? `<h3 class="sub">Benefits</h3>${ben}` : ""}`;
+}
+
+/* ---------------- Profile strength (jobseekers) ---------------- */
+const STRENGTH_ITEMS = [
+  { k: "photo", pts: 15, todo: "Add a profile photo", done: (p) => !!p.photo },
+  { k: "jobCategories", pts: 10, todo: "Pick the jobs you want", done: (p) => Array.isArray(p.jobCategories) && p.jobCategories.length > 0 },
+  { k: "experienceYears", pts: 10, todo: "Add your years of experience", done: (p) => p.experienceYears !== "" && p.experienceYears != null },
+  { k: "availability", pts: 10, todo: "Say when you can start", done: (p) => !!p.availability },
+  { k: "skills", pts: 15, todo: "List your skills (at least a few words)", done: (p) => String(p.skills || "").trim().length >= 15 },
+  { k: "workHistory", pts: 15, todo: "Add your work history", done: (p) => String(p.workHistory || "").trim().length >= 20 },
+  { k: "education", pts: 10, todo: "Add your education", done: (p) => String(p.education || "").trim().length >= 4 },
+  { k: "gender", pts: 5, todo: "Choose your gender", done: (p) => !!p.gender },
+  { k: "messenger", pts: 5, todo: "Add your Messenger", done: (p) => !!String(p.messenger || "").trim() },
+  { k: "resumeUrl", pts: 5, todo: "Add a resume link", done: (p) => !!String(p.resumeUrl || p.resumeFileUrl || "").trim() },
+];
+function profileStrength(p = {}) {
+  const score = STRENGTH_ITEMS.reduce((n, it) => n + (it.done(p) ? it.pts : 0), 0);
+  const [level, cls] = score >= 90 ? ["Excellent", "s-excellent"] : score >= 70 ? ["Great", "s-great"] : score >= 40 ? ["Good", "s-good"] : ["Weak", "s-weak"];
+  return { score, level, cls, todo: STRENGTH_ITEMS.filter((it) => !it.done(p)) };
+}
+const strengthChip = (p) => { const s = profileStrength(p); return `<span class="s-chip ${s.cls}" title="Profile strength ${s.score}/100">${s.level} profile</span>`; };
+function strengthCard(p, compact = false) {
+  const s = profileStrength(p);
+  const next = s.todo.slice(0, compact ? 2 : 4);
+  const msg = s.score >= 90 ? "Your profile stands out. Employers see everything they need." : s.score >= 70 ? "Almost there. A complete profile gets more replies." : s.score >= 40 ? "Good start. Add a few more details so employers pick you." : "Employers skip empty profiles. Add a few details to stand out.";
+  return `<div class="strength ${s.cls}" id="strength">
+    <div class="strength-top"><span>Profile strength</span><strong>${s.level} · ${s.score}/100</strong></div>
+    <div class="strength-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${s.score}"><i style="width:${s.score}%"></i></div>
+    <div class="strength-scale" aria-hidden="true"><span>Weak</span><span>Good</span><span>Great</span><span>Excellent</span></div>
+    <p class="small">${msg}</p>
+    ${next.length ? `<div class="strength-next">${next.map((it) => `<button type="button" class="s-step" data-goto="${it.k}"><span>${esc(it.todo)}</span><em>+${it.pts}</em></button>`).join("")}</div>` : ""}
+  </div>`;
 }
 
 /* ---------------- Helpers ---------------- */
@@ -838,6 +871,7 @@ async function renderApplyPanel(j, isOwner) {
     <h2>Apply for this job</h2>
     <p class="usage">${usage.applies || 0} of ${LIMITS.applies} applications used today</p>
     <p class="muted small">The employer will see your profile: <strong>${esc(profile.fullName)}</strong>${age ? `, ${age}` : ""}, ${esc(profile.city)}, ${esc(profile.phone)}, plus your experience${profile.resumeUrl || profile.resumeFileUrl ? " and resume" : ""}. <a href="#/profile">Edit profile</a></p>
+    ${(() => { const st = profileStrength(profile); return st.score < 90 ? `<a class="s-nudge ${st.cls}" href="#/profile"><span><strong>${st.level} profile · ${st.score}/100.</strong> ${esc(st.todo[0]?.todo || "")} to get noticed.</span><em>Improve</em></a>` : ""; })()}
     <form id="apply-form">
       <label for="a-msg" class="small"><strong>Message to the employer</strong> (optional)</label>
       <textarea id="a-msg" name="message" rows="3" maxlength="1000" placeholder="e.g. I have 3 years experience as a yaya and can start next week."></textarea>
@@ -984,6 +1018,17 @@ function viewProfile() {
       if (f.querySelectorAll("[name=jobCategories]:checked").length > 5) { cb.checked = false; toast("Pick up to 5 jobs"); }
     }));
     f.addEventListener("input", (e) => e.target.classList?.remove("invalid"));
+    const paintStrength = () => { const box = $("#strength"); if (!box) return; collect(); box.outerHTML = strengthCard(p); };
+    if (role === "jobseeker") { f.addEventListener("input", paintStrength); f.addEventListener("change", paintStrength); }
+    $(".profile-wrap").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-goto]"); if (!b) return;
+      const k = b.dataset.goto;
+      if (k === "photo") { $(".photo-pick").scrollIntoView({ behavior: "smooth", block: "center" }); return $("#photo-in").click(); }
+      const el = f.querySelector(`[name=${k}]`); if (!el) return;
+      const box = el.closest("label, div") || el;
+      box.scrollIntoView({ behavior: "smooth", block: "center" }); box.classList.add("flash"); setTimeout(() => box.classList.remove("flash"), 1600);
+      setTimeout(() => el.focus({ preventScroll: true }), 350);
+    });
     f.birthDate?.addEventListener("input", () => {
       const a = ageFrom(f.birthDate.value); const out = $("#age-out");
       out.textContent = a == null ? "Age" : `${a} years old`; out.classList.toggle("bad", a != null && a < 18);
@@ -1077,6 +1122,7 @@ function viewProfile() {
             <button type="button" class="linkbtn" data-role="${role === "employer" ? "jobseeker" : "employer"}">${role === "employer" ? "Looking for work instead?" : "Hiring instead?"}</button></div>`
           : `${!isNew ? `<p class="label">Profile type</p>` : ""}
         <div class="role-pick ${isNew ? "" : "compact"}" role="radiogroup" aria-label="Profile type">${roleCard("jobseeker")}${roleCard("employer")}</div>`}
+        ${role === "jobseeker" ? strengthCard(p) : ""}
         ${role ? formHtml() : `<div class="trust"><span>Free to use</span><span>No fees for jobseekers, ever</span><span>Your details are shared only when you apply</span></div>`}
       </div>`;
     app.querySelectorAll("[data-role]").forEach((b) => b.addEventListener("click", async () => {
@@ -1175,7 +1221,8 @@ function viewPost() {
               <input id="p-area" name="area" maxlength="80" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="p-area-list" aria-autocomplete="list" placeholder="e.g. Mandalagan">
               <ul class="ac-list" id="p-area-list" role="listbox" hidden></ul></div></div>
           </div>
-          <p class="hint">The area helps jobseekers search nearby. Don't include house numbers.</p>
+          <label class="fld" id="addr-field" hidden>Full business address *<input name="address" maxlength="200" placeholder="e.g. Unit 5, 2F Ayala Malls Capitol Central, Gatuslao St."><span class="hint">Building, unit or floor, and street. Shown on your post so applicants can find you.</span></label>
+          <p class="hint" id="loc-hint">The area helps jobseekers search nearby. Don't include house numbers.</p>
         </section>
 
         <section class="pcard">
@@ -1263,6 +1310,8 @@ function viewPost() {
     const curSched = val("schedule");
     $("#sched-pills").innerHTML = radioPills("schedule", SCHEDULES[wp].map((s) => [s, s]), SCHEDULES[wp].includes(curSched) ? curSched : "Full-time");
     $("#arr-field").hidden = wp !== "household";
+    $("#addr-field").hidden = workplace() !== "business"; f.address.required = workplace() === "business";
+    $("#loc-hint").textContent = workplace() === "business" ? "Businesses must show their full address so applicants know where they'll work." : "For households, the barangay is enough. Don't include house numbers.";
     f.querySelectorAll("[name=arrangement]").forEach((r) => (r.required = wp === "household"));
     const curReq = [...f.querySelectorAll("[name=reqList]:checked")].map((i) => i.value);
     $("#req-chips").innerHTML = REQ_SKILLS[wp].concat(REQ_SKILLS.common).map((s) => `<label class="chip"><input type="checkbox" name="reqList" value="${esc(s)}" ${curReq.includes(s) ? "checked" : ""}><span>${esc(s)}</span></label>`).join("");
@@ -1280,6 +1329,7 @@ function viewPost() {
     const schedule = val("schedule");
     return {
       title: g("title"), category: val("category"), employerName: g("employerName"), city: g("city"), area: g("area"),
+      address: wp === "business" ? g("address") : "",
       workplace: wp, arrangement, schedule,
       employmentType: wp === "household" ? (arrangement || "Live-in") : (schedule || "Full-time"),
       salaryMin: g("salaryMin") ? Number(g("salaryMin")) : null, salaryMax: g("salaryMax") && (val("salaryPeriod") || "month") === "month" ? Number(g("salaryMax")) : null,
@@ -1374,6 +1424,7 @@ function viewPost() {
     }
     const okCity = cityOf(f.city.value);
     if (!okCity) return fail("Pick a city or town in Negros Occidental from the list.", f.city);
+    if (workplace() === "business" && f.address.value.trim().length < 8) return fail("Add your full business address: building or unit, and street.", f.address);
     f.city.value = okCity;
     const data = collect();
     if (data.salaryMax && data.salaryMax < data.salaryMin) return fail("The 'To' amount should be higher than 'From'.", f.salaryMax);
@@ -1385,6 +1436,7 @@ function viewPost() {
     if (contact.contactMethod === "phone" && digits(contact.contactValue).length < 10) return fail("Please enter a complete phone number.", f.contactValue);
     const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Submitting…";
     try {
+      if (!data.address) delete data.address; // older rules don't know this field yet
       await store.createJob(data, contact);
       jobsCache = null;
       app.innerHTML = `<div class="empty"><h1>Thanks! Your post is under review.</h1><p class="muted">We'll check it soon. Applicants will appear under My posts once it's live.</p><p><a class="btn btn-primary" href="#/my">Go to My posts</a> <a class="btn btn-ghost" href="#/post" id="again">Post another</a></p></div>`;
@@ -1431,40 +1483,51 @@ async function viewMy() {
 function applicantCard(a) {
   const x = a.applicant || {};
   const m = messengerUrl(x.messenger);
-  const resume = [safeUrl(x.resumeUrl) && `<a href="${esc(safeUrl(x.resumeUrl))}" target="_blank" rel="noopener nofollow">Resume link</a>`,
+  const st = chatState(a);
+  const resume = [safeUrl(x.resumeUrl) && `<a href="${esc(safeUrl(x.resumeUrl))}" target="_blank" rel="noopener nofollow">Open resume link</a>`,
     safeUrl(x.resumeFileUrl) && `<a href="${esc(safeUrl(x.resumeFileUrl))}" target="_blank" rel="noopener">${esc(x.resumeFileName || "Resume file")}</a>`].filter(Boolean).join(" · ");
+  const exp = x.experienceYears != null && x.experienceYears !== "" ? `${esc(x.experienceYears)} year${Number(x.experienceYears) === 1 ? "" : "s"}` : "";
+  const facts = [
+    ["Phone", x.phone ? `<span class="copyable">${esc(x.phone)}</span>` : ""],
+    ["Email", x.email ? `<a href="mailto:${esc(x.email)}">${esc(x.email)}</a>` : ""],
+    ["Messenger", m ? `<a href="${esc(m)}" target="_blank" rel="noopener nofollow">${esc(String(x.messenger).replace(/^https?:\/\/(www\.)?/, ""))}</a>` : ""],
+    ["Lives in", esc(x.city || "")],
+    ["Experience", exp],
+    ["Can start", esc(x.availability || "")],
+    ["Education", esc(x.education || "")],
+    ["Resume", resume],
+  ];
+  const cats = Array.isArray(x.jobCategories) ? x.jobCategories : [];
+  const dash = `<span class="none">Not added</span>`;
   return `
-  <article class="applicant ${a.status === "new" ? "is-new" : ""} ${DECLINED.includes(a.status) ? "declined" : ""}">
-    <header>
-      <div class="app-who">${avatar(x.fullName, x.photo)}<div><h3>${esc(x.fullName)}${x.age ? `, ${esc(x.age)}` : ""}</h3>
-        <p class="muted small">${x.gender ? `${esc(x.gender)} · ` : ""}${esc(x.city || "")}${x.experienceYears != null ? ` · ${esc(x.experienceYears)} yr${x.experienceYears === 1 ? "" : "s"} experience` : ""}${x.availability ? ` · ${esc(x.availability)}` : ""} · applied ${ago(a.createdAt)}</p></div></div>
-      ${appBadge(a.status, true)}
+  <article class="applicant ap2 ${a.status === "new" ? "is-new" : ""} ${DECLINED.includes(a.status) ? "declined" : ""}">
+    <header class="ap-head">
+      ${avatar(x.fullName, x.photo, "md")}
+      <div class="ap-name"><h3>${esc(x.fullName)}${x.age ? `, ${esc(x.age)}` : ""}</h3>
+        <p class="muted small">${[x.gender && esc(x.gender), esc(x.city || ""), `applied ${ago(a.createdAt)}`].filter(Boolean).join(" · ")}</p></div>
+      <div class="ap-badges">${strengthChip(x)}${appBadge(a.status, true)}</div>
     </header>
-    ${a.message ? `<blockquote>${nl2br(a.message)}</blockquote>` : ""}
-    <div class="contact-row">
-      ${(() => { const st = chatState(a); return st.open ? `<a class="btn btn-primary btn-sm" href="#/chat/${encodeURIComponent(a.id)}">Message${isUnread(inbox.find((i) => i.id === a.id) || a) ? " · new" : ""}</a>` : `<a class="btn btn-ghost btn-sm" href="#/chat/${encodeURIComponent(a.id)}">View chat</a>`; })()}
-      ${DECLINED.includes(a.status) ? `<span class="closing">${chatClosedText(chatState(a))}</span>` : ""}
-      <a class="btn btn-ghost btn-sm" href="tel:${esc(digits(x.phone))}">Call ${esc(x.phone)}</a>
-      ${CAN_SMS ? `<a class="btn btn-ghost btn-sm" href="sms:${esc(digits(x.phone))}">Text</a>` : ""}
-      ${m ? `<a class="btn btn-ghost btn-sm" href="${esc(m)}" target="_blank" rel="noopener nofollow">Messenger</a>` : ""}
-      ${x.email ? `<a class="btn btn-ghost btn-sm" href="mailto:${esc(x.email)}">Email</a>` : ""}
+    ${a.message ? `<div class="ap-msg"><span class="label">Their message</span><p>${nl2br(a.message)}</p></div>` : ""}
+    <dl class="ap-facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v || dash}</dd></div>`).join("")}</dl>
+    <div class="ap-long">
+      <div><span class="label">Jobs they want</span>${cats.length ? `<ul class="meta">${cats.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : `<p>${dash}</p>`}</div>
+      <div><span class="label">Skills</span><p>${x.skills ? esc(x.skills) : dash}</p></div>
+      <div><span class="label">Work history</span><p>${x.workHistory ? nl2br(x.workHistory) : dash}</p></div>
     </div>
-    ${Array.isArray(x.jobCategories) && x.jobCategories.length ? `<ul class="meta">${x.jobCategories.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
-    <details><summary>Experience &amp; resume</summary>
-      ${x.skills ? `<p class="small"><strong>Skills:</strong> ${esc(x.skills)}</p>` : ""}
-      ${x.workHistory ? `<p class="small"><strong>Work history:</strong><br>${nl2br(x.workHistory)}</p>` : ""}
-      ${x.education ? `<p class="small"><strong>Education:</strong> ${esc(x.education)}</p>` : ""}
-      ${resume ? `<p class="small"><strong>Resume:</strong> ${resume}</p>` : ""}
-      ${!x.skills && !x.workHistory && !x.education && !resume ? `<p class="small muted">No details added.</p>` : ""}
-      <p class="small muted copyable">Phone: ${esc(x.phone)}${x.email ? ` · ${esc(x.email)}` : ""}</p>
-    </details>
     ${a.status === "hired" ? `<div class="actions emp-row">${employmentHtml(a)}</div>` : ""}
-    <div class="actions">
-      ${a.status === "offered" ? `<span class="emp-state">Waiting for ${esc((a.applicant?.fullName || "them").split(" ")[0])} to accept</span><button class="btn btn-ghost btn-sm" data-st="shortlisted" data-id="${esc(a.id)}">Withdraw offer</button>` : ""}
-      ${["new", "not_selected"].includes(a.status) ? `<button class="btn btn-ghost btn-sm" data-st="shortlisted" data-id="${esc(a.id)}">Shortlist</button>` : ""}
-      ${["new", "shortlisted", "not_selected"].includes(a.status) ? `<button class="btn btn-primary btn-sm" data-st="offered" data-id="${esc(a.id)}">Offer the job</button>` : ""}
-      ${["new", "shortlisted"].includes(a.status) ? `<button class="btn btn-ghost btn-sm" data-st="not_selected" data-id="${esc(a.id)}">Not a fit</button>` : ""}
-    </div>
+    <footer class="ap-foot">
+      <div class="ap-contact">
+        <a class="btn ${st.open ? "btn-primary" : "btn-ghost"} btn-sm" href="#/chat/${encodeURIComponent(a.id)}">${st.open ? `Message${isUnread(inbox.find((i) => i.id === a.id) || a) ? " · new" : ""}` : "View chat"}</a>
+        ${CAN_SMS && x.phone ? `<a class="btn btn-ghost btn-sm" href="tel:${esc(digits(x.phone))}">Call</a><a class="btn btn-ghost btn-sm" href="sms:${esc(digits(x.phone))}">Text</a>` : ""}
+        ${DECLINED.includes(a.status) ? `<span class="closing">${chatClosedText(st)}</span>` : ""}
+      </div>
+      <div class="ap-status">
+        ${a.status === "offered" ? `<span class="emp-state">Waiting for ${esc((x.fullName || "them").split(" ")[0])} to accept</span><button class="btn btn-ghost btn-sm" data-st="shortlisted" data-id="${esc(a.id)}">Withdraw offer</button>` : ""}
+        ${["new", "not_selected"].includes(a.status) ? `<button class="btn btn-ghost btn-sm" data-st="shortlisted" data-id="${esc(a.id)}">Shortlist</button>` : ""}
+        ${["new", "shortlisted"].includes(a.status) ? `<button class="btn btn-ghost btn-sm" data-st="not_selected" data-id="${esc(a.id)}">Not a fit</button>` : ""}
+        ${["new", "shortlisted", "not_selected"].includes(a.status) ? `<button class="btn btn-primary btn-sm" data-st="offered" data-id="${esc(a.id)}">Offer the job</button>` : ""}
+      </div>
+    </footer>
   </article>`;
 }
 
@@ -1545,6 +1608,8 @@ async function viewApplications() {
     </div>`).join("")}</div>`
     : `<div class="empty"><p><strong>No applications yet.</strong></p><p class="muted">Find a job you like and tap Apply.</p><p><a class="btn btn-primary" href="#/">Browse jobs</a></p></div>`;
   const hiredNow = apps.find((a) => a.status === "hired" && !a.employmentEnded && isFullTime(a.jobSchedule, a.jobArrangement));
+  const stg = profileStrength(profile);
+  if (stg.score < 90) $("#apps").insertAdjacentHTML("beforebegin", `<a class="s-nudge ${stg.cls}" href="#/profile"><span><strong>Your profile is ${stg.level} (${stg.score}/100).</strong> Employers reply more to complete profiles. Next: ${esc(stg.todo[0]?.todo || "")}.</span><em>Finish my profile</em></a>`);
   if (hiredNow) $("#apps").insertAdjacentHTML("beforebegin", `<p class="notice">You're employed full-time as <strong>${esc(hiredNow.jobTitle)}</strong>. You can apply to part-time jobs. To apply for full-time jobs again, tap <strong>Leave this job</strong> below and your employer confirms.</p>`);
   $("#apps").addEventListener("click", async (e) => {
     const o = e.target.closest("[data-offer]");

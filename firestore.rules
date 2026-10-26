@@ -67,7 +67,7 @@ service cloud.firestore {
       return d.keys().hasOnly([
           'title','category','employerName','city','employmentType',
           'salaryMin','salaryMax','salaryPeriod','description','requirements',
-          'area','workplace','arrangement','schedule','hours','daysOff','daysOffPer','openings','startDate','benefits',
+          'area','address','workplace','arrangement','schedule','hours','daysOff','daysOffPer','openings','startDate','benefits',
           'reqExperience','reqEducation','reqList',
           'ownerUid','status','featured','createdAt','updatedAt','approvedAt','expiresAt'])
         && str(d.title, 3, 100)
@@ -84,6 +84,7 @@ service cloud.firestore {
         && optStr(d.get('area', null), 80)
         && (d.get('workplace', null) == null || d.workplace in ['household', 'business'])
         && optStr(d.get('hours', null), 60)
+        && optStr(d.get('address', null), 200)
         && optNum(d.get('daysOff', null))
         && (d.get('openings', null) == null || (d.openings is number && d.openings >= 1 && d.openings <= 3))
         && (d.get('daysOffPer', null) == null || d.daysOffPer in ['week', 'month'])
