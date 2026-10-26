@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792998889";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1792999207";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -50,23 +50,30 @@ async function loadProfile(user) {
   return { profile: p?.exists() ? norm(p) : null, isAdmin: !!a?.exists() };
 }
 
+// applies, messages, reports, support: per day. posts: per calendar month (Pro may raise this later; also update the 5 in firestore.rules mcnt).
 export const LIMITS = { applies: 10, posts: 5, messages: 200, reports: 5, support: 3 };
 const phDay = () => Math.floor((Date.now() + 8 * 3600000) / 86400000);
+// Philippine calendar month as one number (year * 12 + month 1–12). Job posts are limited per month.
+const phMonth = () => { const d = new Date(Date.now() + 8 * 3600000); return d.getUTCFullYear() * 12 + d.getUTCMonth() + 1; };
 export class LimitError extends Error { constructor(kind) { super(`limit:${kind}`); this.kind = kind; this.code = "limit-reached"; } }
 
 export const store = {
   async usage() {
-    if (!uid()) return { day: phDay(), applies: 0, posts: 0, messages: 0, reports: 0, support: 0 };
-    const s = await F.getDoc(F.doc(db, "limits", uid())).catch(() => null);
-    const d = s?.exists() ? s.data() : null;
-    if (!d || d.day !== phDay()) return { day: phDay(), applies: 0, posts: 0, messages: 0, reports: 0, support: 0, msgAt: d?.msgAt ?? null };
-    return { applies: 0, posts: 0, messages: 0, reports: 0, support: 0, ...d };
+    const base = { day: phDay(), month: phMonth(), applies: 0, posts: 0, messages: 0, reports: 0, support: 0, postsM: 0 };
+    if (!uid()) return base;
+    const snap = await F.getDoc(F.doc(db, "limits", uid())).catch(() => null);
+    const d = snap?.exists() ? snap.data() : null;
+    if (!d) return base;
+    const daily = d.day === phDay() ? { applies: d.applies || 0, posts: d.posts || 0, messages: d.messages || 0, reports: d.reports || 0, support: d.support || 0 } : {};
+    return { ...base, ...daily, postsM: d.month === phMonth() ? d.postsM || 0 : 0, msgAt: d.msgAt ?? null };
   },
-  // Adds "bump the daily counter" to a batch. Throws LimitError when the cap is reached.
+  // Adds "bump the counter" to a batch. Posts count per month (postsM); everything else per day.
+  // Throws LimitError when the cap is reached.
   async _bump(batch, kind, extra = {}) {
     const u = await this.usage();
-    if ((u[kind] || 0) >= LIMITS[kind]) throw new LimitError(kind);
-    const next = { day: phDay(), applies: u.applies || 0, posts: u.posts || 0, messages: u.messages || 0, reports: u.reports || 0, support: u.support || 0, [kind]: (u[kind] || 0) + 1, ...extra };
+    const field = kind === "posts" ? "postsM" : kind;
+    if ((u[field] || 0) >= LIMITS[kind]) throw new LimitError(kind);
+    const next = { day: phDay(), month: phMonth(), applies: u.applies, posts: u.posts, messages: u.messages, reports: u.reports, support: u.support, postsM: u.postsM, [field]: (u[field] || 0) + 1, ...extra };
     if (u.msgAt && !("msgAt" in extra)) next.msgAt = u.msgAt;
     batch.set(F.doc(db, "limits", uid()), next);
   },

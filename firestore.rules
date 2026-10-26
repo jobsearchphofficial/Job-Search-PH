@@ -26,6 +26,16 @@ service cloud.firestore {
           && getAfter(limPath()).data.day == today()
           && getAfter(limPath()).data.get(f, 0) == prevCount(f) + 1;
     }
+    // Job posts are limited per Philippine calendar month (field postsM, month = year * 12 + month).
+    function thisMonth() { return (request.time + duration.value(8, 'h')).year() * 12 + (request.time + duration.value(8, 'h')).month(); }
+    function prevPostsM() {
+      return exists(limPath()) && get(limPath()).data.get('month', -1) == thisMonth() ? get(limPath()).data.get('postsM', 0) : 0;
+    }
+    function bumpedPost() {
+      return existsAfter(limPath())
+          && getAfter(limPath()).data.get('month', -1) == thisMonth()
+          && getAfter(limPath()).data.get('postsM', 0) == prevPostsM() + 1;
+    }
     function validPhoto(p) { return p == null || p == '' || (p is string && p.size() <= 60000 && p.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+')); }
 
     /* ---------- Profiles ---------- */
@@ -109,7 +119,7 @@ service cloud.firestore {
                     && request.resource.data.createdAt == request.time
                     && request.resource.data.approvedAt == null
                     && request.resource.data.expiresAt == null
-                    && (isAdmin() || bumped('posts'));
+                    && (isAdmin() || bumpedPost());
       // Owners may only close their own post. Admins can change anything.
       allow update: if isAdmin()
                     || (signedIn()
@@ -280,11 +290,17 @@ service cloud.firestore {
         let after = request.resource.data.get(f, 0);
         return after is int && after >= before && after <= before + 1 && after <= cap;
       }
+      function mcnt(f, cap) {
+        let before = resource != null && resource.data.get('month', -1) == thisMonth() ? resource.data.get(f, 0) : 0;
+        let after = request.resource.data.get(f, 0);
+        return after is int && after >= before && after <= before + 1 && after <= cap;
+      }
       allow read: if signedIn() && me() == uid;
       allow create, update: if signedIn() && me() == uid
-                    && request.resource.data.keys().hasOnly(['day', 'applies', 'posts', 'messages', 'reports', 'support', 'msgAt'])
+                    && request.resource.data.keys().hasOnly(['day', 'month', 'applies', 'posts', 'messages', 'reports', 'support', 'postsM', 'msgAt'])
                     && request.resource.data.day == today()
-                    && cnt('applies', 10) && cnt('posts', 5) && cnt('messages', 200) && cnt('reports', 5) && cnt('support', 3)
+                    && request.resource.data.get('month', thisMonth()) == thisMonth()
+                    && cnt('applies', 10) && cnt('posts', 5) && mcnt('postsM', 5) && cnt('messages', 200) && cnt('reports', 5) && cnt('support', 3)
                     && (request.resource.data.get('msgAt', null) == (resource == null ? null : resource.data.get('msgAt', null))
                         || request.resource.data.msgAt == request.time);
     }

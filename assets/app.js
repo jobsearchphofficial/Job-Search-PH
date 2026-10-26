@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792998889";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1792999207";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -298,7 +298,7 @@ function cropPhoto(file) {
 }
 const limitMsg = {
   applies: `You've applied to ${LIMITS.applies} jobs today, the daily limit. You can apply again tomorrow.`,
-  posts: `You've posted ${LIMITS.posts} jobs today, the daily limit. You can post again tomorrow.`,
+  posts: `You've posted ${LIMITS.posts} jobs this month, the monthly limit. You can post again on the 1st of next month.`,
   messages: `You've sent ${LIMITS.messages} messages today, the daily limit. You can chat again tomorrow.`,
   reports: `You've sent ${LIMITS.reports} reports today. Contact support if something urgent needs attention.`,
   support: `You've sent ${LIMITS.support} support messages today. We'll reply to those first.`,
@@ -1341,7 +1341,7 @@ function viewPost() {
       </aside>
     </div>`;
 
-  if (!getAuthState().isAdmin) store.usage().then((u) => { const el = $("#post-usage"); if (el) el.textContent = `${u.posts || 0} of ${LIMITS.posts} posts used today`; }).catch(() => {});
+  if (!getAuthState().isAdmin) store.usage().then((u) => { const el = $("#post-usage"); if (el) el.textContent = `${u.postsM || 0} of ${LIMITS.posts} posts used this month`; }).catch(() => {});
   const f = $("#post-form");
   const val = (n) => f.querySelector(`[name=${n}]:checked`)?.value ?? "";
   const workplace = () => val("workplace");
