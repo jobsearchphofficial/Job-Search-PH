@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793108543";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793109163";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -61,6 +61,8 @@ const WAGES = {
 };
 const CITY_REGION = { "Dumaguete City": "R7" };
 const WORK_DAYS = 26; // days per month used to convert daily and monthly pay
+// Jobs that only exist in private homes; businesses don't see these.
+const HOUSEHOLD_ONLY = ["Kasambahay / Househelper", "Yaya / Nanny"];
 const HOUSEHOLD_CATS = ["Kasambahay / Househelper", "Yaya / Nanny", "Caregiver", "Cook", "Driver", "Laundry", "Gardener / Maintenance"];
 const BENEFITS = ["SSS", "PhilHealth", "Pag-IBIG", "13th month pay", "Free meals", "Free lodging", "Paid leave", "Overtime pay", "Transport allowance", "Uniform provided"];
 const LEGAL_HOUSEHOLD = ["SSS", "PhilHealth", "Pag-IBIG", "13th month pay"];
@@ -1403,7 +1405,7 @@ function viewPost() {
 
   const renderOptions = () => {
     const wp = workplace() || "household";
-    const cats = wp === "household" ? HOUSEHOLD_CATS.concat(["Other"]) : CATEGORIES;
+    const cats = wp === "household" ? HOUSEHOLD_CATS.concat(["Other"]) : CATEGORIES.filter((c) => !HOUSEHOLD_ONLY.includes(c));
     const curCat = val("category");
     $("#cat-pills").innerHTML = cats.map((c) => `<label class="pill"><input type="radio" name="category" value="${esc(c)}" required ${curCat === c ? "checked" : ""}><span>${esc(c)}</span></label>`).join("");
     const curSched = val("schedule");
@@ -1480,7 +1482,7 @@ function viewPost() {
 
   f.addEventListener("change", (e) => {
     if (e.target.name === "benefits") touchedBenefits = true;
-    if (e.target.name === "workplace") renderOptions();
+    if (e.target.name === "workplace") { renderOptions(); if (!val("category") && f.title.value.trim() === autoTitle) { f.title.value = ""; autoTitle = ""; } }
     if (e.target.name === "category") renderOptions();
     if (["category", "arrangement", "workplace"].includes(e.target.name)) {
       const base = TITLE_FOR[val("category")];
