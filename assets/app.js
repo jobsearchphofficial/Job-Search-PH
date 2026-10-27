@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793113360";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793117626";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -180,6 +180,44 @@ function founderBadge(uid, role, { short = false } = {}) {
   const label = role === "employer" ? "Founding employer" : "Founding jobseeker";
   return `<span class="fbadge ${short ? "short" : ""}" title="${label}: one of the first 100 members of Job Search PH">${STAR}${label}</span>`;
 }
+
+/* ---------------- Verified employer (checked by an admin) ---------------- */
+let VERIFIED = {};
+const SHIELD = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8 4.5 5.6v5.6c0 4.7 3.2 8.9 7.5 10 4.3-1.1 7.5-5.3 7.5-10V5.6L12 2.8Z" fill="currentColor"/><path d="m8.4 12.1 2.4 2.4 4.8-4.8" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+function verifiedBadge(uid, { short = false } = {}) {
+  if (!uid || !VERIFIED[uid]) return "";
+  return `<span class="vbadge ${short ? "short" : ""}" title="Job Search PH checked this employer's identity">${SHIELD}Verified</span>`;
+}
+const VERIFY_METHODS = ["Talked on the phone", "Checked their Facebook", "Saw business permit / DTI", "Met in person", "Known to us"];
+const INFO_ASKS = ["Your Facebook profile or page link", "Your business permit or DTI number", "The exact work location", "More details about the job", "Check the pay (it looks off)"];
+
+// Things worth a second look before approving. Each: [level "bad"|"warn", text]
+const SCAM_WORDS = /\b(fee|bayad|deposit|processing|placement|reservation|gcash|paymaya|maya|telegram|whatsapp|viber|abroad|overseas|dubai|saudi|qatar|kuwait|hong ?kong|taiwan|load|investment|easy money|sideline|online job)\b/i;
+function riskFlags(j, owner, ctx) {
+  const f = [];
+  if (!owner) return [["bad", "No employer profile found"]];
+  const ageH = owner.createdAt ? (Date.now() - owner.createdAt) / 3600000 : null;
+  if (ageH != null && ageH < 24) f.push(["warn", `Brand-new account (made ${ago(owner.createdAt)})`]);
+  if (owner.signIn === "password" && !owner.emailVerified) f.push(["warn", "Email not confirmed (signed up with email & password)"]);
+  if (!owner.fbUrl) f.push(["warn", "No Facebook link on their profile"]);
+  const txt = `${j.title} ${j.description} ${j.requirements || ""}`;
+  const sw = txt.match(SCAM_WORDS); if (sw) f.push(["bad", `Post mentions “${sw[0]}” — common in scam posts`]);
+  if (/(\+?63|0)9\d{2}[\s-]?\d{3}[\s-]?\d{4}/.test(txt) || /https?:\/\/|www\.|\.com\b/i.test(txt)) f.push(["warn", "Phone number or link inside the job text"]);
+  if ((j.description || "").trim().length < 60) f.push(["warn", "Very short job description"]);
+  const ceil = PAY_CEIL[j.workplace === "business" ? "business" : "household"][j.salaryPeriod || "month"];
+  if (ceil && Number(j.salaryMax || j.salaryMin) > ceil) f.push(["bad", "Pay is unusually high for this kind of job (too good to be true?)"]);
+  const prev = ctx.jobs.filter((x) => x.ownerUid === j.ownerUid && x.id !== j.id);
+  const rej = prev.filter((x) => x.status === "rejected").length; if (rej) f.push(["bad", `${rej} earlier post${rej === 1 ? " was" : "s were"} rejected`]);
+  const day = prev.filter((x) => x.createdAt && Date.now() - x.createdAt < 86400000).length; if (day >= 2) f.push(["warn", `${day + 1} posts in the last 24 hours`]);
+  const rep = ctx.reports.filter((r) => prev.some((x) => x.id === r.jobId) || r.jobId === j.id).length; if (rep) f.push(["bad", `${rep} report${rep === 1 ? "" : "s"} on their posts`]);
+  const ph = digits(owner.phone).slice(-10);
+  const same = ph.length === 10 ? ctx.users.filter((u) => u.id !== owner.id && digits(u.phone).slice(-10) === ph) : [];
+  if (same.length) f.push(["bad", `Same phone as ${same.length} other account${same.length === 1 ? "" : "s"}: ${same.slice(0, 3).map((u) => esc(u.fullName || u.id)).join(", ")}`]);
+  if (ctx.bans.some((b) => b.id === owner.id)) f.push(["bad", "This account is banned"]);
+  if (owner.companyName && j.employerName && owner.companyName.trim().toLowerCase() !== j.employerName.trim().toLowerCase()) f.push(["warn", `Post name “${esc(j.employerName)}” differs from profile “${esc(owner.companyName)}”`]);
+  return f;
+}
+const fbHref = (v) => { const u = safeUrl(v); try { return u && /(^|\.)(facebook\.com|fb\.com|fb\.me|m\.me)$/i.test(new URL(u).hostname) ? u : null; } catch { return null; } };
 
 /* ---------------- Pay sanity check (catches typos like 85,000 instead of 8,500) ---------------- */
 const PAY_CEIL = { household: { month: 25000, day: 1000, hour: 150 }, business: { month: 60000, day: 2500, hour: 350 } };
@@ -458,6 +496,32 @@ function showDialog({ title, body, actions }) {
     document.addEventListener("keydown", onKey);
     document.body.appendChild(wrap);
     wrap.querySelector(".btn-primary, .btn")?.focus();
+  });
+}
+
+// Dialog with choice pills. Resolves to an array of picked labels (plus "other" text), or null if cancelled.
+function pickDialog({ title, body, options, multi = false, other = "", confirm = "OK" }) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement("div");
+    wrap.className = "dlg-backdrop";
+    wrap.innerHTML = `<div class="dlg dlg-pick" role="dialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">${title}</h2><p>${body}</p>
+      <div class="pills">${options.map((o) => `<label class="pill"><input type="${multi ? "checkbox" : "radio"}" name="pk" value="${esc(o)}"><span>${esc(o)}</span></label>`).join("")}</div>
+      ${other ? `<label class="small pk-other">${esc(other)}<input maxlength="150" id="pk-other"></label>` : ""}
+      <p class="error small" id="pk-err" hidden>Pick at least one.</p>
+      <div class="dlg-actions"><button class="btn btn-ghost" data-v="0">Cancel</button><button class="btn btn-primary" data-v="1">${confirm}</button></div></div>`;
+    const done = (v) => { wrap.remove(); document.removeEventListener("keydown", onKey); resolve(v); };
+    const onKey = (e) => { if (e.key === "Escape") done(null); };
+    wrap.addEventListener("click", (e) => {
+      if (e.target === wrap) return done(null);
+      const b = e.target.closest("[data-v]"); if (!b) return;
+      if (b.dataset.v === "0") return done(null);
+      const picked = [...wrap.querySelectorAll("[name=pk]:checked")].map((i) => i.value);
+      const extra = wrap.querySelector("#pk-other")?.value.trim(); if (extra) picked.push(extra);
+      if (!picked.length) { wrap.querySelector("#pk-err").hidden = false; return; }
+      done(picked);
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(wrap);
   });
 }
 
@@ -796,7 +860,7 @@ function card(j, applied, km) {
       ${j.featured ? `<span class="badge badge-featured">Featured</span>` : applied ? `<span class="badge badge-app-new">Applied</span>` : ""}
     </div>
     <h3>${esc(j.title)}</h3>
-    <p class="employer">${esc(j.employerName)} ${founderBadge(j.ownerUid, "employer", { short: true })}</p>
+    <p class="employer">${esc(j.employerName)} ${verifiedBadge(j.ownerUid, { short: true })}${founderBadge(j.ownerUid, "employer", { short: true })}</p>
     <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}${km != null ? ` · ${km < 1 ? "<1" : Math.round(km)} km` : ""}</span></p>
     <ul class="meta"><li>${esc(j.employmentType)}</li>${j.workplace === "household" && j.schedule ? `<li>${esc(j.schedule)}</li>` : ""}${perks.map((b) => `<li class="perk">${esc(b)}</li>`).join("")}</ul>
     <div class="card-foot"><span class="salary">${salaryText(j)}</span><span class="muted">${ago(j.approvedAt || j.createdAt)}</span></div>
@@ -812,7 +876,7 @@ async function viewJob(id) {
   const { user, isAdmin } = getAuthState();
   const isOwner = !!(j && user && j.ownerUid === user.uid);
   if (!j || (!isLive(j) && !isOwner && !isAdmin)) {
-    app.innerHTML = `<div class="empty"><h2>This job is no longer available</h2><p class="muted">It may have been filled or removed.</p><p><a class="btn btn-primary" href="#/">Browse other jobs</a></p></div>`;
+    app.innerHTML = `<div class="empty"><h2>This job isn't available</h2><p class="muted">It may still be waiting for review, or it was filled or removed.</p><p><a class="btn btn-primary" href="#/">Browse other jobs</a></p></div>`;
     return;
   }
   document.title = `${j.title} — ${j.city} | Job Search PH`;
@@ -822,7 +886,7 @@ async function viewJob(id) {
       <div class="job-main">
         ${!isLive(j) ? `<p class="notice">This post is not public. Status: ${statusBadge(j)}</p>` : ""}
         <h1>${esc(j.title)}</h1>
-        <p class="employer">${esc(j.employerName)} ${founderBadge(j.ownerUid, "employer")}</p>
+        <p class="employer">${esc(j.employerName)} ${verifiedBadge(j.ownerUid)}${founderBadge(j.ownerUid, "employer")}</p>
         <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}</span></p>
         <ul class="meta"><li>${esc(j.employmentType)}</li>${j.workplace === "household" && j.schedule ? `<li>${esc(j.schedule)}</li>` : ""}<li>${esc(j.category === "Other" && j.categoryOther ? j.categoryOther : j.category)}</li><li>Posted ${ago(j.approvedAt || j.createdAt)}</li></ul>
         <div class="pay-box"><span class="salary salary-lg">${salaryText(j)}</span>${(() => { const m = j.workplace && j.salaryMin ? minimumPay(j.city, j.workplace, j.salaryPeriod) : null; return m && j.salaryMin >= m.amount ? `<span class="minok">${ICON.check}Meets the legal minimum wage</span>` : ""; })()}</div>
@@ -1058,6 +1122,13 @@ function viewProfile() {
         </div>
         ${role === "jobseeker" ? `<div><span class="label">Gender</span><div class="pills tight" role="radiogroup">${["Male", "Female", "Other"].map((g) => `<label class="pill"><input type="radio" name="gender" value="${g}" ${p.gender === g ? "checked" : ""}><span>${g}</span></label>`).join("")}</div></div>` : ""}
       </fieldset>
+      ${role === "employer" ? `
+      <fieldset>
+        <legend>Help us confirm you're real</legend>
+        <p class="hint vf-hint">${SHIELD}Only admins see these. Employers who add them get approved faster and can earn a <strong>Verified</strong> badge, which jobseekers trust more.</p>
+        <label>Facebook profile or page link<input name="fbUrl" type="url" inputmode="url" maxlength="200" placeholder="https://facebook.com/yourname" value="${esc(p.fbUrl || "")}"></label>
+        <label>Business permit or DTI number (businesses only, optional)<input name="bizReg" maxlength="60" placeholder="e.g. DTI 1234567" value="${esc(p.bizReg || "")}"></label>
+      </fieldset>` : ""}
       ${role === "jobseeker" ? `
       <fieldset>
         <legend>Work you're looking for</legend>
@@ -1091,7 +1162,7 @@ function viewProfile() {
 
   const collect = () => {
     const f = $("#profile-form"); if (!f) return;
-    ["fullName", "phone", "city", "messenger", "birthDate", "companyName", "experienceYears", "availability", "skills", "workHistory", "resumeUrl"]
+    ["fullName", "phone", "city", "messenger", "birthDate", "companyName", "fbUrl", "bizReg", "experienceYears", "availability", "skills", "workHistory", "resumeUrl"]
       .forEach((k) => { if (f[k]) p[k] = f[k].value; });
     if (f.eduLevel) p.education = [f.eduLevel.value, f.eduSchool.value.trim()].filter(Boolean).join(" · ");
     const g = f.querySelector("[name=gender]:checked"); if (f.querySelector("[name=gender]")) p.gender = g ? g.value : "";
@@ -1163,6 +1234,10 @@ function viewProfile() {
         });
       } else {
         data.companyName = (p.companyName || "").trim();
+        let fb = (p.fbUrl || "").trim();
+        if (fb && !/^https?:\/\//i.test(fb)) fb = `https://${fb}`;
+        if (fb && !fbHref(fb)) return fail("The Facebook link should look like https://facebook.com/yourname", f.fbUrl);
+        data.fbUrl = fb; data.bizReg = (p.bizReg || "").trim();
       }
       if (!f.consent.checked) return fail("Tick the box to agree before saving.", f.consent);
       const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Saving…";
@@ -1617,12 +1692,15 @@ async function viewMy() {
       return `
       <div class="trow">
         <div><a href="#/job/${encodeURIComponent(j.id)}"><strong>${esc(j.title)}</strong></a> ${statusBadge(j)}
-          <div class="muted small">${esc(j.city)} · posted ${ago(j.createdAt)}${j.expiresAt ? ` · ${isLive(j) ? "expires" : "expired"} ${new Date(j.expiresAt).toLocaleDateString("en-PH")}` : ""}</div></div>
+          <div class="muted small">${esc(j.city)} · posted ${ago(j.createdAt)}${j.expiresAt ? ` · ${isLive(j) ? "expires" : "expired"} ${new Date(j.expiresAt).toLocaleDateString("en-PH")}` : ""}</div>
+          ${j.status === "pending" && j.infoNote ? `<div class="info-ask"><strong>We need a bit more before approving this post:</strong> ${esc(j.infoNote)}.<span class="small muted"> Add your Facebook link or permit on your <a href="#/profile">profile</a>, or send the rest to us.</span><a class="btn btn-primary btn-sm" href="#/support" data-reply-info="${esc(j.id)}">Reply to Job Search PH</a></div>` : ""}</div>
         <div><a class="btn btn-ghost btn-sm" href="#/applicants/${encodeURIComponent(j.id)}">${a.length} applicant${a.length === 1 ? "" : "s"}${fresh ? ` <span class="dot">${fresh} new</span>` : ""}</a></div>
         <div class="actions">${j.status === "approved" || j.status === "pending" ? `<button class="btn btn-ghost btn-sm" data-close="${esc(j.id)}">Mark filled / close</button>` : ""}</div>
       </div>`; }).join("")}</div>` : `<div class="empty"><p>You haven't posted any jobs yet.</p></div>`;
   };
   $("#mine").addEventListener("click", async (e) => {
+    const r = e.target.closest("[data-reply-info]");
+    if (r) { const t = e.target.closest(".trow")?.querySelector("strong")?.textContent || ""; supportPrefill = { topic: "A job post or employer", message: `About my post "${t}" (ID ${r.dataset.replyInfo}):\n`, page: `#/job/${r.dataset.replyInfo}` }; return; }
     const b = e.target.closest("[data-close]"); if (!b) return;
     if (!confirmInline(b, "Click again to close")) return;
     try { await store.updateJob(b.dataset.close, { status: "closed" }); jobsCache = null; toast("Post closed"); draw(); } catch { toast("Could not close post"); }
@@ -1947,7 +2025,7 @@ async function viewChat(appId) {
       <header class="chat-head">
         <a href="#/messages" class="back" aria-label="Back to messages">←</a>
         ${avatar(name, iAmEmployer ? x.photo : "")}
-        <div class="chat-who"><strong>${esc(name)}</strong> ${(iAmEmployer ? founderBadge(a.applicantUid, "jobseeker", { short: true }) : founderBadge(a.employerUid, "employer", { short: true }))}
+        <div class="chat-who"><strong>${esc(name)}</strong> ${(iAmEmployer ? founderBadge(a.applicantUid, "jobseeker", { short: true }) : verifiedBadge(a.employerUid, { short: true }) + founderBadge(a.employerUid, "employer", { short: true }))}
           <span class="muted small">${iAmEmployer ? `${x.age ? `${esc(x.age)} · ` : ""}${esc(x.city || "")} · ` : ""}<a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a></span></div>
         <span id="chat-badge"></span>
       </header>
@@ -2111,7 +2189,10 @@ async function viewAdminUser(id) {
     ...(isSeeker ? [fact("Age", ageFrom(u.birthDate) != null ? `${ageFrom(u.birthDate)} (born ${esc(u.birthDate)})` : ""), fact("Gender", esc(u.gender || "")),
       fact("Experience", u.experienceYears != null && u.experienceYears !== "" ? `${esc(u.experienceYears)} years` : ""), fact("Can start", esc(u.availability || "")),
       fact("Education", esc(u.education || "")), fact("Resume", safeUrl(u.resumeUrl) ? `<a href="${esc(safeUrl(u.resumeUrl))}" target="_blank" rel="noopener nofollow">Open link</a>` : "")]
-      : [fact("Household / business", esc(u.companyName || "")), fact("Job posts", `${d.posts.length} total · ${live.length} live`)]),
+      : [fact("Household / business", esc(u.companyName || "")), fact("Job posts", `${d.posts.length} total · ${live.length} live`),
+        fact("Facebook", fbHref(u.fbUrl) ? `<a href="${esc(fbHref(u.fbUrl))}" target="_blank" rel="noopener nofollow">${esc(fbHref(u.fbUrl).replace(/^https?:\/\/(www\.)?/, ""))}</a>` : ""),
+        fact("Permit / DTI", esc(u.bizReg || ""))]),
+    fact("Signs in with", u.signIn === "google" ? "Google" : u.signIn === "password" ? `Email &amp; password${u.emailVerified ? " (confirmed)" : " (not confirmed)"}` : ""),
     fact("User ID", `<span class="copyable small">${esc(u.id)}</span>`),
   ];
   const appRow = (a, who) => `<li><a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a><span class="muted small">${who} · ${ago(a.createdAt)}</span>${appBadge(a.status, true)}</li>`;
@@ -2123,7 +2204,7 @@ async function viewAdminUser(id) {
           ${avatar(u.fullName, u.photo, "lg")}
           <div><h1>${esc(u.fullName || "(no name)")}</h1>
             <p class="muted">${isSeeker ? "Jobseeker" : "Employer"}${u.companyName && !isSeeker ? ` · ${esc(u.companyName)}` : ""}${u.city ? ` · ${esc(u.city)}` : ""}</p>
-            <div class="au-tags">${founderBadge(u.id, u.role)}${isSeeker ? strengthChip(u) : ""}${ban ? `<span class="badge badge-banned">Banned</span>` : `<span class="badge badge-approved">Active</span>`}</div></div>
+            <div class="au-tags">${isSeeker ? "" : verifiedBadge(u.id)}${founderBadge(u.id, u.role)}${isSeeker ? strengthChip(u) : ""}${ban ? `<span class="badge badge-banned">Banned</span>` : `<span class="badge badge-approved">Active</span>`}</div></div>
         </header>
         <dl class="ap-facts au-facts">${facts.join("")}</dl>
         ${isSeeker ? `<div class="ap-long au-long">
@@ -2143,6 +2224,8 @@ async function viewAdminUser(id) {
             ${!isSeeker && live.length ? `<label class="check small"><input type="checkbox" id="au-close" checked><span>Also close their ${live.length} live post${live.length === 1 ? "" : "s"}</span></label>` : ""}
             <button class="btn btn-danger btn-block" id="au-ban">Ban user</button>`}
         </div>
+        ${!isSeeker ? `<div class="an-card au-verify">${VERIFIED[id] ? `<h3>${SHIELD} Verified employer</h3><p class="small muted">${esc(VERIFIED[id].method)}${VERIFIED[id].at ? ` · ${ago(VERIFIED[id].at)}` : ""}</p><button class="btn btn-ghost btn-block" id="au-unverify">Remove Verified badge</button>`
+          : `<h3>Verify this employer</h3><p class="small muted">Call their number or check their Facebook first. Verified employers get a badge on every post.</p><button class="btn btn-ghost btn-block" id="au-verify">Verify employer</button>`}</div>` : ""}
         ${user.uid === id ? `<p class="small muted">This is your own account.</p>` : ""}
       </aside>
     </div>`;
@@ -2156,6 +2239,16 @@ async function viewAdminUser(id) {
       if (closeAll) await Promise.all(live.map(async (j) => { await store.updateJob(j.id, { status: "closed" }); await store.clearReportsFor(j.id).catch(() => {}); }));
       jobsCache = null; toast("User banned"); viewAdminUser(id);
     } catch (e) { console.error(e); toast(e.code === "permission-denied" ? "Couldn't ban. Publish the latest database rules first." : "Couldn't ban. Try again."); }
+  });
+  $("#au-verify")?.addEventListener("click", async () => {
+    const method = await pickDialog({ title: `Verify ${esc(u.fullName || "this employer")}?`, body: "Only verify after you've confirmed they're a real person or business. How did you check?", options: VERIFY_METHODS, confirm: "Verify" });
+    if (!method) return;
+    try { VERIFIED = await store.verify(id, method.join(", ").slice(0, 60)); toast("Employer verified"); viewAdminUser(id); }
+    catch (e) { console.error(e); toast(e.code === "permission-denied" ? "Couldn't verify. Publish the latest database rules first." : "Couldn't verify. Try again."); }
+  });
+  $("#au-unverify")?.addEventListener("click", async (e) => {
+    if (!confirmInline(e.target, "Click again to remove")) return;
+    try { VERIFIED = await store.unverify(id); toast("Badge removed"); viewAdminUser(id); } catch { toast("Couldn't remove. Try again."); }
   });
   $("#au-unban")?.addEventListener("click", async () => {
     const ok = await showDialog({ title: "Lift the ban?", body: "They'll be able to use Job Search PH normally again. Closed posts stay closed.", actions: [{ label: "Cancel", value: false }, { label: "Lift ban", value: true, primary: true }] });
@@ -2422,26 +2515,59 @@ async function viewAdmin() {
         <div class="actions">${j && j.status !== "closed" ? `<button class="btn btn-danger btn-sm" data-act="closejob" data-id="${esc(r.jobId)}">Close job</button>` : ""}<button class="btn btn-ghost btn-sm" data-act="dismiss" data-id="${esc(r.id)}">Dismiss</button></div>
       </div>`; }).join("")}</div>` : `<div class="empty"><p>No reports.</p></div>`;
   } else {
-    const list = (await store.listByStatus(adminTab)).sort((a, b) => b.createdAt - a.createdAt);
+    const [list0, ctx] = await Promise.all([store.listByStatus(adminTab), store.adminAll().catch(() => null)]);
+    const list = list0.sort((a, b) => b.createdAt - a.createdAt);
     list.forEach((j) => (adminJobs[j.id] = j));
+    if (ctx) VERIFIED = Object.fromEntries(ctx.verified.map((v) => [v.id, v]));
+    const users = ctx ? Object.fromEntries(ctx.users.map((u) => [u.id, u])) : {};
+    const contacts = {};
+    if (adminTab === "pending") await Promise.all(list.map(async (j) => { contacts[j.id] = await store.getContact(j.id); }));
     if (adminTab === "pending" && pendingForAdmin !== list.length) { pendingForAdmin = list.length; renderBell(); renderNav(); }
+    const empPanel = (j) => {
+      const o = users[j.ownerUid]; const c = contacts[j.id];
+      const flags = ctx ? riskFlags(j, o, ctx) : [];
+      const bad = flags.filter((x) => x[0] === "bad").length;
+      const fb = fbHref(o?.fbUrl); const m = messengerUrl(o?.messenger);
+      const posts = ctx ? ctx.jobs.filter((x) => x.ownerUid === j.ownerUid) : [];
+      const row = (k, v) => `<div><dt>${k}</dt><dd>${v || `<span class="none">Not given</span>`}</dd></div>`;
+      return `<section class="ec ${bad ? "is-bad" : flags.length ? "is-warn" : "is-ok"}">
+        <header><h4>Employer check</h4>${VERIFIED[j.ownerUid] ? `${verifiedBadge(j.ownerUid)}<span class="muted small">${esc(VERIFIED[j.ownerUid].method)}</span>` : `<span class="ec-score">${bad ? `${bad} red flag${bad === 1 ? "" : "s"}` : flags.length ? `${flags.length} thing${flags.length === 1 ? "" : "s"} to check` : "No warning signs"}</span>`}
+          ${o ? `<a class="small" href="#/admin/user/${encodeURIComponent(o.id)}">Full profile →</a>` : ""}</header>
+        ${o ? `<dl class="ec-facts">
+          ${row("Account", `${esc(o.fullName || "")}${o.companyName ? ` · ${esc(o.companyName)}` : ""} ${founderBadge(o.id, "employer", { short: true })}`)}
+          ${row("Joined", o.createdAt ? `${new Date(o.createdAt).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })} (${ago(o.createdAt)})` : "")}
+          ${row("Phone", o.phone ? `<a href="tel:${esc(digits(o.phone))}">${esc(o.phone)}</a>` : "")}
+          ${row("Email", o.email ? `<a href="mailto:${esc(o.email)}">${esc(o.email)}</a> <span class="muted small">${o.signIn === "google" ? "· Google account" : o.signIn === "password" ? (o.emailVerified ? "· confirmed" : "· not confirmed") : ""}</span>` : "")}
+          ${row("Facebook", fb ? `<a href="${esc(fb)}" target="_blank" rel="noopener nofollow">${esc(fb.replace(/^https?:\/\/(www\.)?/, ""))}</a>` : "")}
+          ${row("Messenger", m ? `<a href="${esc(m)}" target="_blank" rel="noopener nofollow">${esc(o.messenger)}</a>` : "")}
+          ${row("Permit / DTI", esc(o.bizReg || ""))}
+          ${row("Lives in", esc(o.city || ""))}
+          ${row("Posts", `${posts.length} total · ${posts.filter(isLive).length} live · ${posts.filter((x) => x.status === "rejected").length} rejected`)}
+          ${adminTab === "pending" ? row("Applicant contact", c ? `${esc(c.contactMethod)} — ${esc(c.contactValue)}` : "") + (c?.address ? row("Private address", esc(c.address)) : "") : ""}
+        </dl>` : ""}
+        ${flags.length ? `<ul class="ec-flags">${flags.map(([lv, t]) => `<li class="${lv}">${t}</li>`).join("")}</ul>` : ""}
+        ${j.infoNote ? `<p class="ec-asked small"><strong>You asked ${j.infoAt ? ago(j.infoAt) : ""}:</strong> ${esc(j.infoNote)}</p>` : ""}
+      </section>`;
+    };
     body.innerHTML = list.length ? list.map((j) => `
       <div class="admin-item">
-        <div><strong>${esc(j.title)}</strong> ${statusBadge(j)} ${j.featured ? `<span class="badge badge-featured">Featured</span>` : ""}
+        <div><strong>${esc(j.title)}</strong> ${statusBadge(j)} ${j.featured ? `<span class="badge badge-featured">Featured</span>` : ""}${j.infoNote && j.status === "pending" ? ` <span class="badge badge-app-shortlisted">Waiting for employer</span>` : ""}
           <div class="muted small">${esc(j.employerName)} · ${esc(j.city)} · ${esc(j.category)}${j.categoryOther ? ` (${esc(j.categoryOther)})` : ""} · ${esc(j.employmentType)} · ${salaryText(j)} · submitted ${ago(j.createdAt)}</div></div>
-        <details data-contact="${esc(j.id)}"><summary>View details</summary>
+        ${adminTab === "pending" ? empPanel(j) : ""}
+        <details data-contact="${esc(j.id)}" ${adminTab === "pending" ? "open" : ""}><summary>${adminTab === "pending" ? "Job details" : "View details"}</summary>
           <p>${nl2br(j.description)}</p>${j.requirements ? `<p class="small"><strong>Requirements:</strong><br>${nl2br(j.requirements)}</p>` : ""}
-          <p class="small contact-line"><strong>Contact:</strong> <span>loading…</span> · <strong>Owner UID:</strong> ${esc(j.ownerUid)}</p>
+          ${adminTab !== "pending" ? `<p class="small contact-line"><strong>Contact:</strong> <span>loading…</span></p>${empPanel(j)}` : ""}
         </details>
         <div class="actions">
           ${j.status !== "approved" ? `<button class="btn btn-primary btn-sm" data-act="approve" data-id="${esc(j.id)}">${j.status === "pending" ? "Approve" : "Re-publish"}</button>` : `<button class="btn btn-ghost btn-sm" data-act="approve" data-id="${esc(j.id)}">Renew 30 days</button>`}
-          ${j.status === "pending" ? `<button class="btn btn-ghost btn-sm" data-act="reject" data-id="${esc(j.id)}">Reject</button>` : ""}
+          ${j.status === "pending" ? `<button class="btn btn-ghost btn-sm" data-act="askinfo" data-id="${esc(j.id)}">Ask for more info</button><button class="btn btn-ghost btn-sm" data-act="reject" data-id="${esc(j.id)}">Reject</button>` : ""}
+          ${VERIFIED[j.ownerUid] ? "" : `<button class="btn btn-ghost btn-sm" data-act="verify" data-id="${esc(j.id)}">Verify employer</button>`}
           ${j.status === "approved" ? `<button class="btn btn-ghost btn-sm" data-act="feature" data-id="${esc(j.id)}" data-on="${j.featured ? 1 : 0}">${j.featured ? "Unfeature" : "Feature"}</button><button class="btn btn-ghost btn-sm" data-act="closejob" data-id="${esc(j.id)}">Close</button>` : ""}
           <button class="btn btn-danger btn-sm" data-act="delete" data-id="${esc(j.id)}">Delete</button>
         </div>
       </div>`).join("") : `<div class="empty"><p>Nothing here.</p></div>`;
     body.querySelectorAll("details[data-contact]").forEach((d) => d.addEventListener("toggle", async () => {
-      if (!d.open || d.dataset.loaded) return; d.dataset.loaded = 1;
+      if (!d.open || d.dataset.loaded || !d.querySelector(".contact-line")) return; d.dataset.loaded = 1;
       const c = await store.getContact(d.dataset.contact);
       d.querySelector(".contact-line span").textContent = c ? `${c.contactMethod} — ${c.contactValue}${c.address ? ` · Private address: ${c.address}` : ""}` : "not set";
     }));
@@ -2453,6 +2579,22 @@ async function viewAdmin() {
     if ((act === "delete" || act === "closejob") && !confirmInline(b)) return;
     try {
       const aj = adminJobs[id];
+      if (act === "verify") {
+        if (!aj) return;
+        const method = await pickDialog({ title: "Verify this employer?", body: `Only verify after you've confirmed they're a real person or business. A <strong>Verified</strong> badge will show on all their posts. How did you check?`, options: VERIFY_METHODS, confirm: "Verify" });
+        if (!method) return;
+        await store.verify(aj.ownerUid, method.join(", ").slice(0, 60));
+        VERIFIED = await store.verifiedList(); toast("Employer verified"); return viewAdmin();
+      }
+      if (act === "askinfo") {
+        if (!aj) return;
+        const picked = await pickDialog({ title: "Ask the employer for more info", body: "The post stays in Pending. They'll get a notification and can reply through support or update their profile.", options: INFO_ASKS, multi: true, other: "Anything else? (optional)", confirm: "Send request" });
+        if (!picked) return;
+        const note = picked.join("; ").slice(0, 300);
+        await store.askInfo(id, note);
+        store.notify(aj.ownerUid, { type: "job_info", title: "We need a bit more before approving your post", body: `${aj.title}: please send ${note}`.slice(0, 300), link: "#/my", jobId: id }).catch(() => {});
+        toast("Request sent"); return viewAdmin();
+      }
       if (act === "approve") {
         await store.approve(id);
         if (aj) store.notify(aj.ownerUid, { type: "job_approved", title: "Your job post is live", body: `${aj.title} is now visible to jobseekers for 30 days.`, link: `#/job/${id}`, jobId: id }).catch(() => {});
@@ -2473,8 +2615,10 @@ async function viewAdmin() {
 }
 
 /* ---------------- Support ---------------- */
+let supportPrefill = null;
 function viewSupport() {
   document.title = "Contact support | Job Search PH";
+  const pre = supportPrefill; supportPrefill = null;
   const { user, profile } = getAuthState();
   const topics = ["Problem with my account", "A job post or employer", "An applicant", "Something isn't working", "Suggestion", "Other"];
   app.innerHTML = `
@@ -2486,19 +2630,19 @@ function viewSupport() {
     </div>
     <h2 class="form-h">Or send us a message here</h2>
     <form id="support-form" class="support-form pcard" novalidate>
-      <div class="fld"><span class="label">What's this about?</span><div class="pills" role="radiogroup">${topics.map((t, i) => `<label class="pill"><input type="radio" name="topic" value="${esc(t)}" ${i === 0 ? "checked" : ""}><span>${esc(t)}</span></label>`).join("")}</div></div>
+      <div class="fld"><span class="label">What's this about?</span><div class="pills" role="radiogroup">${topics.map((t, i) => `<label class="pill"><input type="radio" name="topic" value="${esc(t)}" ${(pre ? pre.topic === t : i === 0) ? "checked" : ""}><span>${esc(t)}</span></label>`).join("")}</div></div>
       <div class="row">
         <label class="fld">Your name<input name="name" maxlength="80" value="${esc(profile?.fullName || user?.displayName || "")}" required></label>
         <label class="fld">Email or mobile to reply to<input name="reply" maxlength="120" value="${esc(user?.email || profile?.phone || "")}" required></label>
       </div>
-      <label class="fld">Message<textarea name="message" rows="5" maxlength="2000" required minlength="10" placeholder="Include the job title or person's name if it's about a post or applicant."></textarea></label>
+      <label class="fld">Message<textarea name="message" rows="5" maxlength="2000" required minlength="10" placeholder="Include the job title or person's name if it's about a post or applicant.">${esc(pre?.message || "")}</textarea></label>
       <p class="hint">If you're in danger, contact the PNP (911) or DOLE right away.</p>
       <p id="form-error" class="error" hidden></p>
       <button class="btn btn-primary" type="submit">Send to support</button>
     </form>`;
   $("#support-form").addEventListener("submit", async (e) => {
     e.preventDefault(); const f = e.target; const err = $("#form-error"); err.hidden = true;
-    const data = { topic: f.querySelector("[name=topic]:checked").value, name: f.name.value.trim(), reply: f.reply.value.trim(), message: f.message.value.trim(), page: returnTo || "" };
+    const data = { topic: f.querySelector("[name=topic]:checked").value, name: f.name.value.trim(), reply: f.reply.value.trim(), message: f.message.value.trim(), page: pre?.page || returnTo || "" };
     if (data.name.length < 2 || data.reply.length < 5) { err.textContent = "Add your name and an email or mobile number we can reply to."; err.hidden = false; return; }
     if (data.message.length < 10) { err.textContent = "Write a bit more so we can help."; err.hidden = false; return; }
     const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Sending…";
@@ -2656,7 +2800,7 @@ window.addEventListener("hashchange", route);
 setTheme(getTheme());
 let foundersLoaded = false;
 onAuth(async (s) => {
-  if (!foundersLoaded) { foundersLoaded = true; FOUNDERS = await store.founders().catch(() => ({})); }
+  if (!foundersLoaded) { foundersLoaded = true; [FOUNDERS, VERIFIED] = await Promise.all([store.founders().catch(() => ({})), store.verifiedList().catch(() => ({}))]); }
   const uidNow = s.user?.uid || null;
   const changed = uidNow !== lastUid; lastUid = uidNow;
   if (changed) { myAppsCache = null; startNotifications(); }

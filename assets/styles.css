@@ -964,3 +964,51 @@ input[type="date"]::-webkit-date-and-time-value { text-align: left; }
 .sp-item .actions { margin-top: 2px; }
 @media (max-width: 600px) { .sp-when { margin-left: 0; width: 100%; } }
 #jc-other { margin-top: 10px; }
+
+/* Verified employer badge */
+.vbadge { display: inline-flex; align-items: center; gap: 4px; font-size: .74rem; font-weight: 600; padding: 2px 9px 2px 6px; border-radius: 999px; white-space: nowrap; vertical-align: middle; margin-right: 4px;
+  color: var(--green); background: var(--green-soft); border: 1px solid var(--ok-line); }
+.vbadge svg { width: 14px; height: 14px; color: var(--green); }
+.vbadge.short { font-size: .68rem; padding: 1px 7px 1px 4px; }
+.vf-hint { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 4px; }
+.vf-hint svg { flex: none; width: 18px; height: 18px; color: var(--green); margin-top: 1px; }
+.au-verify h3 { display: flex; align-items: center; gap: 6px; }
+.au-verify h3 svg { width: 18px; height: 18px; color: var(--green); }
+.au-side .an-card + .an-card { margin-top: 14px; }
+
+/* Admin: employer check on pending posts */
+.ec { margin: 12px 0; padding: 14px 16px; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--card); border-left-width: 4px; }
+.ec.is-ok { border-left-color: var(--green); }
+.ec.is-warn { border-left-color: #e0a400; }
+.ec.is-bad { border-left-color: var(--red, #c8402f); }
+.ec header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-bottom: 10px; }
+.ec header h4 { margin: 0; font-size: .95rem; }
+.ec header a { margin-left: auto; }
+.ec-score { font-size: .78rem; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); }
+.ec.is-bad .ec-score { color: #b4321f; background: var(--red-soft); border-color: var(--bad-line); }
+.ec.is-warn .ec-score { color: #8a5a00; background: #fff4d6; border-color: #f0cf73; }
+.ec.is-ok .ec-score { color: var(--green); background: var(--green-soft); border-color: var(--ok-line); }
+.ec-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 18px; margin: 0; }
+.ec-facts dt { font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--slate-soft); }
+.ec-facts dd { margin: 1px 0 0; font-size: .88rem; overflow-wrap: anywhere; }
+.ec-facts .none { color: var(--slate-soft); font-style: italic; }
+.ec-flags { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+.ec-flags li { font-size: .85rem; padding: 6px 10px 6px 28px; border-radius: 8px; position: relative; }
+.ec-flags li::before { position: absolute; left: 9px; top: 6px; font-weight: 700; }
+.ec-flags li.bad { background: var(--red-soft); color: #9c2a1a; }
+.ec-flags li.bad::before { content: "!"; }
+.ec-flags li.warn { background: #fff7e3; color: #7a5200; }
+.ec-flags li.warn::before { content: "?"; }
+.ec-asked { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--bg); }
+:root[data-theme="dark"] .ec-flags li.bad { background: rgba(200, 64, 47, .16); color: #ffb3a6; }
+:root[data-theme="dark"] .ec-flags li.warn, :root[data-theme="dark"] .ec.is-warn .ec-score { background: rgba(240, 190, 60, .12); color: #ffd772; border-color: rgba(240, 190, 60, .35); }
+:root[data-theme="dark"] .ec.is-bad .ec-score { color: #ffb3a6; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ec-flags li.bad { background: rgba(200, 64, 47, .16); color: #ffb3a6; } :root:not([data-theme="light"]) .ec-flags li.warn { background: rgba(240, 190, 60, .12); color: #ffd772; } }
+.admin-item details[open] > summary { margin-bottom: 6px; }
+
+/* Employer: admin asked for more info */
+.info-ask { margin-top: 8px; padding: 10px 12px; border-radius: 10px; background: var(--peach); border: 1px solid var(--warn-line); font-size: .88rem; display: grid; gap: 6px; justify-items: start; }
+
+/* Pick dialog */
+.dlg-pick .pills { margin: 4px 0 10px; }
+.pk-other { display: grid; gap: 4px; }

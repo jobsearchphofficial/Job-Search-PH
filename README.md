@@ -55,6 +55,13 @@ Add `?src=<name>` to any link, e.g. `https://jobsearchph.com/?src=fb-bacolod-gro
 | `firestore.rules` | Database security rules |
 | `scripts/build-job-pages.mjs` | Static job pages for search engines |
 
+## Checking employers
+
+Every pending post in **Admin → Pending** shows an *Employer check*: account age, sign-in method, phone, Facebook link, permit/DTI number, past posts, and warning signs (brand-new account, scam words like "fee" or "GCash", pay that's too high, a phone number shared with other accounts, earlier rejections or reports).
+
+- **Ask for more info** keeps the post pending and notifies the employer, who can reply through support or update their profile.
+- **Verify employer** (after a call or a Facebook check) adds a green *Verified* badge to all their posts. Remove it from their page in Admin → Users.
+
 ## Making someone an admin
 
 In Firestore, create a document in the `admins` collection whose ID is their User UID (from Authentication → Users). Add any field, e.g. `name: "Mark"`.

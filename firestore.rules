@@ -45,7 +45,8 @@ service cloud.firestore {
       return d.keys().hasOnly([
           'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
           'birthDate','gender','jobCategories','jobTypes','experienceYears','skills','workHistory',
-          'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email','src','jobCategoryOther'])
+          'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email','src','jobCategoryOther',
+          'fbUrl','bizReg','signIn','emailVerified'])
         && d.role in ['jobseeker', 'employer']
         && str(d.fullName, 2, 80)
         && str(d.phone, 7, 20)
@@ -68,7 +69,11 @@ service cloud.firestore {
         && validPhoto(d.get('photo', null))
         && optStr(d.get('email', null), 200)
         && optStr(d.get('src', null), 40)
-        && optStr(d.get('jobCategoryOther', null), 40);
+        && optStr(d.get('jobCategoryOther', null), 40)
+        && optStr(d.get('fbUrl', null), 200)
+        && optStr(d.get('bizReg', null), 60)
+        && (d.get('signIn', null) == null || d.signIn in ['', 'google', 'password'])
+        && (d.get('emailVerified', null) == null || d.emailVerified is bool);
     }
 
     match /users/{uid} {
@@ -336,6 +341,15 @@ service cloud.firestore {
                         && request.resource.data.at == request.time
                         && request.resource.data.no == getAfter(foundersPath()).data.count);
       allow update, delete: if isAdmin();
+    }
+
+    // Employers an admin has checked (phone call, Facebook, business permit…). Public so the badge shows.
+    match /verified/{uid} {
+      allow read: if true;
+      allow create, update: if isAdmin()
+                    && request.resource.data.keys().hasOnly(['at', 'by', 'method'])
+                    && str(request.resource.data.method, 1, 60);
+      allow delete: if isAdmin();
     }
 
     match /bans/{uid} {

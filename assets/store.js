@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793113360";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793117626";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -8,6 +8,7 @@ const USE_EMULATORS = ["localhost", "127.0.0.1"].includes(location.hostname) && 
 let A, F, S, auth, db, storage;
 let state = { user: null, profile: null, isAdmin: false, banned: null, ready: false };
 let foundersCache = null;
+let verifiedCache = null;
 const listeners = new Set();
 const emit = () => listeners.forEach((cb) => cb({ ...state }));
 
@@ -27,7 +28,7 @@ const toMs = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : v ??
 const norm = (snap) => {
   const d = snap.data();
   const out = { id: snap.id, ...d };
-  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt", "endRequestedAt", "endedAt", "acceptedAt", "bannedAt", "doneAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
+  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt", "endRequestedAt", "endedAt", "acceptedAt", "bannedAt", "doneAt", "infoAt", "at"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
   return out;
 };
 const jobsQ = async (...c) => (await F.getDocs(F.query(F.collection(db, "jobs"), ...c))).docs.map(norm);
@@ -126,12 +127,15 @@ export const store = {
   async saveProfile(data) {
     const ref = F.doc(db, "users", uid());
     const exists = !!state.profile;
-    const payload = { ...data, consent: true, email: auth.currentUser?.email || "", updatedAt: F.serverTimestamp() };
+    const cu = auth.currentUser;
+    const signIn = cu?.providerData?.some((p) => p.providerId === "google.com") ? "google" : cu?.providerData?.some((p) => p.providerId === "password") ? "password" : "";
+    const payload = { ...data, consent: true, email: cu?.email || "", signIn, emailVerified: !!cu?.emailVerified, updatedAt: F.serverTimestamp() };
     if (!exists) { payload.createdAt = F.serverTimestamp(); const src = visitSource(); if (src) payload.src = src; }
     try { await F.setDoc(ref, payload, { merge: true }); }
     catch (e) { // older published rules don't know the newest optional fields yet: save without them
-      if (e.code !== "permission-denied" || !(payload.src || payload.jobCategoryOther)) throw e;
-      delete payload.src; delete payload.jobCategoryOther; await F.setDoc(ref, payload, { merge: true });
+      if (e.code !== "permission-denied") throw e;
+      ["src", "jobCategoryOther", "fbUrl", "bizReg", "signIn", "emailVerified"].forEach((k) => delete payload[k]);
+      await F.setDoc(ref, payload, { merge: true });
     }
     const extra = await loadProfile(auth.currentUser);
     state = { ...state, ...extra }; emit();
@@ -350,8 +354,8 @@ export const store = {
   // Admin analytics: everything in one go (fine at early scale; capped per collection).
   async adminAll() {
     const q = async (c) => (await F.getDocs(F.query(F.collection(db, c), F.limit(5000)))).docs.map(norm);
-    const [users, jobs, apps, reports, support, bans] = await Promise.all([q("users"), q("jobs"), q("applications"), q("reports").catch(() => []), q("support").catch(() => []), q("bans").catch(() => [])]);
-    return { users, jobs, apps, reports, support, bans };
+    const [users, jobs, apps, reports, support, bans, verified] = await Promise.all([q("users"), q("jobs"), q("applications"), q("reports").catch(() => []), q("support").catch(() => []), q("bans").catch(() => []), q("verified").catch(() => [])]);
+    return { users, jobs, apps, reports, support, bans, verified };
   },
   async adminUser(id) {
     const [u, b, posts, applied] = await Promise.all([
@@ -365,6 +369,20 @@ export const store = {
     await F.setDoc(F.doc(db, "bans", id), { reason, note: note || "", name: name || "", bannedAt: F.serverTimestamp(), bannedBy: uid() });
   },
   async unban(id) { await F.deleteDoc(F.doc(db, "bans", id)); },
+  /* ---- Verified employers (checked by an admin) ---- */
+  async verifiedList(force = false) {
+    if (!force && verifiedCache) return verifiedCache;
+    try { const snap = await F.getDocs(F.collection(db, "verified")); verifiedCache = Object.fromEntries(snap.docs.map((d) => [d.id, norm(d)])); }
+    catch { verifiedCache = verifiedCache || {}; }
+    return verifiedCache;
+  },
+  async verify(id, method) {
+    await F.setDoc(F.doc(db, "verified", id), { method, at: F.serverTimestamp(), by: uid() });
+    return this.verifiedList(true);
+  },
+  async unverify(id) { await F.deleteDoc(F.doc(db, "verified", id)); return this.verifiedList(true); },
+  // Admin asks the employer for more before approving. The post stays pending.
+  async askInfo(jobId, note) { await this.updateJob(jobId, { infoNote: note, infoAt: F.serverTimestamp() }); },
   async listSupport() {
     const s = await F.getDocs(F.query(F.collection(db, "support"), F.orderBy("createdAt", "desc"), F.limit(200)));
     return s.docs.map(norm);
