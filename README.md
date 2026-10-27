@@ -65,6 +65,16 @@ Add `?src=<name>` to any link, e.g. `https://jobsearchph.com/?src=fb-bacolod-gro
 | `firestore.rules` | Database security rules |
 | `scripts/build-job-pages.mjs` | Static job pages for search engines |
 
+## Job alert emails
+
+Jobseekers tick **Job alerts by email** on their profile and choose "only my city" or "anywhere in Negros Occidental". Every morning (6:41 AM PH) `.github/workflows/job-alerts.yml` runs `scripts/send-job-alerts.mjs`, which emails each of them the jobs approved since their last alert whose category is one they picked. No new matches means no email. Emails go out through Resend from `alerts@jobsearchph.com`, with links tagged `?src=job-alert`.
+
+- **Secrets** (repo → Settings → Secrets and variables → Actions): `FIREBASE_SERVICE_ACCOUNT` (Firebase → Project settings → Service accounts → Generate new private key; paste the whole JSON) and `RESEND_API_KEY`. The script picks the Firebase project from the key, so the staging repo uses the staging project's key.
+- **Variable** (staging repo only): `SITE_URL` = `https://staging.jobsearchph.com`.
+- **Unsubscribe** works without signing in: the link writes `unsubscribes/{token}`, and the next run turns alerts off on that profile. `alertState/{uid}` records when each person was last emailed.
+- **Test**: Actions → Job alert emails → Run workflow → `dry-run` prints the emails without sending. Locally: `node scripts/send-job-alerts.mjs --fixture scripts/sample-alerts.json`.
+- **Limit**: Resend's free plan allows 100 emails a day and 3,000 a month. The script stops at `MAX_EMAILS` (90), and anyone it skips gets their alert on the next run.
+
 ## Checking employers
 
 Every pending post in **Admin → Pending** shows an *Employer check*: account age, sign-in method, phone, Facebook link, permit/DTI number, past posts, and warning signs (brand-new account, scam words like "fee" or "GCash", pay that's too high, a phone number shared with other accounts, earlier rejections or reports).

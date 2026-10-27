@@ -1,5 +1,5 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793117864";
-import { IS_STAGING } from "./firebase-config.js?v=1793117864";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793122887";
+import { IS_STAGING } from "./firebase-config.js?v=1793122887";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -376,6 +376,8 @@ const limitMsg = {
   support: `You've sent ${LIMITS.support} support messages today. We'll reply to those first.`,
 };
 const $ = (s, el = document) => el.querySelector(s);
+// 32 random letters/digits: the secret in a job alert email's unsubscribe link.
+const alertToken = () => { const c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; return [...crypto.getRandomValues(new Uint8Array(32))].map((b) => c[b % 62]).join(""); };
 const app = $("#app");
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const peso = (n) => "₱" + Number(n).toLocaleString("en-PH");
@@ -1143,6 +1145,15 @@ function viewProfile() {
         </div>
       </fieldset>
       <fieldset>
+        <legend>Job alerts by email</legend>
+        <label class="check"><input type="checkbox" name="alerts" ${p.alerts ? "checked" : ""}>
+          <span>Email me when new jobs match the jobs I picked above</span></label>
+        <label id="alerts-scope" ${p.alerts ? "" : "hidden"}>Where<select name="alertsScope">
+          <option value="city" ${p.alertsScope !== "all" ? "selected" : ""}>Only in my city / municipality</option>
+          <option value="all" ${p.alertsScope === "all" ? "selected" : ""}>Anywhere in Negros Occidental</option></select>
+          <span class="hint">At most one email a day${user.email ? `, sent to <strong>${esc(user.email)}</strong>` : ""}. Every email has an unsubscribe link.</span></label>
+      </fieldset>
+      <fieldset>
         <legend>Experience &amp; resume</legend>
         <label>Skills<textarea name="skills" rows="2" maxlength="1000" placeholder="e.g. cooking Filipino dishes, ironing, caring for toddlers, basic first aid">${esc(p.skills)}</textarea></label>
         <label>Work history<textarea name="workHistory" rows="4" maxlength="3000" placeholder="One job per line, e.g.&#10;2022–2024 · Kasambahay · Santos family, Bacolod&#10;2020–2022 · Kitchen helper · Inasal stall, Silay">${esc(p.workHistory)}</textarea></label>
@@ -1170,6 +1181,7 @@ function viewProfile() {
     const g = f.querySelector("[name=gender]:checked"); if (f.querySelector("[name=gender]")) p.gender = g ? g.value : "";
     ["jobCategories", "jobTypes"].forEach((k) => { if (f.querySelector(`[name=${k}]`)) p[k] = [...f.querySelectorAll(`[name=${k}]:checked`)].map((i) => i.value); });
     if (f.jobCategoryOther) p.jobCategoryOther = (p.jobCategories || []).includes("Other") ? f.jobCategoryOther.value.trim().replace(/\s+/g, " ").replace(/^./, (c) => c.toUpperCase()) : "";
+    if (f.alerts) { p.alerts = f.alerts.checked; p.alertsScope = f.alertsScope.value === "all" ? "all" : "city"; }
   };
 
   const bindForm = () => {
@@ -1178,6 +1190,7 @@ function viewProfile() {
       if (f.querySelectorAll("[name=jobCategories]:checked").length > 5) { cb.checked = false; toast("Pick up to 5 jobs"); }
       const jo = $("#jc-other"); if (jo) { jo.hidden = !f.querySelector('[name=jobCategories][value="Other"]:checked'); if (!jo.hidden && cb.value === "Other" && cb.checked) f.jobCategoryOther.focus(); }
     }));
+    f.alerts?.addEventListener("change", () => { $("#alerts-scope").hidden = !f.alerts.checked; });
     f.addEventListener("input", (e) => e.target.classList?.remove("invalid"));
     const pd = loadDraft(`profile:${role}`);
     if (pd) {
@@ -1234,7 +1247,12 @@ function viewProfile() {
           skills: (p.skills || "").trim(), workHistory: (p.workHistory || "").trim(), education: (p.education || "").trim(),
           availability: p.availability || "", resumeUrl: (p.resumeUrl || "").trim(),
         });
+        if (p.alerts && !(p.jobCategories || []).length) return fail("Pick at least one job above so we know which alerts to send.", f.alerts);
+        if (p.alerts && !user.email) return fail("Your account has no email address, so we can't send job alerts.", f.alerts);
+        // A fresh unsubscribe token each time alerts are switched on, so an old unsubscribe click can't turn them off again.
+        Object.assign(data, { alerts: !!p.alerts, alertsScope: p.alertsScope || "city", alertsToken: p.alerts && !profile?.alerts ? alertToken() : (p.alertsToken || profile?.alertsToken || alertToken()) });
       } else {
+        data.alerts = false; // employers don't get job alerts (also turns them off when switching from jobseeker)
         data.companyName = (p.companyName || "").trim();
         let fb = (p.fbUrl || "").trim();
         if (fb && !/^https?:\/\//i.test(fb)) fb = `https://${fb}`;
@@ -2751,7 +2769,7 @@ function viewStatic(page) {
       title: "Privacy policy",
       html: legalPage("Privacy policy", "How Job Search PH collects, uses and protects your personal data, in line with the Data Privacy Act of 2012 (RA 10173) and the rules of the National Privacy Commission.", [
         ["Data we collect", `<ul><li><strong>Account:</strong> your email and sign-in method (Google or email and password).</li><li><strong>Jobseeker profile:</strong> name, photo (optional), birthdate (we show employers your age, not your birthdate), gender, mobile number, city, Messenger, jobs wanted, experience, skills, work history, education and resume link.</li><li><strong>Employer profile:</strong> name, photo (optional), household or business name, mobile number, city and Messenger.</li><li><strong>Activity on the site:</strong> job posts, applications, chat messages, interview and hiring status, notifications, reports and support messages.</li><li><strong>Anti-spam counters:</strong> how many applications, posts, messages and reports you sent today.</li><li><strong>On your device only:</strong> your light or dark mode choice.</li></ul><p>We don't use advertising trackers, and we don't sell your data.</p>`],
-        ["Why we use it", `<ul><li>To run your account and show your posts, applications and messages;</li><li>To share your profile with employers you apply to, and employer contact details with the worker they hire;</li><li>To review job posts, prevent spam, fraud and abuse, and handle reports and appeals;</li><li>To reply to support requests and improve the site.</li></ul>`],
+        ["Why we use it", `<ul><li>To run your account and show your posts, applications and messages;</li><li>To share your profile with employers you apply to, and employer contact details with the worker they hire;</li><li>To review job posts, prevent spam, fraud and abuse, and handle reports and appeals;</li><li>To reply to support requests and improve the site;</li><li>If you turn on job alerts, to email you new jobs that match the jobs and city on your profile. Emails are sent through our email provider, Resend. Unsubscribe with the link in any email or in My profile.</li></ul>`],
         ["Who can see it", `<ul><li><strong>Everyone:</strong> live job posts (title, employer or household name, area, pay and details). Employer contact details are not public.</li><li><strong>Employers you apply to:</strong> your profile, photo, age, contact details, message, experience and resume.</li><li><strong>The worker you hire:</strong> the employer contact you entered on the post, once they accept your job offer.</li><li><strong>The person you're chatting with:</strong> your messages.</li><li><strong>Job Search PH admins:</strong> all data, only to run and keep the site safe.</li><li><strong>Service provider:</strong> the site runs on Google Firebase, which stores data for us under its own security and privacy terms.</li></ul><p>We may also disclose data when the law requires it, such as a lawful order from the authorities.</p>`],
         ["How long we keep it", `<ul><li>Your profile stays until you delete it.</li><li>Job posts expire after 30 days and stay in your account until removed.</li><li>Applications and chats stay so both sides can refer back to them. Chats with declined applicants close after 48 hours but remain readable.</li><li>Reports and safety records are kept as long as needed to protect users, then deleted.</li></ul>`],
         ["How we protect it", `<p>Data is stored on Google Firebase with access rules that let each person see only what they're allowed to. Admin access is limited to authorized Job Search PH staff. No system is perfectly secure, so please use a strong password and keep it private.</p>`],
@@ -2767,6 +2785,19 @@ function viewStatic(page) {
   app.querySelectorAll("[data-sec]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); document.getElementById(a.dataset.sec)?.scrollIntoView({ behavior: "smooth", block: "start" }); }));
 }
 
+/* ---------------- Unsubscribe from job alert emails (link in every email, works signed out) ---------------- */
+async function viewUnsubscribe(token) {
+  document.title = "Unsubscribe | Job Search PH";
+  app.innerHTML = `<div class="empty"><h1>Stopping job alerts…</h1></div>`;
+  try {
+    await store.unsubscribe(token);
+    app.innerHTML = `<div class="empty"><h1>You're unsubscribed</h1><p class="muted">We won't send you job alert emails anymore. Changed your mind? Turn them back on in <a href="#/profile">My profile</a>.</p><p><a class="btn btn-primary" href="#/">Browse jobs</a></p></div>`;
+  } catch (e) {
+    console.error(e);
+    app.innerHTML = `<div class="empty"><h1>That link didn't work</h1><p class="muted">Sign in and switch off <strong>Job alerts by email</strong> in <a href="#/profile">My profile</a>, or email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a> and we'll do it for you.</p></div>`;
+  }
+}
+
 /* ---------------- Router ---------------- */
 let lastUid;
 async function route() {
@@ -2775,6 +2806,7 @@ async function route() {
   const [, page, arg, arg2] = (location.hash || "#/").split("/");
   window.scrollTo(0, 0);
   const { user, profile, banned, isAdmin } = getAuthState();
+  if (page === "unsubscribe") return viewUnsubscribe(arg || "");
   if (user && banned && !isAdmin && !["support", "safety", "terms", "privacy"].includes(page || "")) return viewSuspended(banned);
   // New accounts finish their profile first; browsing jobs and reading info pages still work.
   if (user && !profile && !["", "job", "profile", "signin", "safety", "terms", "privacy", "support"].includes(page || "")) {
