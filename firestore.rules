@@ -81,7 +81,7 @@ service cloud.firestore {
       return d.keys().hasOnly([
           'title','category','categoryOther','employerName','city','employmentType',
           'salaryMin','salaryMax','salaryPeriod','description','requirements',
-          'area','address','workplace','arrangement','schedule','hours','daysOff','daysOffPer','openings','startDate','benefits',
+          'area','address','addressHidden','workplace','arrangement','schedule','hours','daysOff','daysOffPer','openings','startDate','benefits',
           'reqExperience','reqEducation','reqList',
           'ownerUid','status','featured','createdAt','updatedAt','approvedAt','expiresAt'])
         && str(d.title, 3, 100)
@@ -100,6 +100,7 @@ service cloud.firestore {
         && (d.get('workplace', null) == null || d.workplace in ['household', 'business'])
         && optStr(d.get('hours', null), 60)
         && optStr(d.get('address', null), 200)
+        && (d.get('addressHidden', null) == null || d.addressHidden is bool)
         && optNum(d.get('daysOff', null))
         && (d.get('openings', null) == null || (d.openings is number && d.openings >= 1 && d.openings <= 3))
         && (d.get('daysOffPer', null) == null || d.daysOffPer in ['week', 'month'])
@@ -141,7 +142,8 @@ service cloud.firestore {
                             && get(/databases/$(database)/documents/applications/$(jobId + '_' + me())).data.status == 'hired')));
         allow create, update: if signedIn() && notBanned() && docId == 'contact'
                     && getAfter(/databases/$(database)/documents/jobs/$(jobId)).data.ownerUid == me()
-                    && request.resource.data.keys().hasOnly(['contactMethod', 'contactValue'])
+                    && request.resource.data.keys().hasOnly(['contactMethod', 'contactValue', 'address'])
+                    && optStr(request.resource.data.get('address', null), 200)
                     && request.resource.data.contactMethod in ['messenger', 'phone', 'email']
                     && str(request.resource.data.contactValue, 3, 200);
         allow delete: if isAdmin();

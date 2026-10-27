@@ -950,3 +950,5 @@ body > .site-footer { flex-shrink: 0; }
 /* iOS date inputs ignore width and overflow their box */
 input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; max-width: 100%; width: 100%; box-sizing: border-box; display: block; min-height: 46px; }
 input[type="date"]::-webkit-date-and-time-value { text-align: left; }
+.addr-private { margin-top: 2px; align-items: flex-start; }
+.addr-private span { color: var(--slate); }

@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793109163";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793110125";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -125,6 +125,7 @@ function requirementsHtml(j) {
 function conditionsHtml(j) {
   const rows = [];
   if (j.workplace) rows.push([ICON.home, "Workplace", j.workplace === "household" ? "Private household" : "Business"]);
+  if (!j.address && j.addressHidden) rows.push([ICON.pin, "Address", `<span data-private-address>${esc([j.area, j.city].filter(Boolean).join(", "))} · <span class="muted">exact address shared with the person hired</span></span>`]);
   if (j.address) { const q = encodeURIComponent([j.address, j.area, j.city, "Negros Occidental"].filter(Boolean).join(", ")); rows.push([ICON.pin, "Address", `${esc(j.address)}${j.area ? `, ${esc(j.area)}` : ""}, ${esc(j.city)} · <a href="https://www.google.com/maps/search/?api=1&amp;query=${q}" target="_blank" rel="noopener">Open map</a>`]); }
   if (j.hours) rows.push([ICON.clock, "Working hours", esc(j.hours)]);
   if (j.daysOff != null && j.daysOff !== "") rows.push([ICON.cal, "Days off", `${esc(j.daysOff)} day${Number(j.daysOff) === 1 ? "" : "s"} per ${j.daysOffPer === "month" ? "month" : "week"}`]);
@@ -864,6 +865,11 @@ async function viewJob(id) {
     catch (err) { toast(err.code === "limit-reached" ? limitMsg.reports : "Could not send report. Try again."); }
   });
   renderApplyPanel(j, isOwner);
+  if (j.addressHidden && (isOwner || getAuthState().isAdmin)) store.getContact(j.id).then((c) => {
+    const el = app.querySelector("[data-private-address]"); if (!el || !c?.address) return;
+    const q = encodeURIComponent([c.address, j.area, j.city, "Negros Occidental"].filter(Boolean).join(", "));
+    el.innerHTML = `${esc(c.address)}${j.area ? `, ${esc(j.area)}` : ""}, ${esc(j.city)} · <a href="https://www.google.com/maps/search/?api=1&amp;query=${q}" target="_blank" rel="noopener">Open map</a> <span class="badge badge-closed">Private: only you${isOwner ? "" : " (admin)"} and admins see this</span>`;
+  }).catch(() => {});
 }
 
 async function renderApplyPanel(j, isOwner) {
@@ -902,11 +908,13 @@ async function renderApplyPanel(j, isOwner) {
   const mine = apps.find((a) => a.jobId === j.id);
   const employed = apps.find((a) => a.status === "hired" && !a.employmentEnded && isFullTime(a.jobSchedule, a.jobArrangement));
   if (mine) {
-    const c = mine.status === "hired" ? contactLink(await store.getContact(j.id).catch(() => null)) : null;
+    const rawContact = mine.status === "hired" ? await store.getContact(j.id).catch(() => null) : null;
+    const c = rawContact ? contactLink(rawContact) : null;
     panel.innerHTML = `
       <h2>${mine.status === "new" ? "Application sent" : mine.status === "offered" ? "You got a job offer!" : `You applied ${appBadge(mine.status)}`}</h2>
       ${mine.status === "offered" ? `<p>${esc(mine.employerName || "The employer")} wants to hire you. Accept to start, or decline if it's not right for you.</p><div class="actions offer-row">${offerHtml(mine)}</div>` : ""}
       <p class="muted">Sent ${ago(mine.createdAt)}. ${mine.status === "hired" ? "You're hired. Coordinate your start with the employer below." : "The employer can see your profile. Replies come through Messages here on Job Search PH."}</p>
+      ${rawContact?.address ? `<p class="small"><strong>Work address</strong><br>${esc(rawContact.address)}${j.area ? `, ${esc(j.area)}` : ""}, ${esc(j.city)}</p>` : ""}
       ${c ? `<p class="small"><strong>Employer contact</strong></p>
         <a class="btn btn-primary btn-block" href="${esc(c.href)}" target="_blank" rel="noopener nofollow">${esc(c.label)}</a>
         ${c.extra ? `<a class="btn btn-ghost btn-block" href="${esc(c.extra)}">Send a text</a>` : ""}
@@ -1324,7 +1332,10 @@ function viewPost() {
               <input id="p-area" name="area" maxlength="80" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="p-area-list" aria-autocomplete="list" placeholder="e.g. Mandalagan">
               <ul class="ac-list" id="p-area-list" role="listbox" hidden></ul></div></div>
           </div>
-          <label class="fld" id="addr-field" hidden>Full business address *<input name="address" maxlength="200" placeholder="e.g. Unit 5, 2F Ayala Malls Capitol Central, Gatuslao St."><span class="hint">Building, unit or floor, and street. Shown on your post so applicants can find you.</span></label>
+          <div class="fld" id="addr-field" hidden>
+            <label class="fld">Full business address *<input name="address" maxlength="200" placeholder="e.g. Unit 5, 2F Ayala Malls Capitol Central, Gatuslao St."><span class="hint">Building, unit or floor, and street.</span></label>
+            <label class="check small addr-private"><input type="checkbox" name="hideAddress"><span><strong>Keep the full address private.</strong> Jobseekers only see the barangay and city. Job Search PH admins can still see it, and it's shared with the person you hire.</span></label>
+          </div>
           <p class="hint" id="loc-hint">The area helps jobseekers search nearby. Don't include house numbers.</p>
         </section>
 
@@ -1558,6 +1569,7 @@ function viewPost() {
     if (min && data.salaryMin < min.amount) return fail(`The pay is below the legal minimum of ₱${min.amount.toLocaleString("en-PH")} per ${data.salaryPeriod}. Please raise it.`, f.salaryMin);
     if (!(data.daysOff >= 2)) return fail("The minimum is 2 days off per month.", f.daysOff);
     const contact = { contactMethod: val("contactMethod"), contactValue: f.contactValue.value.trim() };
+    if (workplace() === "business" && f.hideAddress.checked && data.address) { contact.address = data.address; data.address = ""; data.addressHidden = true; }
     if (!contactLink(contact)) return fail("That contact doesn't look right. Check the username, number or email.", f.contactValue);
     if (contact.contactMethod === "phone" && digits(contact.contactValue).length < 10) return fail("Please enter a complete phone number.", f.contactValue);
     const pw = payWarning(data);
@@ -2412,7 +2424,7 @@ async function viewAdmin() {
     body.querySelectorAll("details[data-contact]").forEach((d) => d.addEventListener("toggle", async () => {
       if (!d.open || d.dataset.loaded) return; d.dataset.loaded = 1;
       const c = await store.getContact(d.dataset.contact);
-      d.querySelector(".contact-line span").textContent = c ? `${c.contactMethod} — ${c.contactValue}` : "not set";
+      d.querySelector(".contact-line span").textContent = c ? `${c.contactMethod} — ${c.contactValue}${c.address ? ` · Private address: ${c.address}` : ""}` : "not set";
     }));
   }
 
