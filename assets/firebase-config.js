@@ -1,7 +1,7 @@
 // Firebase web app config (Firebase console → Project settings → Your apps).
 export const firebaseConfig = {
   apiKey: "AIzaSyAc8z7FwRCxDbXj1g2WFdf7A_5iitPJytg",
-  authDomain: "job-search-ph-website.firebaseapp.com",
+  authDomain: "jobsearchph.com", // sign-in helper self-hosted in /__/auth (was job-search-ph-website.firebaseapp.com)
   projectId: "job-search-ph-website",
   storageBucket: "job-search-ph-website.firebasestorage.app",
   messagingSenderId: "541010223461",
