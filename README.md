@@ -19,6 +19,16 @@ python3 -m http.server 8000
 
 This talks to the live Firebase project. For testing without touching real data, run the Firebase emulators (Firestore on port 8085, Auth on 9099) and open `http://localhost:8000/?emu`.
 
+## Test site first, then live
+
+Real people use jobsearchph.com, so every change goes to the **test site** first:
+
+1. `scripts/deploy-staging.sh` publishes the current code to https://staging.jobsearchph.com (repo `Job-Search-PH-staging`). It uses a separate Firebase project with test data only, shows a yellow TEST SITE banner, and is hidden from Google.
+2. Check it there (both phones if it's a big change). Publish any rules change to the **test** Firebase project first.
+3. When it's good, push to this repo to update the live site, and publish the rules to the **live** Firebase project.
+
+`assets/firebase-config.js` picks the database by address: `staging.*` uses the test project and never falls back to the real one.
+
 ## Important: publish the rules after every change
 
 All security (who can read what, daily and monthly limits, bans, chat closing) lives in `firestore.rules`. After any change to that file, paste it into Firebase console → Firestore Database → Rules → **Publish**. The site breaks in confusing ways if the published rules are older than the code.

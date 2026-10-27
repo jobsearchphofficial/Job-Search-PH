@@ -1,4 +1,5 @@
 import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793117864";
+import { IS_STAGING } from "./firebase-config.js?v=1793117864";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -2810,7 +2811,13 @@ onAuth(async (s) => {
   if (changed && uidNow && location.hash === "#/signin") return finishAuthFlow();
   route();
 });
+// Test site: loud banner, and keep it out of Google.
+if (IS_STAGING) {
+  document.body.insertAdjacentHTML("afterbegin", `<div class="staging-banner"><strong>TEST SITE</strong> · Not the real Job Search PH. Everything here is test data. <a href="https://jobsearchph.com">Go to the real site →</a></div>`);
+  const m = document.createElement("meta"); m.name = "robots"; m.content = "noindex, nofollow"; document.head.appendChild(m);
+  document.title = `[TEST] ${document.title}`;
+}
 store.init().catch((err) => {
   console.error(err);
-  app.innerHTML = `<p class="error">Could not start the site. Please refresh.</p>`;
+  app.innerHTML = `<p class="error">${IS_STAGING ? esc(err.message) : "Could not start the site. Please refresh."}</p>`;
 });
