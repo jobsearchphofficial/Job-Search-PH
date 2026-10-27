@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793110125";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793111283";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -156,6 +156,7 @@ function profileStrength(p = {}) {
   const [level, cls] = score >= 90 ? ["Excellent", "s-excellent"] : score >= 70 ? ["Great", "s-great"] : score >= 40 ? ["Good", "s-good"] : ["Weak", "s-weak"];
   return { score, level, cls, todo: STRENGTH_ITEMS.filter((it) => !it.done(p)) };
 }
+const wantList = (u) => (Array.isArray(u.jobCategories) ? u.jobCategories : []).map((c) => (c === "Other" && u.jobCategoryOther ? `Other: ${u.jobCategoryOther}` : c));
 const strengthChip = (p) => { const s = profileStrength(p); return `<span class="s-chip ${s.cls}" title="Profile strength ${s.score}/100">${s.level} profile</span>`; };
 function strengthCard(p, compact = false) {
   const s = profileStrength(p);
@@ -1060,7 +1061,8 @@ function viewProfile() {
       ${role === "jobseeker" ? `
       <fieldset>
         <legend>Work you're looking for</legend>
-        <div><span class="label">Jobs you want (up to 5)</span>${chips("jobCategories", CATEGORIES, p.jobCategories)}</div>
+        <div><span class="label">Jobs you want (up to 5)</span>${chips("jobCategories", CATEGORIES, p.jobCategories)}
+          <label id="jc-other" ${(p.jobCategories || []).includes("Other") ? "" : "hidden"}>What other job are you looking for?<input name="jobCategoryOther" maxlength="40" placeholder="e.g. Tutor, Massage therapist, Farm worker" value="${esc(p.jobCategoryOther || "")}"><span class="hint">This helps us add new job types.</span></label></div>
         <div><span class="label">Arrangement</span>${chips("jobTypes", TYPES, p.jobTypes)}</div>
         <div class="row">
           <label>Years of experience<input name="experienceYears" type="number" min="0" max="60" inputmode="numeric" value="${esc(p.experienceYears ?? "")}"></label>
@@ -1094,12 +1096,14 @@ function viewProfile() {
     if (f.eduLevel) p.education = [f.eduLevel.value, f.eduSchool.value.trim()].filter(Boolean).join(" · ");
     const g = f.querySelector("[name=gender]:checked"); if (f.querySelector("[name=gender]")) p.gender = g ? g.value : "";
     ["jobCategories", "jobTypes"].forEach((k) => { if (f.querySelector(`[name=${k}]`)) p[k] = [...f.querySelectorAll(`[name=${k}]:checked`)].map((i) => i.value); });
+    if (f.jobCategoryOther) p.jobCategoryOther = (p.jobCategories || []).includes("Other") ? f.jobCategoryOther.value.trim().replace(/\s+/g, " ").replace(/^./, (c) => c.toUpperCase()) : "";
   };
 
   const bindForm = () => {
     const f = $("#profile-form");
     f.querySelectorAll("[name=jobCategories]").forEach((cb) => cb.addEventListener("change", () => {
       if (f.querySelectorAll("[name=jobCategories]:checked").length > 5) { cb.checked = false; toast("Pick up to 5 jobs"); }
+      const jo = $("#jc-other"); if (jo) { jo.hidden = !f.querySelector('[name=jobCategories][value="Other"]:checked'); if (!jo.hidden && cb.value === "Other" && cb.checked) f.jobCategoryOther.focus(); }
     }));
     f.addEventListener("input", (e) => e.target.classList?.remove("invalid"));
     const pd = loadDraft(`profile:${role}`);
@@ -1152,6 +1156,7 @@ function viewProfile() {
         const exp = p.experienceYears === "" || p.experienceYears == null ? null : Number(p.experienceYears);
         Object.assign(data, {
           birthDate: p.birthDate, gender: p.gender || "", jobCategories: p.jobCategories || [], jobTypes: p.jobTypes || [],
+          ...(p.jobCategoryOther ? { jobCategoryOther: p.jobCategoryOther } : {}),
           experienceYears: Number.isFinite(exp) && exp >= 0 ? Math.min(exp, 60) : null,
           skills: (p.skills || "").trim(), workHistory: (p.workHistory || "").trim(), education: (p.education || "").trim(),
           availability: p.availability || "", resumeUrl: (p.resumeUrl || "").trim(),
@@ -1642,7 +1647,7 @@ function applicantCard(a) {
     ["Education", esc(x.education || "")],
     ["Resume", resume],
   ];
-  const cats = Array.isArray(x.jobCategories) ? x.jobCategories : [];
+  const cats = wantList(x);
   const dash = `<span class="none">Not added</span>`;
   return `
   <article class="applicant ap2 ${a.status === "new" ? "is-new" : ""} ${DECLINED.includes(a.status) ? "declined" : ""}">
@@ -2008,6 +2013,7 @@ async function viewChat(appId) {
 
 /* ---------------- Admin ---------------- */
 let adminTab = "analytics";
+let supportView = "open";
 let anRange = 30;
 const adminJobs = {};
 /* ---------------- Suspended accounts ---------------- */
@@ -2121,7 +2127,7 @@ async function viewAdminUser(id) {
         </header>
         <dl class="ap-facts au-facts">${facts.join("")}</dl>
         ${isSeeker ? `<div class="ap-long au-long">
-          <div><span class="label">Jobs they want</span>${Array.isArray(u.jobCategories) && u.jobCategories.length ? `<ul class="meta">${u.jobCategories.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : `<p><span class="none">Not added</span></p>`}</div>
+          <div><span class="label">Jobs they want</span>${wantList(u).length ? `<ul class="meta">${wantList(u).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : `<p><span class="none">Not added</span></p>`}</div>
           <div><span class="label">Skills</span><p>${u.skills ? esc(u.skills) : `<span class="none">Not added</span>`}</p></div>
           <div><span class="label">Work history</span><p>${u.workHistory ? nl2br(u.workHistory) : `<span class="none">Not added</span>`}</p></div></div>` : ""}
         ${!isSeeker ? `<h2>Job posts (${d.posts.length})</h2>${d.posts.length ? `<ul class="au-list">${d.posts.sort((a, b) => b.createdAt - a.createdAt).map((j) => `<li><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.city)} · ${salaryText(j)} · ${ago(j.createdAt)} · ${d.received.filter((a) => a.jobId === j.id).length} applicants</span>${statusBadge(j)}</li>`).join("")}</ul>` : `<p class="muted">No posts.</p>`}` : ""}
@@ -2252,6 +2258,8 @@ async function renderAnalytics(body) {
     const otherMap = new Map(); otherJobs.forEach((j) => { const k = j.categoryOther.trim().toLowerCase().replace(/\s+/g, " "); const e = otherMap.get(k) || { label: j.categoryOther.trim().replace(/^./, (c) => c.toUpperCase()), v: 0 }; e.v++; otherMap.set(k, e); });
     const otherTypes = [...otherMap.values()].sort((a, b) => b.v - a.v).slice(0, 10);
     const otherLatest = [...otherJobs].sort((a, b) => b.createdAt - a.createdAt).slice(0, 8);
+    const seekOther = new Map(); seekers.filter((u) => u.jobCategoryOther).forEach((u) => { const k = u.jobCategoryOther.trim().toLowerCase().replace(/\s+/g, " "); const e = seekOther.get(k) || { label: u.jobCategoryOther.trim().replace(/^./, (c) => c.toUpperCase()), v: 0 }; e.v++; seekOther.set(k, e); });
+    const seekOtherRows = [...seekOther.values()].sort((a, b) => b.v - a.v).slice(0, 10);
     // sources (?src= links): sign-ups in range, and what those people did
     const srcOf = Object.fromEntries(users.map((u) => [u.id, u.src || ""]));
     const srcRows = new Map();
@@ -2303,7 +2311,7 @@ async function renderAnalytics(body) {
         ${anTile("Offer acceptance", offersDone.length ? `${pct(accepted, offersDone.length)}%` : "–", `${accepted} of ${offersDone.length} offers accepted`)}
         ${anTile("Applicants per post", approvedEver.length ? (apps.length / approvedEver.length).toFixed(1) : "–", `${fmtN(chatsActive)} chats active this week`)}
         ${anTile("Open reports", fmtN(reports.length), reports.length ? `<a href="#/admin" data-goto-tab="reports">Review</a>` : "all clear")}
-        ${anTile("Support inbox", fmtN(support.length), support.length ? `<a href="#/admin" data-goto-tab="support">Reply</a>` : "all clear")}
+        ${anTile("Support inbox", fmtN(support.filter((m) => m.status !== "done").length), support.some((m) => m.status !== "done") ? `<a href="#/admin" data-goto-tab="support">Reply</a>` : "all clear")}
       </div>
       <h2 class="an-h">Growth <span class="an-sub">${weekly ? "per week" : "per day"}, ${rangeLbl}</span></h2>
       <div class="an-grid three">
@@ -2338,8 +2346,9 @@ async function renderAnalytics(body) {
           <div class="src-out"><code id="src-link">https://jobsearchph.com/?src=…</code><button type="button" class="btn btn-primary btn-sm" id="src-copy">Copy</button></div>
           <p class="an-sub">Links people share from a job's Share button are tracked as <strong>share</strong>.</p></div>
       </div>
-      <h2 class="an-h">"Other" job types <span class="an-sub">what employers typed when no category fit, all time — promote the common ones to real categories</span></h2>
-      <div class="an-grid two">${anRank(otherTypes, { title: "Most requested", sub: otherTypes.length ? `${otherTotal} post${otherTotal === 1 ? "" : "s"} used “Other”` : "" })}
+      <h2 class="an-h">"Other" job types <span class="an-sub">what people typed when no category fit, all time — promote the common ones to real categories</span></h2>
+      <div class="an-grid two">${anRank(otherTypes, { title: "Employers are hiring for", sub: otherTypes.length ? `${otherTotal} post${otherTotal === 1 ? "" : "s"} used “Other”` : "" })}
+        ${anRank(seekOtherRows, { title: "Jobseekers are looking for", sub: seekOtherRows.length ? `${seekers.filter((u) => u.jobCategoryOther).length} jobseeker${seekers.filter((u) => u.jobCategoryOther).length === 1 ? "" : "s"} picked “Other”` : "" })}
         <div class="an-card"><h3>Latest entries</h3>${otherLatest.length ? `<ul class="an-att">${otherLatest.map((j) => `<li><span class="an-why">${esc(j.categoryOther)}</span><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.city)} · ${ago(j.createdAt)}</span></li>`).join("")}</ul>` : `<p class="muted small">No “Other” posts yet.</p>`}</div></div>
       <h2 class="an-h">Needs attention <span class="an-sub">${att.length ? `${att.length} item${att.length === 1 ? "" : "s"}` : ""}</span></h2>
       <div class="an-card">${att.length ? `<ul class="an-att">${att.map(([why, j, when]) => `<li><span class="an-why">${esc(why)}</span><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.employerName || "")} · ${esc(j.city)} · ${esc(when)}</span></li>`).join("")}</ul>` : `<p class="muted">Nothing needs attention right now.</p>`}</div>
@@ -2385,11 +2394,21 @@ async function viewAdmin() {
   if (adminTab === "users") return renderUsers(body);
   if (adminTab === "support") {
     const items = await store.listSupport();
-    body.innerHTML = items.length ? `<div class="table">${items.map((m) => `
-      <div class="trow"><div><strong>${esc(m.topic)}</strong> <span class="muted small">· ${ago(m.createdAt)}</span>
-        <div class="small">${nl2br(m.message)}</div><div class="muted small copyable">${esc(m.name)} · ${esc(m.reply)}</div></div>
-        <div></div><div class="actions"><button class="btn btn-ghost btn-sm" data-act="supportdone" data-id="${esc(m.id)}">Mark done</button></div></div>`).join("")}</div>`
-      : `<div class="empty"><p>No support messages.</p></div>`;
+    const open = items.filter((m) => m.status !== "done"), done = items.filter((m) => m.status === "done");
+    const list = supportView === "done" ? done : supportView === "all" ? items : open;
+    const when = (t) => (t ? new Date(t).toLocaleString("en-PH", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+    body.innerHTML = `
+      <div class="seg-mini sp-tabs" role="radiogroup">${[["open", "Open", open.length], ["done", "Done", done.length], ["all", "All", items.length]].map(([k, l, n]) => `<button type="button" role="radio" aria-checked="${supportView === k}" class="${supportView === k ? "on" : ""}" data-sview="${k}">${l} <span class="count">${n}</span></button>`).join("")}</div>
+      ${list.length ? `<div class="sp-list">${list.map((m) => `
+        <article class="sp-item ${m.status === "done" ? "is-done" : ""}">
+          <header><strong>${esc(m.topic)}</strong>${m.status === "done" ? `<span class="badge badge-closed">Done${m.doneAt ? ` · ${ago(m.doneAt)}` : ""}</span>` : `<span class="badge badge-app-new">Open</span>`}<span class="muted small sp-when">${when(m.createdAt)}</span></header>
+          <p class="sp-msg">${nl2br(m.message)}</p>
+          <p class="small muted sp-from">From <strong>${esc(m.name)}</strong> · ${/@/.test(m.reply || "") ? `<a href="mailto:${esc(m.reply)}?subject=${encodeURIComponent(`Re: ${m.topic} — Job Search PH`)}">${esc(m.reply)}</a>` : `<span class="copyable">${esc(m.reply)}</span>`}${m.uid ? ` · <a href="#/admin/user/${encodeURIComponent(m.uid)}">View account</a>` : " · not signed in"}${m.page ? ` · sent from ${esc(m.page)}` : ""}</p>
+          <div class="actions">${/@/.test(m.reply || "") ? `<a class="btn btn-primary btn-sm" href="mailto:${esc(m.reply)}?subject=${encodeURIComponent(`Re: ${m.topic} — Job Search PH`)}">Reply by email</a>` : ""}
+            ${m.status === "done" ? `<button class="btn btn-ghost btn-sm" data-act="supportreopen" data-id="${esc(m.id)}">Reopen</button>` : `<button class="btn btn-ghost btn-sm" data-act="supportdone" data-id="${esc(m.id)}">Mark done</button>`}</div>
+        </article>`).join("")}</div>`
+      : `<div class="empty"><p>${supportView === "done" ? "Nothing marked done yet." : supportView === "all" ? "No support messages yet." : "No open support messages. 🎉"}</p></div>`}`;
+    body.querySelectorAll("[data-sview]").forEach((b) => b.addEventListener("click", () => { supportView = b.dataset.sview; viewAdmin(); }));
   } else if (adminTab === "reports") {
     const reports = await store.listReports();
     const jobs = {};
@@ -2447,6 +2466,7 @@ async function viewAdmin() {
       if (act === "delete") { await store.deleteJob(id); await store.clearReportsFor(id); }
       if (act === "dismiss") await store.dismissReport(id);
       if (act === "supportdone") await store.closeSupport(id);
+      if (act === "supportreopen") await store.reopenSupport(id);
       jobsCache = null; toast("Done"); viewAdmin();
     } catch (err) { console.error(err); toast("Action failed: " + (err.code || err.message)); }
   });

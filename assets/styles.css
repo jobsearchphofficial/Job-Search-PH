@@ -952,3 +952,15 @@ input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; m
 input[type="date"]::-webkit-date-and-time-value { text-align: left; }
 .addr-private { margin-top: 2px; align-items: flex-start; }
 .addr-private span { color: var(--slate); }
+/* Admin: support history */
+.sp-tabs { margin: 4px 0 12px; }
+.sp-list { display: grid; gap: 10px; }
+.sp-item { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow-sm); display: grid; gap: 6px; }
+.sp-item.is-done { opacity: .78; box-shadow: none; }
+.sp-item header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sp-when { margin-left: auto; }
+.sp-msg { margin: 0; font-size: .93rem; color: var(--navy); white-space: normal; overflow-wrap: anywhere; }
+.sp-from { margin: 0; }
+.sp-item .actions { margin-top: 2px; }
+@media (max-width: 600px) { .sp-when { margin-left: 0; width: 100%; } }
+#jc-other { margin-top: 10px; }

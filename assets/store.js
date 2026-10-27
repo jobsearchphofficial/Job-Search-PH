@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793110125";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793111283";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -27,7 +27,7 @@ const toMs = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : v ??
 const norm = (snap) => {
   const d = snap.data();
   const out = { id: snap.id, ...d };
-  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt", "endRequestedAt", "endedAt", "acceptedAt", "bannedAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
+  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt", "endRequestedAt", "endedAt", "acceptedAt", "bannedAt", "doneAt"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
   return out;
 };
 const jobsQ = async (...c) => (await F.getDocs(F.query(F.collection(db, "jobs"), ...c))).docs.map(norm);
@@ -129,7 +129,10 @@ export const store = {
     const payload = { ...data, consent: true, email: auth.currentUser?.email || "", updatedAt: F.serverTimestamp() };
     if (!exists) { payload.createdAt = F.serverTimestamp(); const src = visitSource(); if (src) payload.src = src; }
     try { await F.setDoc(ref, payload, { merge: true }); }
-    catch (e) { if (e.code !== "permission-denied" || !payload.src) throw e; delete payload.src; await F.setDoc(ref, payload, { merge: true }); } // older rules without "src"
+    catch (e) { // older published rules don't know the newest optional fields yet: save without them
+      if (e.code !== "permission-denied" || !(payload.src || payload.jobCategoryOther)) throw e;
+      delete payload.src; delete payload.jobCategoryOther; await F.setDoc(ref, payload, { merge: true });
+    }
     const extra = await loadProfile(auth.currentUser);
     state = { ...state, ...extra }; emit();
   },
@@ -224,7 +227,7 @@ export const store = {
     const applicant = {
       fullName: p.fullName, phone: p.phone, city: p.city, messenger: p.messenger || "",
       email: auth.currentUser.email || "", age: ageFrom(p.birthDate), gender: p.gender || "",
-      jobCategories: p.jobCategories || [], experienceYears: p.experienceYears ?? null,
+      jobCategories: p.jobCategories || [], jobCategoryOther: p.jobCategoryOther || "", experienceYears: p.experienceYears ?? null,
       skills: p.skills || "", workHistory: p.workHistory || "", education: p.education || "",
       availability: p.availability || "", resumeUrl: p.resumeUrl || "",
       resumeFileUrl: p.resumeFileUrl || "", resumeFileName: p.resumeFileName || "", photo: p.photo || "",
@@ -366,7 +369,8 @@ export const store = {
     const s = await F.getDocs(F.query(F.collection(db, "support"), F.orderBy("createdAt", "desc"), F.limit(200)));
     return s.docs.map(norm);
   },
-  async closeSupport(id) { await F.deleteDoc(F.doc(db, "support", id)); },
+  async closeSupport(id) { await F.updateDoc(F.doc(db, "support", id), { status: "done", doneAt: F.serverTimestamp() }); },
+  async reopenSupport(id) { await F.updateDoc(F.doc(db, "support", id), { status: "open", doneAt: null }); },
 
   /* ---- Reports ---- */
   async report(jobId, reason, details) {

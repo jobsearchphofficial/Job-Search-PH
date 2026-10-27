@@ -45,7 +45,7 @@ service cloud.firestore {
       return d.keys().hasOnly([
           'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
           'birthDate','gender','jobCategories','jobTypes','experienceYears','skills','workHistory',
-          'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email','src'])
+          'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email','src','jobCategoryOther'])
         && d.role in ['jobseeker', 'employer']
         && str(d.fullName, 2, 80)
         && str(d.phone, 7, 20)
@@ -67,7 +67,8 @@ service cloud.firestore {
         && optStr(d.get('companyName', null), 100)
         && validPhoto(d.get('photo', null))
         && optStr(d.get('email', null), 200)
-        && optStr(d.get('src', null), 40);
+        && optStr(d.get('src', null), 40)
+        && optStr(d.get('jobCategoryOther', null), 40);
     }
 
     match /users/{uid} {
@@ -278,6 +279,8 @@ service cloud.firestore {
                         || (signedIn() && request.resource.data.uid == me() && bumped('support')))
                     && request.resource.data.createdAt == request.time;
       allow read, delete: if isAdmin();
+      // Admins mark messages done (kept as history) or reopen them.
+      allow update: if isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'doneAt']);
     }
 
     /* ---------- Reports ---------- */
