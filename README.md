@@ -1,14 +1,14 @@
 # Job Search PH — Job Board
 
-A free job listing board for household, service and local jobs in Negros Occidental and Western Visayas.
+A free job listing board for household, service and local jobs in Negros Occidental. Live at https://jobsearchph.com (Beta v1).
 
-- **Jobseekers** browse, filter and contact employers directly (Messenger, phone or email). No account and no fees.
-- **Employers** sign in with Google and post jobs. Every post is reviewed before going live and expires after 30 days.
-- **Admins** approve, reject, feature, renew, close or delete posts and handle reports.
+- **Jobseekers** create a free profile, apply to jobs on the site, and message employers in the built-in chat. The employer's own contact is shared only after they accept a job offer. No fees, ever.
+- **Employers** post jobs for free (5 posts per calendar month). Every post is reviewed before going live and expires after 30 days. Employers review applicants, send job offers, and chat with applicants.
+- **Admins** see analytics, review posts, handle reports and support, and can ban users.
 
 Job Search PH only publishes listings. It does not recruit, screen, match or place workers.
 
-Plain HTML/CSS/JS, hosted on GitHub Pages, with Firebase (Auth + Firestore). No build step.
+Plain HTML/CSS/JS on GitHub Pages, with Firebase Auth (Google and email/password) and Firestore on the free plan. No build step for the app.
 
 ## Run it locally
 
@@ -17,43 +17,49 @@ python3 -m http.server 8000
 # open http://localhost:8000
 ```
 
-Until Firebase is configured, the site runs in **demo mode** with sample jobs stored in your browser. In demo mode, "Employer sign in" logs you in as a demo admin, so you can try posting and approving.
+This talks to the live Firebase project. For testing without touching real data, run the Firebase emulators (Firestore on port 8085, Auth on 9099) and open `http://localhost:8000/?emu`.
 
-## Go live (about 15 minutes)
+## Important: publish the rules after every change
 
-1. **Create a Firebase project** at https://console.firebase.google.com (the free Spark plan is enough).
-2. **Add a web app** (Project settings → Your apps → `</>`). Copy the config into `assets/firebase-config.js`.
-3. **Turn on Google sign-in:** Authentication → Sign-in method → Google → Enable.
-4. **Authorize your domains:** Authentication → Settings → Authorized domains. Add `<your-username>.github.io` and your custom domain if you have one.
-5. **Create Firestore:** Firestore Database → Create database → production mode, region `asia-southeast1`.
-6. **Paste the security rules:** Firestore → Rules. Paste everything from `firestore.rules`, then Publish.
-7. **Make yourself admin:**
-   - Sign in on the site once.
-   - Copy your User UID from Authentication → Users.
-   - In Firestore, create a collection `admins` with a document whose ID is that UID. Add any field, e.g. `name: "Mark"`.
-   - Refresh the site. The **Admin** tab appears.
-8. **Publish on GitHub Pages:** repo Settings → Pages → Deploy from branch → `main` / root.
+All security (who can read what, daily and monthly limits, bans, chat closing) lives in `firestore.rules`. After any change to that file, paste it into Firebase console → Firestore Database → Rules → **Publish**. The site breaks in confusing ways if the published rules are older than the code.
+
+## Limits (anti-spam)
+
+| What | Limit |
+|---|---|
+| Applications | 10 per day |
+| Job posts | 5 per calendar month (Philippine time) |
+| Chat messages | 200 per day |
+| Reports | 5 per day |
+| Support messages | 3 per day (signed in) |
+
+Set in `assets/store.js` (`LIMITS`) and enforced in `firestore.rules`. Change both together.
+
+## Tracked links
+
+Add `?src=<name>` to any link, e.g. `https://jobsearchph.com/?src=fb-bacolod-group`. The name is saved on the person's profile when they sign up, and **Admin → Analytics → Where users come from** shows sign-ups, posts and applications per source. Admin → Analytics also has a link maker.
+
+## Public job pages (Google for Jobs)
+
+`scripts/build-job-pages.mjs` builds `/jobs/<id>/` pages and `sitemap.xml` from live jobs. The GitHub Action `.github/workflows/job-pages.yml` runs it every 2 hours. Private households appear as "Private household in <city>" on these pages; only businesses show their name and street address.
 
 ## Files
 
 | File | What it does |
 |---|---|
 | `index.html` | Page shell |
-| `assets/app.js` | Pages, filters, forms, admin tools |
-| `assets/store.js` | Data layer: Firebase, or demo data |
-| `assets/firebase-config.js` | Your Firebase keys, plus how long listings last |
+| `assets/app.js` | Pages, forms, chat, admin tools and analytics |
+| `assets/store.js` | Firebase data layer and limits |
+| `assets/firebase-config.js` | Firebase keys, listing length |
 | `assets/styles.css` | Styles (light and dark) |
 | `firestore.rules` | Database security rules |
+| `scripts/build-job-pages.mjs` | Static job pages for search engines |
 
-## Before public launch
+## Making someone an admin
 
-- Have a lawyer review the Terms and Privacy pages (`#/terms`, `#/privacy`). Both are drafts.
-- Register a DTI business name, then BIR and a mayor's permit.
-- Keep the model a pure listing board: no per-hire fees, no screening or matching.
+In Firestore, create a document in the `admins` collection whose ID is their User UID (from Authentication → Users). Add any field, e.g. `name: "Mark"`.
 
-## Ideas for later
+## Still to do outside the code
 
-- Paid featured posts (the `featured` flag already exists) or employer subscriptions
-- Facebook sign-in
-- Auto-posting new listings to the JSPH Facebook page
-- Tagalog/Hiligaynon language toggle
+- Have a lawyer review the Terms and Privacy pages.
+- Register a DTI business name, then BIR and a mayor's permit, before charging for anything.

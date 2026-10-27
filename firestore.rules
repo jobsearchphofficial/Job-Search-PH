@@ -45,7 +45,7 @@ service cloud.firestore {
       return d.keys().hasOnly([
           'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
           'birthDate','gender','jobCategories','jobTypes','experienceYears','skills','workHistory',
-          'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email'])
+          'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email','src'])
         && d.role in ['jobseeker', 'employer']
         && str(d.fullName, 2, 80)
         && str(d.phone, 7, 20)
@@ -66,7 +66,8 @@ service cloud.firestore {
         && optStr(d.get('resumeFileName', null), 200)
         && optStr(d.get('companyName', null), 100)
         && validPhoto(d.get('photo', null))
-        && optStr(d.get('email', null), 200);
+        && optStr(d.get('email', null), 200)
+        && optStr(d.get('src', null), 40);
     }
 
     match /users/{uid} {

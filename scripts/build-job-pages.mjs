@@ -96,6 +96,13 @@ function requirements(j) {
   return out.concat(j.reqList || [], lines(j.requirements));
 }
 
+/* ---------- Privacy ---------- */
+// Private households often enter a family name. Public, indexed pages never show it:
+// households appear as "Private household in <city>". Businesses keep their name and street address.
+const isHousehold = (j) => j.workplace === "household";
+const publicName = (j) => (isHousehold(j) ? `Private household in ${j.city || "Negros Occidental"}` : j.employerName || "Private employer");
+const publicCategory = (j) => (j.category === "Other" && j.categoryOther ? j.categoryOther : j.category);
+
 /* ---------- Structured data ---------- */
 
 function jobPosting(j) {
@@ -113,7 +120,7 @@ function jobPosting(j) {
     addressRegion: "Negros Occidental",
     addressCountry: "PH",
   };
-  const street = [j.address, j.area].filter(Boolean).join(", ");
+  const street = isHousehold(j) ? "" : [j.address, j.area].filter(Boolean).join(", ");
   if (street) address.streetAddress = street;
 
   const data = {
@@ -124,13 +131,13 @@ function jobPosting(j) {
     identifier: { "@type": "PropertyValue", name: "Job Search PH", value: j.id },
     datePosted: iso(j.approvedAt || j.createdAt || Date.now()),
     employmentType: employmentTypes(j),
-    hiringOrganization: { "@type": "Organization", name: j.employerName || "Private employer" },
+    hiringOrganization: { "@type": "Organization", name: publicName(j) },
     jobLocation: { "@type": "Place", address },
     directApply: false,
     url: `${SITE}/jobs/${j.id}/`,
   };
   if (j.expiresAt) data.validThrough = iso(j.expiresAt);
-  if (j.category) data.occupationalCategory = j.category;
+  if (j.category) data.occupationalCategory = publicCategory(j);
   if (j.openings > 1) data.totalJobOpenings = j.openings;
   if (j.salaryMin || j.salaryMax) {
     const value = { "@type": "QuantitativeValue", unitText: UNIT[j.salaryPeriod] || "MONTH" };
@@ -204,9 +211,9 @@ function jobPage(j) {
     <article class="job">
       <div class="job-main">
         <h1>${esc(j.title)}</h1>
-        <p class="employer">${esc(j.employerName)}</p>
+        <p class="employer">${esc(publicName(j))}</p>
         <p class="loc"><span>${esc(where)}</span></p>
-        <ul class="meta"><li>${esc(j.employmentType)}</li>${j.category ? `<li>${esc(j.category)}</li>` : ""}<li>Posted ${new Date(j.approvedAt || j.createdAt || Date.now()).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })}</li></ul>
+        <ul class="meta"><li>${esc(j.employmentType)}</li>${j.category ? `<li>${esc(publicCategory(j))}</li>` : ""}<li>Posted ${new Date(j.approvedAt || j.createdAt || Date.now()).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })}</li></ul>
         <div class="pay-box"><span class="salary salary-lg">${esc(salaryText(j))}</span></div>
         <h2>About the job</h2><p>${esc(j.description).replace(/\n/g, "<br>")}</p>
         ${conds.length ? `<h2>Work conditions</h2><dl class="conds">${conds.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>` : ""}
@@ -237,7 +244,7 @@ function indexPage(jobs) {
     ${jobs.length ? `<div class="cards">${jobs.map((j) => `
       <a class="card" href="/jobs/${j.id}/">
         <h3>${esc(j.title)}</h3>
-        <p class="muted">${esc(j.employerName)} · ${esc([j.area, j.city].filter(Boolean).join(", "))}</p>
+        <p class="muted">${esc(publicName(j))} · ${esc([j.area, j.city].filter(Boolean).join(", "))}</p>
         <p class="salary">${esc(salaryText(j))}</p>
       </a>`).join("")}
     </div>` : `<p>No open jobs right now. <a href="/">Check Job Search PH</a> for new posts.</p>`}`;

@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793029875";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793106196";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -50,6 +50,19 @@ async function loadProfile(user) {
   ]);
   return { profile: p?.exists() ? norm(p) : null, isAdmin: !!a?.exists(), banned: b?.exists() ? norm(b) : null };
 }
+
+/* ---- Where visitors came from (?src=fb-bacolod-group). First touch, kept 60 days, no personal data. ---- */
+(() => {
+  try {
+    const q = new URLSearchParams(location.search);
+    const raw = q.get("src") || q.get("utm_source") || q.get("ref") || (q.has("fbclid") ? "facebook" : "");
+    const clean = String(raw).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    const cur = JSON.parse(localStorage.getItem("jsph-src") || "null");
+    if (clean && (!cur || Date.now() - cur.at > 60 * 86400000)) localStorage.setItem("jsph-src", JSON.stringify({ src: clean, at: Date.now() }));
+    if (raw || q.has("fbclid")) { ["src", "utm_source", "utm_medium", "utm_campaign", "ref", "fbclid"].forEach((k) => q.delete(k)); const qs = q.toString(); history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash); }
+  } catch {}
+})();
+export const visitSource = () => { try { const c = JSON.parse(localStorage.getItem("jsph-src") || "null"); return c && Date.now() - c.at < 60 * 86400000 ? c.src : ""; } catch { return ""; } };
 
 // applies, messages, reports, support: per day. posts: per calendar month (Pro may raise this later; also update the 5 in firestore.rules mcnt).
 export const LIMITS = { applies: 10, posts: 5, messages: 200, reports: 5, support: 3 };
@@ -113,8 +126,9 @@ export const store = {
     const ref = F.doc(db, "users", uid());
     const exists = !!state.profile;
     const payload = { ...data, consent: true, email: auth.currentUser?.email || "", updatedAt: F.serverTimestamp() };
-    if (!exists) payload.createdAt = F.serverTimestamp();
-    await F.setDoc(ref, payload, { merge: true });
+    if (!exists) { payload.createdAt = F.serverTimestamp(); const src = visitSource(); if (src) payload.src = src; }
+    try { await F.setDoc(ref, payload, { merge: true }); }
+    catch (e) { if (e.code !== "permission-denied" || !payload.src) throw e; delete payload.src; await F.setDoc(ref, payload, { merge: true }); } // older rules without "src"
     const extra = await loadProfile(auth.currentUser);
     state = { ...state, ...extra }; emit();
   },

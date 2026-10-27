@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793029875";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793106196";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -835,9 +835,14 @@ async function viewJob(id) {
     </article>`;
 
   $("#share").addEventListener("click", async () => {
+    // The static page has a proper Facebook/Messenger preview. New posts get one within ~2 hours;
+    // until then, share the app link so the link never 404s.
+    const staticUrl = `https://jobsearchph.com/jobs/${encodeURIComponent(j.id)}/?src=share`;
+    let url = `https://jobsearchph.com/?src=share#/job/${encodeURIComponent(j.id)}`;
+    try { const r = await fetch(`/jobs/${encodeURIComponent(j.id)}/`, { method: "HEAD", cache: "no-store" }); if (r.ok) url = staticUrl; } catch {}
     try {
-      if (navigator.share) await navigator.share({ title: j.title, text: `${j.title} — ${j.city}`, url: location.href });
-      else { await navigator.clipboard.writeText(location.href); toast("Link copied"); }
+      if (navigator.share) await navigator.share({ title: j.title, text: `${j.title} — ${j.city}. Apply free on Job Search PH.`, url });
+      else { await navigator.clipboard.writeText(url); toast("Link copied"); }
     } catch {}
   });
   $("#report-form")?.addEventListener("submit", async (e) => {
@@ -2191,6 +2196,16 @@ async function renderAnalytics(body) {
     const otherMap = new Map(); otherJobs.forEach((j) => { const k = j.categoryOther.trim().toLowerCase().replace(/\s+/g, " "); const e = otherMap.get(k) || { label: j.categoryOther.trim().replace(/^./, (c) => c.toUpperCase()), v: 0 }; e.v++; otherMap.set(k, e); });
     const otherTypes = [...otherMap.values()].sort((a, b) => b.v - a.v).slice(0, 10);
     const otherLatest = [...otherJobs].sort((a, b) => b.createdAt - a.createdAt).slice(0, 8);
+    // sources (?src= links): sign-ups in range, and what those people did
+    const srcOf = Object.fromEntries(users.map((u) => [u.id, u.src || ""]));
+    const srcRows = new Map();
+    const row = (k) => { if (!srcRows.has(k)) srcRows.set(k, { src: k, users: 0, seekers: 0, employers: 0, posts: 0, apps: 0 }); return srcRows.get(k); };
+    newUsers.forEach((u) => { const r = row(u.src || ""); r.users++; if (u.role === "employer") r.employers++; else r.seekers++; });
+    newJobs.forEach((j) => { if (srcOf[j.ownerUid] !== undefined) row(srcOf[j.ownerUid]).posts++; });
+    rApps.forEach((a) => { if (srcOf[a.applicantUid] !== undefined) row(srcOf[a.applicantUid]).apps++; });
+    const sources = [...srcRows.values()].sort((a, b) => b.users - a.users || b.posts + b.apps - (a.posts + a.apps));
+    const tracked = sources.filter((r) => r.src).reduce((n, r) => n + r.users, 0);
+
     // funnel (applications in range, by furthest stage reached)
     const reached = (a, stages) => stages.includes(a.status);
     const funnel = [
@@ -2257,6 +2272,16 @@ async function renderAnalytics(body) {
           <div class="an-stack" role="img" aria-label="${levels.map((l) => `${l} ${lv[l]}`).join(", ")}">${levels.map((l) => lv[l] ? `<i class="s-${l.toLowerCase()}" style="flex:${lv[l]}" data-tip="${l}: ${lv[l]} (${pct(lv[l], seekers.length)}%)"></i>` : "").join("") || `<i class="empty-bar" style="flex:1"></i>`}</div>
           <ul class="an-legend">${levels.map((l) => `<li><span class="sw s-${l.toLowerCase()}"></span>${l} <strong>${lv[l]}</strong> <em>${pct(lv[l], seekers.length)}%</em></li>`).join("")}</ul></div>
       </div>
+      <h2 class="an-h">Where users come from <span class="an-sub">sign-ups in the ${rangeLbl}, by the link they first arrived from</span></h2>
+      <div class="an-grid two">
+        <div class="an-card"><h3>Sources</h3><p class="an-sub">${newUsers.length ? `${pct(tracked, newUsers.length)}% of new sign-ups came from a tracked link` : "No sign-ups in this period"}</p>
+          ${sources.length ? `<div class="an-tablewrap"><table class="an-src"><thead><tr><th>Source</th><th>Sign-ups</th><th>Jobseekers</th><th>Employers</th><th>Posts</th><th>Applications</th></tr></thead><tbody>${sources.map((r) => `<tr><td>${r.src ? esc(r.src) : `<span class="muted">Direct / unknown</span>`}</td><td>${r.users}</td><td>${r.seekers}</td><td>${r.employers}</td><td>${r.posts}</td><td>${r.apps}</td></tr>`).join("")}</tbody></table></div>` : ""}</div>
+        <div class="an-card"><h3>Make a tracked link</h3><p class="an-sub">Use a different name for each Facebook post or group, then compare them here.</p>
+          <label class="small">Name<input id="src-name" maxlength="40" placeholder="e.g. fb-bacolod-jobs-group-oct27"></label>
+          <label class="small">Page<select id="src-page"><option value="">Home (find jobs)</option><option value="#/post">Post a job</option><option value="#/signin">Sign up</option></select></label>
+          <div class="src-out"><code id="src-link">https://jobsearchph.com/?src=…</code><button type="button" class="btn btn-primary btn-sm" id="src-copy">Copy</button></div>
+          <p class="an-sub">Links people share from a job's Share button are tracked as <strong>share</strong>.</p></div>
+      </div>
       <h2 class="an-h">"Other" job types <span class="an-sub">what employers typed when no category fit, all time — promote the common ones to real categories</span></h2>
       <div class="an-grid two">${anRank(otherTypes, { title: "Most requested", sub: otherTypes.length ? `${otherTotal} post${otherTotal === 1 ? "" : "s"} used “Other”` : "" })}
         <div class="an-card"><h3>Latest entries</h3>${otherLatest.length ? `<ul class="an-att">${otherLatest.map((j) => `<li><span class="an-why">${esc(j.categoryOther)}</span><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.city)} · ${ago(j.createdAt)}</span></li>`).join("")}</ul>` : `<p class="muted small">No “Other” posts yet.</p>`}</div></div>
@@ -2267,6 +2292,10 @@ async function renderAnalytics(body) {
     body.querySelectorAll("[data-range]").forEach((b) => b.addEventListener("click", () => { anRange = Number(b.dataset.range); draw(); }));
     body.querySelectorAll("[data-goto-tab]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); adminTab = a.dataset.gotoTab; viewAdmin(); }));
     $("#an-refresh").addEventListener("click", () => renderAnalytics(body));
+    const srcLink = () => { const n = $("#src-name").value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40); return `https://jobsearchph.com/?src=${n || "…"}${$("#src-page").value}`; };
+    const paintSrc = () => { $("#src-link").textContent = srcLink(); };
+    $("#src-name").addEventListener("input", paintSrc); $("#src-page").addEventListener("change", paintSrc);
+    $("#src-copy").addEventListener("click", async () => { if (!$("#src-name").value.trim()) { toast("Give the link a name first"); return $("#src-name").focus(); } try { await navigator.clipboard.writeText(srcLink()); toast("Link copied"); } catch { toast("Copy failed. Select the link and copy it."); } });
     $("#an-csv").addEventListener("click", () => {
       const rows = [["Job ID", "Title", "Employer", "Category", "Other type", "City", "Workplace", "Status", "Posted", "Pay (monthly equiv.)", "Applicants", "Hired"]].concat(jobs.map((j) => [j.id, j.title, j.employerName, j.category, j.categoryOther || "", j.city, j.workplace, j.status, j.createdAt ? new Date(j.createdAt).toISOString().slice(0, 10) : "", Math.round(monthlyEquivalent(j)), appsPer(j), apps.filter((a) => a.jobId === j.id && a.status === "hired").length]));
       const csv = rows.map((r) => r.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -2464,7 +2493,7 @@ function viewStatic(page) {
         ${faq("How do I know a job is real?", "Every post is reviewed before it goes live and must meet the legal minimum wage. Still, trust your instincts: if an employer asks for money, pushes you to leave the site quickly, or the details keep changing, stop and report the post.")}
         ${faq("Why can't I see the employer's phone number?", "To protect both sides from spam and scams, you talk to employers through Messages here on Job Search PH. The employer's own contact is shared with you once you accept their job offer.")}
         ${faq("Someone asked me for money. What do I do?", "Don't pay. Tap <strong>Report this post</strong> on the job, or contact support with the details. We'll review it and may remove the post or restrict the account.")}
-        ${faq("How many jobs can I apply to?", "Up to 10 a day. Employers can post up to 5 jobs a day. These limits stop spam and keep the site fair.")}
+        ${faq("How many jobs can I apply to?", "Up to 10 a day. Employers can post up to 5 jobs a month. These limits stop spam and keep the site fair.")}
         ${faq("Why did my chat close?", "If an employer chooses other applicants, the chat stays open for 48 hours so you can say goodbye or ask questions, then it closes. You can still read old messages.")}
         ${faq("How does hiring work?", "When an employer picks you, they send a <strong>job offer</strong>. You'll get a notification and can <strong>Accept</strong> or <strong>Decline</strong> it from the job page, My applications, or the chat. You're only marked as hired once you accept. If you decline, the employer is told and the chat closes after 48 hours.")}
         ${faq("How do I leave a job I got here?", "Go to <strong>My applications</strong> and tap <strong>Leave this job</strong>. Your employer confirms, and then you can apply to full-time jobs again. Employers can also start this from the applicant card.")}
