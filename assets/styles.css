@@ -923,7 +923,7 @@ body > .site-footer { flex-shrink: 0; }
 .brand .beta { position: relative; top: -1px; }
 .beta-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--slate-soft); font-size: .8rem; }
 .beta-line .beta { margin-left: 0; }
-@media (max-width: 400px) { .brand .beta { display: none; } }
+@media (max-width: 460px) { .brand .beta { display: none; } }
 .an-tablewrap { overflow-x: auto; margin-top: 8px; }
 .an-src { width: 100%; border-collapse: collapse; font-size: .85rem; font-variant-numeric: tabular-nums; }
 .an-src th { text-align: right; font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; color: var(--slate-soft); padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -947,3 +947,6 @@ body > .site-footer { flex-shrink: 0; }
 .us-founders > span { display: inline-flex; align-items: center; gap: 6px; }
 .us-founders svg { width: 16px; height: 16px; color: #d99a00; }
 :root[data-theme="dark"] .us-founders { background: rgba(240, 190, 60, .1); border-color: rgba(240, 190, 60, .3); color: #ffd772; }
+/* iOS date inputs ignore width and overflow their box */
+input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; max-width: 100%; width: 100%; box-sizing: border-box; display: block; min-height: 46px; }
+input[type="date"]::-webkit-date-and-time-value { text-align: left; }

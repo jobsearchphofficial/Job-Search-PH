@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793107408";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793107926";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -1261,6 +1261,15 @@ const REQ_SKILLS = {
   business: ["Customer service", "Cash handling", "Food handling", "Professional driver's license", "Own motorcycle", "Computer skills", "Heavy lifting"],
   common: ["Non-smoker", "With references", "NBI or barangay clearance", "Medical certificate", "Can start immediately", "Speaks Hiligaynon", "Speaks English"],
 };
+// Requirement chips that only make sense for some categories.
+const REQ_ONLY_FOR = { "Professional driver's license": ["Driver", "Delivery / Rider", "Other"], "Own motorcycle": ["Delivery / Rider", "Other"] };
+const reqFits = (skill, cat) => !REQ_ONLY_FOR[skill] || !cat || REQ_ONLY_FOR[skill].includes(cat);
+// Suggested job titles, filled in when the title box is still empty.
+const TITLE_FOR = {
+  "Kasambahay / Househelper": "Kasambahay", "Yaya / Nanny": "Yaya", "Caregiver": "Caregiver", "Cook": "Cook", "Driver": "Family driver",
+  "Laundry": "Laundry helper", "Gardener / Maintenance": "Gardener", "Food service": "Food service crew", "Sales / Retail": "Sales staff",
+  "Delivery / Rider": "Delivery rider", "Construction / Skilled trade": "Construction worker", "Security": "Security guard", "Office / Admin": "Office staff",
+};
 const SCHEDULES = { household: ["Full-time", "Part-time"], business: ["Full-time", "Part-time", "Project-based", "Shifts"] };
 const RECOMMENDED = ["SSS", "PhilHealth", "Pag-IBIG", "13th month pay"];
 
@@ -1390,6 +1399,7 @@ function viewPost() {
   const val = (n) => f.querySelector(`[name=${n}]:checked`)?.value ?? "";
   const workplace = () => val("workplace");
   let touchedBenefits = false;
+  let autoTitle = "";
 
   const renderOptions = () => {
     const wp = workplace() || "household";
@@ -1403,7 +1413,7 @@ function viewPost() {
     $("#loc-hint").textContent = workplace() === "business" ? "Businesses must show their full address so applicants know where they'll work." : "For households, the barangay is enough. Don't include house numbers.";
     f.querySelectorAll("[name=arrangement]").forEach((r) => (r.required = wp === "household"));
     const curReq = [...f.querySelectorAll("[name=reqList]:checked")].map((i) => i.value);
-    $("#req-chips").innerHTML = REQ_SKILLS[wp].concat(REQ_SKILLS.common).map((s) => `<label class="chip"><input type="checkbox" name="reqList" value="${esc(s)}" ${curReq.includes(s) ? "checked" : ""}><span>${esc(s)}</span></label>`).join("");
+    $("#req-chips").innerHTML = REQ_SKILLS[wp].concat(REQ_SKILLS.common).filter((x) => reqFits(x, curCat)).map((s) => `<label class="chip"><input type="checkbox" name="reqList" value="${esc(s)}" ${curReq.includes(s) ? "checked" : ""}><span>${esc(s)}</span></label>`).join("");
     if (!touchedBenefits) f.querySelectorAll("[name=benefits]").forEach((cb) => { if (RECOMMENDED.includes(cb.value)) cb.checked = wp === "household"; });
     $("#ben-hint").textContent = wp === "household"
       ? "SSS, PhilHealth, Pag-IBIG and 13th month pay are pre-selected because the Kasambahay Law requires them for household workers. Posts that include them get more applicants."
@@ -1440,11 +1450,12 @@ function viewPost() {
     return `${len} hours a day, ${clock(st)}–${clock(end)}${len > 5 ? " (1-hr break)" : ""}`;
   };
   const refresh = () => {
+    { const per = val("salaryPeriod") || "month"; f.salaryMin.placeholder = per === "month" ? "6,500" : per === "day" ? "525" : "66"; }
     { const other = val("category") === "Other"; $("#cat-other").hidden = !other; f.categoryOther.required = other; }
     const single = (val("salaryPeriod") || "month") !== "month";
     $("#pay-to").hidden = single; $("#pay-from-label").textContent = single ? `Pay per ${val("salaryPeriod")} *` : "From *";
     $(".pay-row").classList.toggle("single", single);
-    const liveIn = workplace() === "household" && val("arrangement") === "Live-in";
+    const liveIn = workplace() === "household" && val("arrangement") !== "Stay-out"; // live-in, or not chosen yet
     $(".hours-fld").hidden = liveIn;
     f.hours.value = liveIn ? "" : hoursText();
     { const len = Number(f.hLen.value) || 8, st = Number(f.hStart.value) || 8;
@@ -1473,6 +1484,15 @@ function viewPost() {
   f.addEventListener("change", (e) => {
     if (e.target.name === "benefits") touchedBenefits = true;
     if (e.target.name === "workplace") renderOptions();
+    if (e.target.name === "category") renderOptions();
+    if (["category", "arrangement", "workplace"].includes(e.target.name)) {
+      const base = TITLE_FOR[val("category")];
+      const t = f.title.value.trim();
+      if (base && (!t || t === autoTitle)) {
+        const arr = workplace() === "household" && ["Kasambahay / Househelper", "Yaya / Nanny", "Caregiver", "Cook"].includes(val("category")) ? val("arrangement") : "";
+        autoTitle = arr ? `${arr} ${base}` : base; f.title.value = autoTitle; f.title.classList.remove("invalid");
+      }
+    }
     if (e.target.name === "contactMethod") {
       const m = e.target.value; f.contactValue.value = m === "phone" ? profile.phone : m === "messenger" ? (profile.messenger || "") : (user.email || "");
     }
