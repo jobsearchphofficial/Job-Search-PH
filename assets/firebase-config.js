@@ -3,9 +3,15 @@
 // The test site uses its own Firebase project so tests never touch real users or jobs.
 export const IS_STAGING = /^staging\./.test(location.hostname) || /\.github\.io$/.test(location.hostname);
 
-// Test site project. Paste its config here after creating it; until then the test site won't start
-// (it never falls back to the real database).
-const STAGING_CONFIG = null;
+// Test site project (job-search-ph-staging). The test site never falls back to the real database.
+const STAGING_CONFIG = {
+  apiKey: "AIzaSyCPr4CGcdQq_SYNw5UajHjA66I53d50paI",
+  authDomain: "job-search-ph-staging.firebaseapp.com",
+  projectId: "job-search-ph-staging",
+  storageBucket: "job-search-ph-staging.firebasestorage.app",
+  messagingSenderId: "205868583791",
+  appId: "1:205868583791:web:f6ea6115385ae98ac7b69a",
+};
 
 const LIVE_CONFIG = {
   apiKey: "AIzaSyAc8z7FwRCxDbXj1g2WFdf7A_5iitPJytg",
