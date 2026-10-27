@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793107259";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793107408";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -170,9 +170,11 @@ function strengthCard(p, compact = false) {
 /* ---------------- Founding member badge (#1–#100) ---------------- */
 let FOUNDERS = {};
 const STAR = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.5l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8L12 3.2z" fill="currentColor"/></svg>`;
-function founderBadge(uid, { short = false, label = "Founding member" } = {}) {
-  const no = uid && FOUNDERS[uid]; if (!no) return "";
-  return `<span class="fbadge ${short ? "short" : ""}" title="${esc(label)} #${no}: one of the first 100 members of Job Search PH">${STAR}${short ? `#${no}` : `${esc(label)} #${no}`}</span>`;
+// role: "employer" | "jobseeker". Numbers are kept internally (to cap at 100) but never shown.
+function founderBadge(uid, role, { short = false } = {}) {
+  if (!uid || !FOUNDERS[uid]) return "";
+  const label = role === "employer" ? "Founding employer" : "Founding jobseeker";
+  return `<span class="fbadge ${short ? "short" : ""}" title="${label}: one of the first 100 members of Job Search PH">${STAR}${label}</span>`;
 }
 
 /* ---------------- Pay sanity check (catches typos like 85,000 instead of 8,500) ---------------- */
@@ -790,7 +792,7 @@ function card(j, applied, km) {
       ${j.featured ? `<span class="badge badge-featured">Featured</span>` : applied ? `<span class="badge badge-app-new">Applied</span>` : ""}
     </div>
     <h3>${esc(j.title)}</h3>
-    <p class="employer">${esc(j.employerName)} ${founderBadge(j.ownerUid, { short: true, label: "Founding employer" })}</p>
+    <p class="employer">${esc(j.employerName)} ${founderBadge(j.ownerUid, "employer", { short: true })}</p>
     <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}${km != null ? ` · ${km < 1 ? "<1" : Math.round(km)} km` : ""}</span></p>
     <ul class="meta"><li>${esc(j.employmentType)}</li>${j.workplace === "household" && j.schedule ? `<li>${esc(j.schedule)}</li>` : ""}${perks.map((b) => `<li class="perk">${esc(b)}</li>`).join("")}</ul>
     <div class="card-foot"><span class="salary">${salaryText(j)}</span><span class="muted">${ago(j.approvedAt || j.createdAt)}</span></div>
@@ -816,7 +818,7 @@ async function viewJob(id) {
       <div class="job-main">
         ${!isLive(j) ? `<p class="notice">This post is not public. Status: ${statusBadge(j)}</p>` : ""}
         <h1>${esc(j.title)}</h1>
-        <p class="employer">${esc(j.employerName)} ${founderBadge(j.ownerUid, { label: "Founding employer" })}</p>
+        <p class="employer">${esc(j.employerName)} ${founderBadge(j.ownerUid, "employer")}</p>
         <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}</span></p>
         <ul class="meta"><li>${esc(j.employmentType)}</li>${j.workplace === "household" && j.schedule ? `<li>${esc(j.schedule)}</li>` : ""}<li>${esc(j.category === "Other" && j.categoryOther ? j.categoryOther : j.category)}</li><li>Posted ${ago(j.approvedAt || j.createdAt)}</li></ul>
         <div class="pay-box"><span class="salary salary-lg">${salaryText(j)}</span>${(() => { const m = j.workplace && j.salaryMin ? minimumPay(j.city, j.workplace, j.salaryPeriod) : null; return m && j.salaryMin >= m.amount ? `<span class="minok">${ICON.check}Meets the legal minimum wage</span>` : ""; })()}</div>
@@ -1163,7 +1165,7 @@ function viewProfile() {
           const no = await store.claimFounder();
           if (no) {
             FOUNDERS = await store.founders();
-            await showDialog({ title: `You're founding member #${no}!`, body: `${STAR.replace("<svg", '<svg class="dlg-star"')}You're one of the first 100 people on Job Search PH. Your Founding member badge shows on your profile${role === "employer" ? " and on your job posts" : " and to employers when you apply"}. Thank you for being here early.`, actions: [{ label: "Let's go", value: true, primary: true }] });
+            await showDialog({ title: `You're a founding ${role === "employer" ? "employer" : "jobseeker"}!`, body: `${STAR.replace("<svg", '<svg class="dlg-star"')}You're one of the first 100 people on Job Search PH. Your Founding ${role === "employer" ? "employer" : "jobseeker"} badge shows on your profile${role === "employer" ? " and on your job posts" : " and to employers when you apply"}. Thank you for being here early.`, actions: [{ label: "Let's go", value: true, primary: true }] });
           }
         }
         myAppsCache = null; pendingName = ""; signupIntent = "";
@@ -1201,7 +1203,7 @@ function viewProfile() {
         <header class="profile-head">
           <div class="photo-col"><label class="photo-pick" title="Change photo">${avatar(name || user.email, p.photo, "lg")}<span class="photo-edit">${p.photo ? "Change" : "Add photo"}</span><input type="file" id="photo-in" accept="image/*" hidden></label>${p.photo ? `<button type="button" class="linkbtn small" id="photo-remove">Remove</button>` : ""}</div>
           <div>
-            ${isNew ? `<p class="kicker">${guided ? "Create your profile" : `Step ${step} of 2`}</p>` : `<p class="kicker">${role === "employer" ? "Employer" : "Jobseeker"} profile</p>`}${!isNew ? founderBadge(user.uid) : ""}
+            ${isNew ? `<p class="kicker">${guided ? "Create your profile" : `Step ${step} of 2`}</p>` : `<p class="kicker">${role === "employer" ? "Employer" : "Jobseeker"} profile</p>`}${!isNew ? founderBadge(user.uid, role) : ""}
             <h1>${isNew ? `Welcome${name ? `, ${esc(firstName(name))}` : ""}` : "My profile"}</h1>
             <p class="muted">${isNew ? (role ? "Fill in your details. Fields marked * are required." : "How will you use Job Search PH? You can change this later.") : `Signed in as ${esc(user.email || user.displayName || "")}`}</p>
           </div>
@@ -1617,7 +1619,7 @@ function applicantCard(a) {
       ${avatar(x.fullName, x.photo, "md")}
       <div class="ap-name"><h3>${esc(x.fullName)}${x.age ? `, ${esc(x.age)}` : ""}</h3>
         <p class="muted small">${[x.gender && esc(x.gender), esc(x.city || ""), `applied ${ago(a.createdAt)}`].filter(Boolean).join(" · ")}</p></div>
-      <div class="ap-badges">${founderBadge(a.applicantUid)}${strengthChip(x)}${appBadge(a.status, true)}</div>
+      <div class="ap-badges">${founderBadge(a.applicantUid, "jobseeker")}${strengthChip(x)}${appBadge(a.status, true)}</div>
     </header>
     ${a.message ? `<div class="ap-msg"><span class="label">Their message</span><p>${nl2br(a.message)}</p></div>` : ""}
     <dl class="ap-facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v || dash}</dd></div>`).join("")}</dl>
@@ -1909,7 +1911,7 @@ async function viewChat(appId) {
       <header class="chat-head">
         <a href="#/messages" class="back" aria-label="Back to messages">←</a>
         ${avatar(name, iAmEmployer ? x.photo : "")}
-        <div class="chat-who"><strong>${esc(name)}</strong> ${founderBadge(iAmEmployer ? a.applicantUid : a.employerUid, { short: true })}
+        <div class="chat-who"><strong>${esc(name)}</strong> ${(iAmEmployer ? founderBadge(a.applicantUid, "jobseeker", { short: true }) : founderBadge(a.employerUid, "employer", { short: true }))}
           <span class="muted small">${iAmEmployer ? `${x.age ? `${esc(x.age)} · ` : ""}${esc(x.city || "")} · ` : ""}<a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a></span></div>
         <span id="chat-badge"></span>
       </header>
@@ -2027,7 +2029,7 @@ async function renderUsers(body) {
           ${avatar(u.fullName, u.photo, "sm")}
           <span class="us-main"><strong>${esc(u.fullName || "(no name)")}</strong>${u.role === "employer" && u.companyName ? ` <span class="muted">· ${esc(u.companyName)}</span>` : ""}
             <span class="muted small">${esc(u.email || u.phone || "")}${u.city ? ` · ${esc(u.city)}` : ""} · joined ${u.createdAt ? ago(u.createdAt) : "–"}</span></span>
-          <span class="us-tags">${founderBadge(u.id, { short: true })}
+          <span class="us-tags">${founderBadge(u.id, u.role, { short: true })}
             <span class="badge ${u.role === "employer" ? "badge-app-shortlisted" : "badge-app-new"}">${u.role === "employer" ? "Employer" : "Jobseeker"}</span>
             ${u.role === "jobseeker" ? strengthChip(u) : ""}
             <span class="muted small">${u.role === "employer" ? `${postsBy[u.id] || 0} post${postsBy[u.id] === 1 ? "" : "s"}` : `${appsBy[u.id] || 0} application${appsBy[u.id] === 1 ? "" : "s"}`}</span>
@@ -2084,7 +2086,7 @@ async function viewAdminUser(id) {
           ${avatar(u.fullName, u.photo, "lg")}
           <div><h1>${esc(u.fullName || "(no name)")}</h1>
             <p class="muted">${isSeeker ? "Jobseeker" : "Employer"}${u.companyName && !isSeeker ? ` · ${esc(u.companyName)}` : ""}${u.city ? ` · ${esc(u.city)}` : ""}</p>
-            <div class="au-tags">${founderBadge(u.id)}${isSeeker ? strengthChip(u) : ""}${ban ? `<span class="badge badge-banned">Banned</span>` : `<span class="badge badge-approved">Active</span>`}</div></div>
+            <div class="au-tags">${founderBadge(u.id, u.role)}${isSeeker ? strengthChip(u) : ""}${ban ? `<span class="badge badge-banned">Banned</span>` : `<span class="badge badge-approved">Active</span>`}</div></div>
         </header>
         <dl class="ap-facts au-facts">${facts.join("")}</dl>
         ${isSeeker ? `<div class="ap-long au-long">
