@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793107926";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793108543";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -1466,17 +1466,14 @@ function viewPost() {
     const n = f.description.value.trim().length; counter.textContent = n < 30 ? `${n}/30 characters minimum` : `${n} characters`;
     f.contactValue.placeholder = ph[val("contactMethod")] || "";
     const box = $("#wage-box"); const min = currentMin(); const pay = Number(f.salaryMin.value) || 0; const per = val("salaryPeriod") || "month";
-    if (!min) { box.className = "wage-box"; box.innerHTML = `<span class="small">Choose who's hiring and the city to see the legal minimum.</span>`; }
-    else {
-      const ok = pay >= min.amount;
-      box.className = `wage-box ${pay ? (ok ? "ok" : "low") : ""}`;
-      const pw = pay ? payWarning({ workplace: workplace(), salaryPeriod: per, salaryMin: f.salaryMin.value, salaryMax: per === "month" ? f.salaryMax.value : "" }) : null;
-      if (pw) box.className = "wage-box odd";
-      box.innerHTML = `<strong>Legal minimum: ₱${min.amount.toLocaleString("en-PH")} / ${per}</strong>
-        <span class="small">${esc(min.basis)} in ${esc(min.region)}, effective ${esc(min.since)}.${per !== "month" ? ` Converted using ${WORK_DAYS} working days a month${per === "hour" ? " and 8 hours a day" : ""}.` : ""}</span>
-        ${pw ? `<span class="verdict odd">⚠ Please double-check: ${esc(pw.msg)}</span>` : ""}
-        ${pay ? `<span class="verdict">${ok ? `${ICON.check} Your pay meets the minimum` : `Below the legal minimum. Raise it to at least ₱${min.amount.toLocaleString("en-PH")}.`}</span>` : ""}`;
-    }
+    // Only speak up when something is wrong: pay below the legal minimum, or pay that looks like a typo.
+    const low = min && pay && pay < min.amount;
+    const pw = pay ? payWarning({ workplace: workplace(), salaryPeriod: per, salaryMin: f.salaryMin.value, salaryMax: per === "month" ? f.salaryMax.value : "" }) : null;
+    box.hidden = !low && !pw;
+    box.className = `wage-box ${low ? "low" : pw ? "odd" : ""}`;
+    box.innerHTML = low
+      ? `<strong>Below the legal minimum</strong><span class="small">The minimum for this job in ${esc(min.region)} is ₱${min.amount.toLocaleString("en-PH")} per ${per}. Please raise the pay.</span>`
+      : pw ? `<span class="verdict odd">⚠ Please double-check: ${esc(pw.msg)}</span>` : "";
     const d = collect();
     $("#preview").innerHTML = card({ ...d, id: "preview", title: d.title || "Job title", employerName: d.employerName || "Employer name", city: d.city || "City", category: d.category || "Category", approvedAt: Date.now() }, false, null).replace(/href="[^"]*"/, 'href="#/post" tabindex="-1" aria-hidden="true"');
   };
