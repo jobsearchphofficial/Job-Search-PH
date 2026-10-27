@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793117626";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793117864";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -919,7 +919,8 @@ async function viewJob(id) {
     let url = `https://jobsearchph.com/?src=share#/job/${encodeURIComponent(j.id)}`;
     try { const r = await fetch(`/jobs/${encodeURIComponent(j.id)}/`, { method: "HEAD", cache: "no-store" }); if (r.ok) url = staticUrl; } catch {}
     try {
-      if (navigator.share) await navigator.share({ title: j.title, text: `${j.title} — ${j.city}. Apply free on Job Search PH.`, url });
+      // Link only: with extra text, "Copy" in some share menus pastes the text into the link and breaks it.
+      if (navigator.share) await navigator.share({ title: `${j.title} — ${j.city} | Job Search PH`, url });
       else { await navigator.clipboard.writeText(url); toast("Link copied"); }
     } catch {}
   });
@@ -2780,7 +2781,8 @@ async function route() {
     location.hash = "#/profile"; return;
   }
   if (!page) return viewList();
-  if (page === "job" && arg) return viewJob(decodeURIComponent(arg));
+  // Keep only the ID: share menus sometimes glue the title/text onto the link ("…/job/abc123%20Live-in%20Yaya").
+  if (page === "job" && arg) { let raw = arg; try { raw = decodeURIComponent(arg); } catch {} const id = (raw.match(/^[A-Za-z0-9_-]+/) || [""])[0]; if (id && id !== raw) { history.replaceState(null, "", `${location.pathname}${location.search}#/job/${id}`); } return viewJob(id); }
   if (page === "signin") return viewSignIn();
   if (page === "profile") return viewProfile();
   if (page === "post") return viewPost();
