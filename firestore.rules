@@ -46,7 +46,7 @@ service cloud.firestore {
           'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
           'birthDate','gender','jobCategories','jobTypes','experienceYears','skills','workHistory',
           'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email','src','jobCategoryOther',
-          'fbUrl','bizReg','signIn','emailVerified'])
+          'fbUrl','bizReg','signIn','emailVerified','alerts','alertsScope','alertsToken'])
         && d.role in ['jobseeker', 'employer']
         && str(d.fullName, 2, 80)
         && str(d.phone, 7, 20)
@@ -73,7 +73,11 @@ service cloud.firestore {
         && optStr(d.get('fbUrl', null), 200)
         && optStr(d.get('bizReg', null), 60)
         && (d.get('signIn', null) == null || d.signIn in ['', 'google', 'password'])
-        && (d.get('emailVerified', null) == null || d.emailVerified is bool);
+        && (d.get('emailVerified', null) == null || d.emailVerified is bool)
+        // Job alert emails (opt-in). The token is the secret in the unsubscribe link.
+        && (d.get('alerts', null) == null || d.alerts is bool)
+        && (d.get('alertsScope', null) == null || d.alertsScope in ['city', 'all'])
+        && (d.get('alertsToken', null) == null || (d.alertsToken is string && d.alertsToken.matches('[A-Za-z0-9]{32}')));
     }
 
     match /users/{uid} {
@@ -350,6 +354,22 @@ service cloud.firestore {
                     && request.resource.data.keys().hasOnly(['at', 'by', 'method'])
                     && str(request.resource.data.method, 1, 60);
       allow delete: if isAdmin();
+    }
+
+    /* ---------- Job alert emails ----------
+       The unsubscribe link in each email writes unsubscribes/{token}, no sign-in needed.
+       Nobody can read these; the daily alert job (server key) turns alerts off and deletes them.
+       alertState/{uid} is the job's own bookkeeping (when each person was last emailed). */
+    match /unsubscribes/{token} {
+      // update too, so clicking the link twice still works
+      allow create, update: if token.matches('[A-Za-z0-9]{32}')
+                    && request.resource.data.keys().hasOnly(['at'])
+                    && request.resource.data.at == request.time;
+      allow read, delete: if false;
+    }
+    match /alertState/{uid} {
+      allow read: if isAdmin();
+      allow write: if false;
     }
 
     match /bans/{uid} {

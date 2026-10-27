@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793117864";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793121737";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -134,7 +134,7 @@ export const store = {
     try { await F.setDoc(ref, payload, { merge: true }); }
     catch (e) { // older published rules don't know the newest optional fields yet: save without them
       if (e.code !== "permission-denied") throw e;
-      ["src", "jobCategoryOther", "fbUrl", "bizReg", "signIn", "emailVerified"].forEach((k) => delete payload[k]);
+      ["src", "jobCategoryOther", "fbUrl", "bizReg", "signIn", "emailVerified", "alerts", "alertsScope", "alertsToken"].forEach((k) => delete payload[k]);
       await F.setDoc(ref, payload, { merge: true });
     }
     const extra = await loadProfile(auth.currentUser);
@@ -179,6 +179,17 @@ export const store = {
     }
     await this.founders(true);
     return { awarded: todo.length, count };
+  },
+  // Job alert emails: the unsubscribe link works without signing in. The daily alert job applies it.
+  async unsubscribe(token) {
+    if (!/^[A-Za-z0-9]{32}$/.test(token || "")) throw Object.assign(new Error("bad-token"), { code: "bad-token" });
+    await F.setDoc(F.doc(db, "unsubscribes", token), { at: F.serverTimestamp() });
+    // Signed in as the same person? Turn it off on the profile right away too.
+    const p = state.profile;
+    if (p && p.alertsToken === token && p.alerts) {
+      await F.updateDoc(F.doc(db, "users", uid()), { alerts: false, updatedAt: F.serverTimestamp() }).catch(() => {});
+      const extra = await loadProfile(auth.currentUser); state = { ...state, ...extra }; emit();
+    }
   },
   async deleteProfile() {
     await F.deleteDoc(F.doc(db, "users", uid()));
