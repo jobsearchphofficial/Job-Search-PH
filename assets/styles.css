@@ -933,3 +933,17 @@ body > .site-footer { flex-shrink: 0; }
 .src-out { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
 .src-out code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: .8rem; padding: 8px 10px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
 .an-src td:first-child { white-space: nowrap; }
+/* Founding member badge */
+.fbadge { display: inline-flex; align-items: center; gap: 4px; font-size: .74rem; font-weight: 600; padding: 2px 9px 2px 7px; border-radius: 999px; white-space: nowrap; vertical-align: middle;
+  color: #8a5a00; background: linear-gradient(135deg, #fff4d6, #ffe7a8); border: 1px solid #f0cf73; }
+.fbadge svg { width: 13px; height: 13px; color: #d99a00; }
+.fbadge.short { font-size: .68rem; padding: 1px 7px 1px 5px; }
+:root[data-theme="dark"] .fbadge { color: #ffd772; background: rgba(240, 190, 60, .14); border-color: rgba(240, 190, 60, .4); }
+:root[data-theme="dark"] .fbadge svg { color: #ffd772; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .fbadge { color: #ffd772; background: rgba(240, 190, 60, .14); border-color: rgba(240, 190, 60, .4); } :root:not([data-theme="light"]) .fbadge svg { color: #ffd772; } }
+.profile-head .fbadge { margin: 2px 0 6px; }
+.dlg-star { display: block; width: 44px; height: 44px; color: #e0a400; margin: 4px 0 10px; }
+.us-founders { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; justify-content: space-between; margin-top: 10px; padding: 10px 14px; border-radius: 12px; background: linear-gradient(135deg, #fffaeb, #fff3cf); border: 1px solid #f3dc95; font-size: .88rem; color: #6b4a00; }
+.us-founders > span { display: inline-flex; align-items: center; gap: 6px; }
+.us-founders svg { width: 16px; height: 16px; color: #d99a00; }
+:root[data-theme="dark"] .us-founders { background: rgba(240, 190, 60, .1); border-color: rgba(240, 190, 60, .3); color: #ffd772; }

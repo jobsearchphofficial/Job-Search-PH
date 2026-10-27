@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793106196";
+import { firebaseConfig, LISTING_DAYS, RESUME_UPLOADS } from "./firebase-config.js?v=1793107259";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -7,6 +7,7 @@ const USE_EMULATORS = ["localhost", "127.0.0.1"].includes(location.hostname) && 
 
 let A, F, S, auth, db, storage;
 let state = { user: null, profile: null, isAdmin: false, banned: null, ready: false };
+let foundersCache = null;
 const listeners = new Set();
 const emit = () => listeners.forEach((cb) => cb({ ...state }));
 
@@ -131,6 +132,46 @@ export const store = {
     catch (e) { if (e.code !== "permission-denied" || !payload.src) throw e; delete payload.src; await F.setDoc(ref, payload, { merge: true }); } // older rules without "src"
     const extra = await loadProfile(auth.currentUser);
     state = { ...state, ...extra }; emit();
+  },
+  /* ---- Founding members (#1–#100) ---- */
+  async founders(force = false) {
+    if (!force && foundersCache) return foundersCache;
+    try { const snap = await F.getDocs(F.collection(db, "founders")); foundersCache = Object.fromEntries(snap.docs.map((d) => [d.id, d.data().no])); }
+    catch { foundersCache = foundersCache || {}; }
+    return foundersCache;
+  },
+  // Claims the next number if any are left. Returns the number, or null.
+  async claimFounder() {
+    if (!uid()) return null;
+    try {
+      const no = await F.runTransaction(db, async (tx) => {
+        const mine = await tx.get(F.doc(db, "founders", uid()));
+        if (mine.exists()) return null;
+        const meta = await tx.get(F.doc(db, "meta", "founders"));
+        const count = meta.exists() ? meta.data().count || 0 : 0;
+        if (count >= 100) return null;
+        tx.set(F.doc(db, "meta", "founders"), { count: count + 1 });
+        tx.set(F.doc(db, "founders", uid()), { no: count + 1, at: F.serverTimestamp() });
+        return count + 1;
+      });
+      if (no) { foundersCache = { ...(foundersCache || {}), [uid()]: no }; }
+      return no;
+    } catch (e) { console.warn("founder claim skipped", e.code || e.message); return null; }
+  },
+  // Admin: give numbers to the earliest existing profiles that don't have one yet.
+  async awardFounders(users) {
+    const meta = await F.getDoc(F.doc(db, "meta", "founders"));
+    let count = meta.exists() ? meta.data().count || 0 : 0;
+    const have = await this.founders(true);
+    const todo = users.filter((u) => !have[u.id]).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)).slice(0, Math.max(0, 100 - count));
+    for (let i = 0; i < todo.length; i += 400) {
+      const b = F.writeBatch(db);
+      todo.slice(i, i + 400).forEach((u) => { count++; b.set(F.doc(db, "founders", u.id), { no: count, at: F.serverTimestamp() }); });
+      b.set(F.doc(db, "meta", "founders"), { count });
+      await b.commit();
+    }
+    await this.founders(true);
+    return { awarded: todo.length, count };
   },
   async deleteProfile() {
     await F.deleteDoc(F.doc(db, "users", uid()));

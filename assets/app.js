@@ -1,4 +1,4 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793106196";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793107259";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -165,6 +165,14 @@ function strengthCard(p, compact = false) {
     <p class="small">${msg}</p>
     ${next.length ? `<div class="strength-next">${next.map((it) => `<button type="button" class="s-step" data-goto="${it.k}"><span>${esc(it.todo)}</span><em>+${it.pts}</em></button>`).join("")}</div>` : ""}
   </div>`;
+}
+
+/* ---------------- Founding member badge (#1–#100) ---------------- */
+let FOUNDERS = {};
+const STAR = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.5l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8L12 3.2z" fill="currentColor"/></svg>`;
+function founderBadge(uid, { short = false, label = "Founding member" } = {}) {
+  const no = uid && FOUNDERS[uid]; if (!no) return "";
+  return `<span class="fbadge ${short ? "short" : ""}" title="${esc(label)} #${no}: one of the first 100 members of Job Search PH">${STAR}${short ? `#${no}` : `${esc(label)} #${no}`}</span>`;
 }
 
 /* ---------------- Pay sanity check (catches typos like 85,000 instead of 8,500) ---------------- */
@@ -782,7 +790,7 @@ function card(j, applied, km) {
       ${j.featured ? `<span class="badge badge-featured">Featured</span>` : applied ? `<span class="badge badge-app-new">Applied</span>` : ""}
     </div>
     <h3>${esc(j.title)}</h3>
-    <p class="employer">${esc(j.employerName)}</p>
+    <p class="employer">${esc(j.employerName)} ${founderBadge(j.ownerUid, { short: true, label: "Founding employer" })}</p>
     <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}${km != null ? ` · ${km < 1 ? "<1" : Math.round(km)} km` : ""}</span></p>
     <ul class="meta"><li>${esc(j.employmentType)}</li>${j.workplace === "household" && j.schedule ? `<li>${esc(j.schedule)}</li>` : ""}${perks.map((b) => `<li class="perk">${esc(b)}</li>`).join("")}</ul>
     <div class="card-foot"><span class="salary">${salaryText(j)}</span><span class="muted">${ago(j.approvedAt || j.createdAt)}</span></div>
@@ -808,7 +816,7 @@ async function viewJob(id) {
       <div class="job-main">
         ${!isLive(j) ? `<p class="notice">This post is not public. Status: ${statusBadge(j)}</p>` : ""}
         <h1>${esc(j.title)}</h1>
-        <p class="employer">${esc(j.employerName)}</p>
+        <p class="employer">${esc(j.employerName)} ${founderBadge(j.ownerUid, { label: "Founding employer" })}</p>
         <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}</span></p>
         <ul class="meta"><li>${esc(j.employmentType)}</li>${j.workplace === "household" && j.schedule ? `<li>${esc(j.schedule)}</li>` : ""}<li>${esc(j.category === "Other" && j.categoryOther ? j.categoryOther : j.category)}</li><li>Posted ${ago(j.approvedAt || j.createdAt)}</li></ul>
         <div class="pay-box"><span class="salary salary-lg">${salaryText(j)}</span>${(() => { const m = j.workplace && j.salaryMin ? minimumPay(j.city, j.workplace, j.salaryPeriod) : null; return m && j.salaryMin >= m.amount ? `<span class="minok">${ICON.check}Meets the legal minimum wage</span>` : ""; })()}</div>
@@ -1151,6 +1159,13 @@ function viewProfile() {
         }
         await store.saveProfile(data);
         clearDraft(`profile:${role}`); clearDraft("role");
+        if (isNew) {
+          const no = await store.claimFounder();
+          if (no) {
+            FOUNDERS = await store.founders();
+            await showDialog({ title: `You're founding member #${no}!`, body: `${STAR.replace("<svg", '<svg class="dlg-star"')}You're one of the first 100 people on Job Search PH. Your Founding member badge shows on your profile${role === "employer" ? " and on your job posts" : " and to employers when you apply"}. Thank you for being here early.`, actions: [{ label: "Let's go", value: true, primary: true }] });
+          }
+        }
         myAppsCache = null; pendingName = ""; signupIntent = "";
         toast("Profile saved");
         if (isNew || returnTo) finishAuthFlow(); else viewProfile();
@@ -1186,7 +1201,7 @@ function viewProfile() {
         <header class="profile-head">
           <div class="photo-col"><label class="photo-pick" title="Change photo">${avatar(name || user.email, p.photo, "lg")}<span class="photo-edit">${p.photo ? "Change" : "Add photo"}</span><input type="file" id="photo-in" accept="image/*" hidden></label>${p.photo ? `<button type="button" class="linkbtn small" id="photo-remove">Remove</button>` : ""}</div>
           <div>
-            ${isNew ? `<p class="kicker">${guided ? "Create your profile" : `Step ${step} of 2`}</p>` : `<p class="kicker">${role === "employer" ? "Employer" : "Jobseeker"} profile</p>`}
+            ${isNew ? `<p class="kicker">${guided ? "Create your profile" : `Step ${step} of 2`}</p>` : `<p class="kicker">${role === "employer" ? "Employer" : "Jobseeker"} profile</p>`}${!isNew ? founderBadge(user.uid) : ""}
             <h1>${isNew ? `Welcome${name ? `, ${esc(firstName(name))}` : ""}` : "My profile"}</h1>
             <p class="muted">${isNew ? (role ? "Fill in your details. Fields marked * are required." : "How will you use Job Search PH? You can change this later.") : `Signed in as ${esc(user.email || user.displayName || "")}`}</p>
           </div>
@@ -1602,7 +1617,7 @@ function applicantCard(a) {
       ${avatar(x.fullName, x.photo, "md")}
       <div class="ap-name"><h3>${esc(x.fullName)}${x.age ? `, ${esc(x.age)}` : ""}</h3>
         <p class="muted small">${[x.gender && esc(x.gender), esc(x.city || ""), `applied ${ago(a.createdAt)}`].filter(Boolean).join(" · ")}</p></div>
-      <div class="ap-badges">${strengthChip(x)}${appBadge(a.status, true)}</div>
+      <div class="ap-badges">${founderBadge(a.applicantUid)}${strengthChip(x)}${appBadge(a.status, true)}</div>
     </header>
     ${a.message ? `<div class="ap-msg"><span class="label">Their message</span><p>${nl2br(a.message)}</p></div>` : ""}
     <dl class="ap-facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v || dash}</dd></div>`).join("")}</dl>
@@ -1894,7 +1909,7 @@ async function viewChat(appId) {
       <header class="chat-head">
         <a href="#/messages" class="back" aria-label="Back to messages">←</a>
         ${avatar(name, iAmEmployer ? x.photo : "")}
-        <div class="chat-who"><strong>${esc(name)}</strong>
+        <div class="chat-who"><strong>${esc(name)}</strong> ${founderBadge(iAmEmployer ? a.applicantUid : a.employerUid, { short: true })}
           <span class="muted small">${iAmEmployer ? `${x.age ? `${esc(x.age)} · ` : ""}${esc(x.city || "")} · ` : ""}<a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a></span></div>
         <span id="chat-badge"></span>
       </header>
@@ -2005,13 +2020,14 @@ async function renderUsers(body) {
         <select id="us-sort" aria-label="Sort"><option value="new" ${usersFilter.sort === "new" ? "selected" : ""}>Newest first</option><option value="name" ${usersFilter.sort === "name" ? "selected" : ""}>Name A–Z</option></select>
       </div>
       <div class="seg-mini us-chips" role="radiogroup">${chips.map(([k, l, c]) => `<button type="button" role="radio" aria-checked="${usersFilter.role === k}" class="${usersFilter.role === k ? "on" : ""}" data-role-f="${k}">${l} <span class="count">${c}</span></button>`).join("")}</div>
+      <div class="us-founders"><span>${STAR}<strong>${Object.keys(FOUNDERS).length}</strong> of 100 founding badges given</span>${Object.keys(FOUNDERS).length < 100 && data.users.some((u) => !FOUNDERS[u.id]) ? `<button type="button" class="btn btn-ghost btn-sm" id="award-founders">Give badges to earliest users</button>` : ""}</div>
       <p class="an-sub us-count">${list.length} user${list.length === 1 ? "" : "s"}</p>
       ${list.length ? `<div class="us-list">${list.slice(0, 300).map((u) => `
         <a class="us-row ${bans[u.id] ? "is-banned" : ""}" href="#/admin/user/${encodeURIComponent(u.id)}">
           ${avatar(u.fullName, u.photo, "sm")}
           <span class="us-main"><strong>${esc(u.fullName || "(no name)")}</strong>${u.role === "employer" && u.companyName ? ` <span class="muted">· ${esc(u.companyName)}</span>` : ""}
             <span class="muted small">${esc(u.email || u.phone || "")}${u.city ? ` · ${esc(u.city)}` : ""} · joined ${u.createdAt ? ago(u.createdAt) : "–"}</span></span>
-          <span class="us-tags">
+          <span class="us-tags">${founderBadge(u.id, { short: true })}
             <span class="badge ${u.role === "employer" ? "badge-app-shortlisted" : "badge-app-new"}">${u.role === "employer" ? "Employer" : "Jobseeker"}</span>
             ${u.role === "jobseeker" ? strengthChip(u) : ""}
             <span class="muted small">${u.role === "employer" ? `${postsBy[u.id] || 0} post${postsBy[u.id] === 1 ? "" : "s"}` : `${appsBy[u.id] || 0} application${appsBy[u.id] === 1 ? "" : "s"}`}</span>
@@ -2022,6 +2038,13 @@ async function renderUsers(body) {
     const qi = $("#us-q");
     qi.addEventListener("input", () => { usersFilter.q = qi.value; const pos = qi.selectionStart; draw(); const n2 = $("#us-q"); n2.focus(); n2.setSelectionRange(pos, pos); });
     $("#us-sort").addEventListener("change", (e) => { usersFilter.sort = e.target.value; draw(); });
+    $("#award-founders")?.addEventListener("click", async () => {
+      const left = 100 - Object.keys(FOUNDERS).length, without = data.users.filter((u) => !FOUNDERS[u.id]).length;
+      const ok = await showDialog({ title: "Give founding badges?", body: `The ${Math.min(left, without)} earliest user${Math.min(left, without) === 1 ? "" : "s"} without a badge will get the next numbers, in the order they signed up. New sign-ups keep getting badges automatically until all 100 are given.`, actions: [{ label: "Cancel", value: false }, { label: "Give badges", value: true, primary: true }] });
+      if (!ok) return;
+      try { const r = await store.awardFounders(data.users); FOUNDERS = await store.founders(true); toast(`Gave ${r.awarded} badge${r.awarded === 1 ? "" : "s"} (${r.count} of 100 used)`); draw(); }
+      catch (e) { console.error(e); toast(e.code === "permission-denied" ? "Couldn't give badges. Publish the latest database rules first." : "Couldn't give badges. Try again."); }
+    });
     body.querySelectorAll("[data-role-f]").forEach((b) => b.addEventListener("click", () => { usersFilter.role = b.dataset.roleF; draw(); }));
   };
   draw();
@@ -2061,7 +2084,7 @@ async function viewAdminUser(id) {
           ${avatar(u.fullName, u.photo, "lg")}
           <div><h1>${esc(u.fullName || "(no name)")}</h1>
             <p class="muted">${isSeeker ? "Jobseeker" : "Employer"}${u.companyName && !isSeeker ? ` · ${esc(u.companyName)}` : ""}${u.city ? ` · ${esc(u.city)}` : ""}</p>
-            <div class="au-tags">${isSeeker ? strengthChip(u) : ""}${ban ? `<span class="badge badge-banned">Banned</span>` : `<span class="badge badge-approved">Active</span>`}</div></div>
+            <div class="au-tags">${founderBadge(u.id)}${isSeeker ? strengthChip(u) : ""}${ban ? `<span class="badge badge-banned">Banned</span>` : `<span class="badge badge-approved">Active</span>`}</div></div>
         </header>
         <dl class="ap-facts au-facts">${facts.join("")}</dl>
         ${isSeeker ? `<div class="ap-long au-long">
@@ -2578,7 +2601,9 @@ async function route() {
 
 window.addEventListener("hashchange", route);
 setTheme(getTheme());
-onAuth((s) => {
+let foundersLoaded = false;
+onAuth(async (s) => {
+  if (!foundersLoaded) { foundersLoaded = true; FOUNDERS = await store.founders().catch(() => ({})); }
   const uidNow = s.user?.uid || null;
   const changed = uidNow !== lastUid; lastUid = uidNow;
   if (changed) { myAppsCache = null; startNotifications(); }

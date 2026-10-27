@@ -310,6 +310,29 @@ service cloud.firestore {
                         || request.resource.data.msgAt == request.time);
     }
 
+    /* ---------- Founding members: the first 100 profiles get a numbered badge ---------- */
+    function foundersPath() { return /databases/$(database)/documents/meta/founders; }
+    match /meta/founders {
+      allow read: if true;
+      allow create, update: if isAdmin()
+                    || (signedIn()
+                        && request.resource.data.keys().hasOnly(['count'])
+                        && request.resource.data.count is int
+                        && request.resource.data.count == (resource == null ? 0 : resource.data.count) + 1
+                        && request.resource.data.count <= 100
+                        && getAfter(/databases/$(database)/documents/founders/$(me())).data.no == request.resource.data.count);
+    }
+    match /founders/{uid} {
+      allow read: if true;
+      allow create: if isAdmin()
+                    || (signedIn() && me() == uid && notBanned()
+                        && exists(/databases/$(database)/documents/users/$(me()))
+                        && request.resource.data.keys().hasOnly(['no', 'at'])
+                        && request.resource.data.at == request.time
+                        && request.resource.data.no == getAfter(foundersPath()).data.count);
+      allow update, delete: if isAdmin();
+    }
+
     match /bans/{uid} {
       allow read: if signedIn() && (me() == uid || isAdmin());
       allow create, update: if isAdmin()
