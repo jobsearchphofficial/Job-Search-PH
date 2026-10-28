@@ -1147,6 +1147,11 @@ function viewProfile() {
         <p class="hint vf-hint">${SHIELD}Only admins see these. Employers who add them get approved faster and can earn a <strong>Verified</strong> badge, which jobseekers trust more.</p>
         <label>Facebook profile or page link<input name="fbUrl" type="url" inputmode="url" maxlength="200" placeholder="https://facebook.com/yourname" value="${esc(p.fbUrl || "")}"></label>
         <label>Business permit or DTI number (businesses only, optional)<input name="bizReg" maxlength="60" placeholder="e.g. DTI 1234567" value="${esc(p.bizReg || "")}"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Emails</legend>
+        <label class="check"><input type="checkbox" name="emailNotify" ${p.emailNotify === false ? "" : "checked"}>
+          <span>Email me when someone applies and when my posts are approved${user.email ? ` (to <strong>${esc(user.email)}</strong>)` : ""}</span></label>
       </fieldset>` : ""}
       ${role === "jobseeker" ? `
       <fieldset>
@@ -1203,6 +1208,7 @@ function viewProfile() {
     const g = f.querySelector("[name=gender]:checked"); if (f.querySelector("[name=gender]")) p.gender = g ? g.value : "";
     ["jobCategories", "jobTypes"].forEach((k) => { if (f.querySelector(`[name=${k}]`)) p[k] = [...f.querySelectorAll(`[name=${k}]:checked`)].map((i) => i.value); });
     if (f.jobCategoryOther) p.jobCategoryOther = (p.jobCategories || []).includes("Other") ? f.jobCategoryOther.value.trim().replace(/\s+/g, " ").replace(/^./, (c) => c.toUpperCase()) : "";
+    if (f.emailNotify) p.emailNotify = f.emailNotify.checked;
     if (f.alerts) { p.alerts = f.alerts.checked; p.alertsScope = f.alertsScope.value === "all" ? "all" : "city"; }
   };
 
@@ -1283,6 +1289,7 @@ function viewProfile() {
         Object.assign(data, { alerts: !!p.alerts, alertsScope: p.alertsScope || "city", alertsToken: p.alerts && !profile?.alerts ? alertToken() : (p.alertsToken || profile?.alertsToken || alertToken()) });
       } else {
         data.alerts = false; // employers don't get job alerts (also turns them off when switching from jobseeker)
+        data.emailNotify = p.emailNotify !== false;
         data.companyName = (p.companyName || "").trim();
         let fb = (p.fbUrl || "").trim();
         if (fb && !/^https?:\/\//i.test(fb)) fb = `https://${fb}`;

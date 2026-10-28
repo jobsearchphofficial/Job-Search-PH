@@ -46,7 +46,7 @@ service cloud.firestore {
           'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
           'birthDate','gender','jobCategories','jobTypes','experienceYears','skills','workHistory',
           'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email','src','jobCategoryOther',
-          'fbUrl','bizReg','signIn','emailVerified','alerts','alertsScope','alertsToken'])
+          'fbUrl','bizReg','signIn','emailVerified','alerts','alertsScope','alertsToken','emailNotify'])
         && d.role in ['jobseeker', 'employer']
         && str(d.fullName, 2, 80)
         && str(d.phone, 7, 20)
@@ -77,7 +77,9 @@ service cloud.firestore {
         // Job alert emails (opt-in). The token is the secret in the unsubscribe link.
         && (d.get('alerts', null) == null || d.alerts is bool)
         && (d.get('alertsScope', null) == null || d.alertsScope in ['city', 'all'])
-        && (d.get('alertsToken', null) == null || (d.alertsToken is string && d.alertsToken.matches('[A-Za-z0-9]{32}')));
+        && (d.get('alertsToken', null) == null || (d.alertsToken is string && d.alertsToken.matches('[A-Za-z0-9]{32}')))
+        // Employers: emails about new applicants and their posts (on unless turned off).
+        && (d.get('emailNotify', null) == null || d.emailNotify is bool);
     }
 
     match /users/{uid} {

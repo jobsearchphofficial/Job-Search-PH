@@ -160,7 +160,7 @@ export const store = {
     try { await F.setDoc(ref, payload, { merge: true }); }
     catch (e) { // older published rules don't know the newest optional fields yet: save without them
       if (e.code !== "permission-denied") throw e;
-      ["src", "jobCategoryOther", "fbUrl", "bizReg", "signIn", "emailVerified", "alerts", "alertsScope", "alertsToken"].forEach((k) => delete payload[k]);
+      ["src", "jobCategoryOther", "fbUrl", "bizReg", "signIn", "emailVerified", "alerts", "alertsScope", "alertsToken", "emailNotify"].forEach((k) => delete payload[k]);
       await F.setDoc(ref, payload, { merge: true });
     }
     const extra = await loadProfile(auth.currentUser);
