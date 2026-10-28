@@ -1,4 +1,7 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793117864";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS, smsEnabled, normPhone } from "./store.js?v=1793200579";
+import { IS_STAGING } from "./firebase-config.js?v=1793200579";
+import { fitScore, rankApplicants } from "./match.js?v=1793200579";
+import { scamFlags, SERIOUS } from "./safety.js?v=1793200579";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -50,6 +53,7 @@ const STATUS_LABEL = { pending: "Under review", approved: "Live", rejected: "Rej
 const APP_STATUS = { new: "Sent", shortlisted: "Shortlisted", offered: "Job offer", not_selected: "Not selected", offer_declined: "Offer declined", hired: "Hired" };
 const DECLINED = ["not_selected", "offer_declined"];
 const CAN_SMS = matchMedia("(pointer: coarse)").matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+const FB_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="#1877F2" d="M24 12a12 12 0 1 0-13.9 11.9v-8.4H7.1V12h3V9.4c0-3 1.8-4.7 4.5-4.7 1.3 0 2.7.2 2.7.2v2.9h-1.5c-1.5 0-2 .9-2 1.9V12h3.4l-.5 3.5h-2.9v8.4A12 12 0 0 0 24 12z"/><path fill="#fff" d="m16.7 15.5.5-3.5h-3.4V9.7c0-1 .5-1.9 2-1.9h1.5V4.9s-1.4-.2-2.7-.2c-2.7 0-4.5 1.6-4.5 4.7V12h-3v3.5h3v8.4a12 12 0 0 0 3.7 0v-8.4h2.9z"/></svg>`;
 const IN_APP_BROWSER = /FBAN|FBAV|FB_IAB|Instagram|Messenger|Line\//i.test(navigator.userAgent);
 
 /* ---------------- Wages, work conditions, places ---------------- */
@@ -148,7 +152,7 @@ const STRENGTH_ITEMS = [
   { k: "workHistory", pts: 15, todo: "Add your work history", done: (p) => String(p.workHistory || "").trim().length >= 20 },
   { k: "education", pts: 10, todo: "Add your education", done: (p) => String(p.education || "").trim().length >= 4 },
   { k: "gender", pts: 5, todo: "Choose your gender", done: (p) => !!p.gender },
-  { k: "messenger", pts: 5, todo: "Add your Messenger", done: (p) => !!String(p.messenger || "").trim() },
+  { k: "messenger", pts: 5, todo: "Add your Facebook profile", done: (p) => !!String(p.messenger || "").trim() },
   { k: "resumeUrl", pts: 5, todo: "Add a resume link", done: (p) => !!String(p.resumeUrl || p.resumeFileUrl || "").trim() },
 ];
 function profileStrength(p = {}) {
@@ -186,8 +190,9 @@ let VERIFIED = {};
 const SHIELD = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8 4.5 5.6v5.6c0 4.7 3.2 8.9 7.5 10 4.3-1.1 7.5-5.3 7.5-10V5.6L12 2.8Z" fill="currentColor"/><path d="m8.4 12.1 2.4 2.4 4.8-4.8" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 function verifiedBadge(uid, { short = false } = {}) {
   if (!uid || !VERIFIED[uid]) return "";
-  return `<span class="vbadge ${short ? "short" : ""}" title="Job Search PH checked this employer's identity">${SHIELD}Verified</span>`;
+  return `<span class="vbadge ${short ? "short" : ""}" title="Job Search PH checked this person's ID">${SHIELD}Verified</span>`;
 }
+const ID_TYPES = ["PhilSys National ID", "Driver's license", "Passport", "UMID", "SSS ID", "PRC ID", "Postal ID", "Voter's ID", "PhilHealth ID", "Senior citizen ID", "Other government ID"];
 const VERIFY_METHODS = ["Talked on the phone", "Checked their Facebook", "Saw business permit / DTI", "Met in person", "Known to us"];
 const INFO_ASKS = ["Your Facebook profile or page link", "Your business permit or DTI number", "The exact work location", "More details about the job", "Check the pay (it looks off)"];
 
@@ -302,6 +307,50 @@ function shrinkPhoto(file) {
     img.src = url;
   });
 }
+// Shrink a photo to a JPEG data URL: longest side up to maxSide, under maxChars (the database stores it inline).
+// Redrawing on a canvas also drops the photo's hidden details (GPS location, camera, date).
+// watermark: text stamped diagonally across the whole photo, so a leaked copy can't be reused elsewhere.
+const shrinkChatPhoto = (file) => shrinkImage(file, 1280, 140000);
+function stampWatermark(c, ctx, text) {
+  const fs = Math.max(14, Math.round(Math.min(c.width, c.height) / 16));
+  ctx.save(); ctx.font = `700 ${fs}px Arial, sans-serif`; ctx.textBaseline = "middle";
+  ctx.translate(c.width / 2, c.height / 2); ctx.rotate(-Math.PI / 7);
+  const w = ctx.measureText(text).width + fs * 2, diag = Math.hypot(c.width, c.height);
+  ctx.lineWidth = Math.max(1, fs / 14); ctx.strokeStyle = "rgba(0,0,0,.22)"; ctx.fillStyle = "rgba(255,255,255,.38)";
+  for (let y = -diag / 2, row = 0; y < diag / 2; y += fs * 3.2, row++)
+    for (let x = -diag / 2 - (row % 2) * w / 2; x < diag / 2; x += w) { ctx.strokeText(text, x, y); ctx.fillText(text, x, y); }
+  ctx.restore();
+}
+function shrinkImage(file, maxSide, maxChars, watermark = "") {
+  return new Promise((resolve, reject) => {
+    if (!/^image\//.test(file.type)) return reject(new Error("Choose a photo (JPG or PNG)."));
+    const img = new Image(); const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let max = maxSide, out = "";
+      for (let tries = 0; tries < 6; tries++) {
+        const k = Math.min(1, max / Math.max(img.width, img.height));
+        const c = document.createElement("canvas"); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height);
+        if (watermark) stampWatermark(c, ctx, watermark);
+        let q = 0.8; out = c.toDataURL("image/jpeg", q);
+        while (out.length > maxChars && q > 0.45) { q -= 0.1; out = c.toDataURL("image/jpeg", q); }
+        if (out.length <= maxChars) return resolve(out);
+        max = Math.round(max * 0.75);
+      }
+      reject(new Error("That photo is too big. Try a smaller one."));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That photo couldn't be read. Try another one.")); };
+    img.src = url;
+  });
+}
+const safePhoto = (p) => (typeof p === "string" && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(p) ? p : "");
+// Full-screen view of a chat photo.
+function showPhoto(src) {
+  const d = document.createElement("div"); d.className = "lightbox"; d.innerHTML = `<img src="${src}" alt="Photo"><button type="button" aria-label="Close">×</button>`;
+  d.addEventListener("click", () => d.remove()); document.body.appendChild(d);
+}
+
 // Crop dialog: drag to move, slider/scroll/pinch to zoom. Resolves a 256px JPEG data URL, or null on cancel.
 function cropPhoto(file) {
   return new Promise((resolve, reject) => {
@@ -375,6 +424,8 @@ const limitMsg = {
   support: `You've sent ${LIMITS.support} support messages today. We'll reply to those first.`,
 };
 const $ = (s, el = document) => el.querySelector(s);
+// 32 random letters/digits: the secret in a job alert email's unsubscribe link.
+const alertToken = () => { const c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; return [...crypto.getRandomValues(new Uint8Array(32))].map((b) => c[b % 62]).join(""); };
 const app = $("#app");
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const peso = (n) => "₱" + Number(n).toLocaleString("en-PH");
@@ -408,6 +459,7 @@ function messengerUrl(v) {
       const u = new URL(v);
       if (!/(^|\.)(m\.me|facebook\.com|messenger\.com)$/i.test(u.hostname)) return null;
       user = u.pathname.replace(/^\/+|\/+$/g, "").replace(/^t\//, "");
+      if (/^profile\.php$/i.test(user)) user = u.searchParams.get("id") || "";
     }
   } catch { return null; }
   user = user.replace(/[^A-Za-z0-9.\-_]/g, "");
@@ -424,6 +476,15 @@ function contactLink(c) {
   const m = messengerUrl(v);
   return m ? { href: m, label: "Message on Messenger", text: v } : null;
 }
+// A post's private contact can hold several ways to reach the employer (contacts list);
+// older posts have just one (contactMethod + contactValue).
+function contactList(c) {
+  if (!c) return [];
+  const list = Array.isArray(c.contacts) && c.contacts.length ? c.contacts : [{ contactMethod: c.contactMethod, contactValue: c.contactValue }];
+  return list.filter((x) => x && x.contactMethod && x.contactValue);
+}
+const CONTACT_LABEL = { messenger: "Messenger", phone: "Phone", email: "Email" };
+const contactText = (c) => contactList(c).map((x) => `${CONTACT_LABEL[x.contactMethod] || x.contactMethod}: ${x.contactValue}`).join(" · ");
 
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.classList.add("show");
@@ -446,8 +507,14 @@ function authError(err) {
     "auth/wrong-password": "Wrong email or password.",
     "auth/user-not-found": "No account with that email. Create one instead.",
     "auth/too-many-requests": "Too many tries. Wait a few minutes and try again.",
-    "auth/popup-closed-by-user": "The Google window was closed before signing in.",
-    "auth/popup-blocked": "Your browser blocked the Google window. Allow pop-ups or use email instead.",
+    "auth/popup-closed-by-user": "The sign-in window was closed before signing in.",
+    "auth/popup-blocked": "Your browser blocked the sign-in window. Allow pop-ups or use email instead.",
+    "auth/cancelled-popup-request": "The sign-in window was closed before signing in.",
+    "auth/account-exists-with-different-credential": "You already have an account with this email. Sign in with Google or email first, then connect Facebook in My profile.",
+    "auth/credential-already-in-use": "That Facebook account is already used by another Job Search PH account.",
+    "auth/provider-already-linked": "Facebook is already connected to your account.",
+    "auth/requires-recent-login": "For your safety, sign out and sign in again, then try once more.",
+    "last-method": "You need at least one other way to sign in before removing Facebook.",
     "auth/operation-not-allowed": "This sign-in method isn't turned on yet.",
     "auth/unauthorized-domain": "This website address isn't allowed for sign-in yet.",
     "auth/network-request-failed": "No internet connection. Check your connection and try again.",
@@ -943,13 +1010,14 @@ async function renderApplyPanel(j, isOwner) {
   const { user, profile, isAdmin } = getAuthState();
 
   if (isOwner || isAdmin) {
-    const [apps, contact] = await Promise.all([isOwner ? store.applicationsForJob(j.id).catch(() => []) : [], store.getContact(j.id)]);
+    const [apps, contact] = await Promise.all([(isOwner ? store.applicationsForJob(j.id) : store.applicationsForJobAdmin(j.id)).catch(() => []), store.getContact(j.id)]);
     const fresh = apps.filter((a) => a.status === "new").length;
     panel.innerHTML = `
       <h2>${isOwner ? "Your post" : "Admin view"}</h2>
+      ${!isOwner ? `<p class="muted">${apps.length} applicant${apps.length === 1 ? "" : "s"}${fresh ? ` · ${fresh} new` : ""}</p>${apps.length ? `<a class="btn btn-ghost btn-block" href="#/applicants/${encodeURIComponent(j.id)}">See who applied</a>` : ""}` : ""}
       ${isOwner ? `<p class="muted">${apps.length} applicant${apps.length === 1 ? "" : "s"}${fresh ? ` · ${fresh} new` : ""}</p>
-      <a class="btn btn-primary btn-block" href="#/applicants/${encodeURIComponent(j.id)}">View applicants</a>` : ""}
-      ${contact ? `<p class="small muted">Contact shown to the person you hire: ${esc(contact.contactMethod)} · ${esc(contact.contactValue)}</p>` : ""}`;
+      <a class="btn btn-primary btn-block" href="#/applicants/${encodeURIComponent(j.id)}">View applicants</a>${j.status !== "closed" ? `<a class="btn btn-ghost btn-block" href="#/post/edit/${encodeURIComponent(j.id)}">Edit post</a>` : ""}` : ""}
+      ${contact ? `<p class="small muted">Contact shown to the person you hire: ${esc(contactText(contact))}</p>` : ""}`;
     return;
   }
   if (!user) {
@@ -975,16 +1043,16 @@ async function renderApplyPanel(j, isOwner) {
   const employed = apps.find((a) => a.status === "hired" && !a.employmentEnded && isFullTime(a.jobSchedule, a.jobArrangement));
   if (mine) {
     const rawContact = mine.status === "hired" ? await store.getContact(j.id).catch(() => null) : null;
-    const c = rawContact ? contactLink(rawContact) : null;
+    const links = contactList(rawContact).map(contactLink).filter(Boolean);
     panel.innerHTML = `
       <h2>${mine.status === "new" ? "Application sent" : mine.status === "offered" ? "You got a job offer!" : `You applied ${appBadge(mine.status)}`}</h2>
       ${mine.status === "offered" ? `<p>${esc(mine.employerName || "The employer")} wants to hire you. Accept to start, or decline if it's not right for you.</p><div class="actions offer-row">${offerHtml(mine)}</div>` : ""}
       <p class="muted">Sent ${ago(mine.createdAt)}. ${mine.status === "hired" ? "You're hired. Coordinate your start with the employer below." : "The employer can see your profile. Replies come through Messages here on Job Search PH."}</p>
       ${rawContact?.address ? `<p class="small"><strong>Work address</strong><br>${esc(rawContact.address)}${j.area ? `, ${esc(j.area)}` : ""}, ${esc(j.city)}</p>` : ""}
-      ${c ? `<p class="small"><strong>Employer contact</strong></p>
-        <a class="btn btn-primary btn-block" href="${esc(c.href)}" target="_blank" rel="noopener nofollow">${esc(c.label)}</a>
+      ${links.length ? `<p class="small"><strong>Employer contact</strong></p>
+        ${links.map((c, i) => `<a class="btn ${i ? "btn-ghost" : "btn-primary"} btn-block" href="${esc(c.href)}" target="_blank" rel="noopener nofollow">${esc(c.label)}</a>
         ${c.extra ? `<a class="btn btn-ghost btn-block" href="${esc(c.extra)}">Send a text</a>` : ""}
-        <p class="small muted copyable">${esc(c.text)}</p>` : ""}
+        <p class="small muted copyable">${esc(c.text)}</p>`).join("")}` : ""}
       <a class="btn ${mine.status === "offered" ? "btn-ghost" : "btn-primary"} btn-block" href="#/chat/${encodeURIComponent(mine.id)}">${chatState(mine).open ? "Message the employer" : "View chat"}</a>
       ${mine.status === "new" || mine.status === "shortlisted" ? `<p class="withdraw-line"><button type="button" class="linkbtn small muted" id="withdraw">Withdraw application</button></p>` : ""}`;
     panel.querySelector(".offer-row")?.addEventListener("click", (e) => { const b = e.target.closest("[data-offer]"); if (b) handleOffer(b, mine, () => renderApplyPanel(j, false)); });
@@ -1049,10 +1117,14 @@ function viewSignIn() {
         <div class="auth-card">
           <h1>${mode === "signup" ? "Create your free account" : esc(signInPurpose || "Sign in")}</h1>
           <p class="muted">${mode === "signup" ? "For jobseekers and employers. It's free." : "Sign in to apply for jobs or manage your posts."}</p>
-          ${IN_APP_BROWSER ? `<p class="notice small">You opened this inside Facebook or Messenger, which blocks Google sign-in. Use email below, or tap ⋯ and choose <strong>Open in browser</strong>.</p>` : ""}
+          ${IN_APP_BROWSER ? `<p class="notice small">You opened this inside Facebook or Messenger, which blocks Google sign-in. Use <strong>Continue with Facebook</strong> or email below, or tap ⋯ and choose <strong>Open in browser</strong>.</p>` : ""}
           <button class="btn btn-ghost btn-block btn-google" id="google" ${IN_APP_BROWSER ? "disabled" : ""}>
             <svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
             Continue with Google
+          </button>
+          <button class="btn btn-ghost btn-block btn-google" id="facebook">
+            ${FB_ICON.replace('width="16" height="16"', 'width="18" height="18"')}
+            Continue with Facebook
           </button>
           <div class="divider"><span>or use email</span></div>
           <form id="email-form" class="auth-form" novalidate>
@@ -1069,6 +1141,8 @@ function viewSignIn() {
     const err = (m) => { const el = $("#auth-error"); el.textContent = m; el.hidden = !m; };
     $("#toggle").addEventListener("click", () => { mode = mode === "signup" ? "signin" : "signup"; draw(); });
     $("#google").addEventListener("click", async () => { try { await store.signInGoogle(); } catch (e) { err(authError(e)); } });
+    $("#facebook").addEventListener("click", async () => { try { await store.signInFacebook({ redirect: IN_APP_BROWSER }); } catch (e) { err(authError(e)); } });
+    store.redirectError().then((e) => { if (e) err(authError(e)); });
     $("#forgot")?.addEventListener("click", async () => {
       const email = $("#s-email").value.trim();
       if (!email) return err("Type your email above first, then tap Forgot password.");
@@ -1092,7 +1166,9 @@ function viewSignIn() {
 }
 
 /* ---------------- Profile ---------------- */
-function viewProfile() {
+let profileFocus = ""; // "emails" → scroll to the email settings (links in emails go to #/profile/emails)
+function viewProfile(focus) {
+  if (focus) profileFocus = focus;
   document.title = "My profile | Job Search PH";
   const { user, profile } = getAuthState();
   if (!user) return goSignIn("Sign in to set up your profile");
@@ -1119,16 +1195,21 @@ function viewProfile() {
         <div class="row">
           ${role === "jobseeker" ? `<label>Birthdate *<span class="date-age"><input name="birthDate" type="date" required max="${maxBirth}" value="${esc(p.birthDate)}"><output id="age-out" class="age-pill">${ageFrom(p.birthDate) != null ? `${ageFrom(p.birthDate)} years old` : "Age"}</output></span><span class="hint">You must be at least 18. Employers see your age, not your birthdate.</span></label>`
             : `<label>Household or business name<input name="companyName" maxlength="100" placeholder="e.g. Reyes Family or Inasal Express" value="${esc(p.companyName)}"></label>`}
-          <label>Messenger (optional)<input name="messenger" maxlength="100" placeholder="Username or m.me link" value="${esc(p.messenger)}"></label>
+          ${role === "jobseeker" ? `<label>Facebook profile (optional)<input name="messenger" type="url" inputmode="url" maxlength="100" placeholder="https://facebook.com/yourname" value="${esc(p.messenger)}"><span class="hint">Employers can message you on Messenger from this.</span></label>` : ""}
         </div>
         ${role === "jobseeker" ? `<div><span class="label">Gender</span><div class="pills tight" role="radiogroup">${["Male", "Female", "Other"].map((g) => `<label class="pill"><input type="radio" name="gender" value="${g}" ${p.gender === g ? "checked" : ""}><span>${g}</span></label>`).join("")}</div></div>` : ""}
       </fieldset>
       ${role === "employer" ? `
       <fieldset>
         <legend>Help us confirm you're real</legend>
-        <p class="hint vf-hint">${SHIELD}Only admins see these. Employers who add them get approved faster and can earn a <strong>Verified</strong> badge, which jobseekers trust more.</p>
+        <p class="hint vf-hint">${SHIELD}<span>Only admins see these. Employers who add them get approved faster and can earn a <strong>Verified</strong> badge, which jobseekers trust more.</span></p>
         <label>Facebook profile or page link<input name="fbUrl" type="url" inputmode="url" maxlength="200" placeholder="https://facebook.com/yourname" value="${esc(p.fbUrl || "")}"></label>
         <label>Business permit or DTI number (businesses only, optional)<input name="bizReg" maxlength="60" placeholder="e.g. DTI 1234567" value="${esc(p.bizReg || "")}"></label>
+      </fieldset>
+      <fieldset id="pf-emails">
+        <legend>Emails</legend>
+        <label class="check"><input type="checkbox" name="emailNotify" ${p.emailNotify === false ? "" : "checked"}>
+          <span>Email me when someone applies and when my posts are approved${user.email ? ` (to <strong>${esc(user.email)}</strong>)` : ""}</span></label>
       </fieldset>` : ""}
       ${role === "jobseeker" ? `
       <fieldset>
@@ -1141,6 +1222,15 @@ function viewProfile() {
           <label>Availability<select name="availability"><option value="">Choose…</option>${opts(AVAILABILITY, p.availability)}</select></label>
         </div>
       </fieldset>
+      <fieldset id="pf-emails">
+        <legend>Job alerts by email</legend>
+        <label class="check"><input type="checkbox" name="alerts" ${p.alerts ? "checked" : ""}>
+          <span>Email me when new jobs match the jobs I picked above</span></label>
+        <label id="alerts-scope" ${p.alerts ? "" : "hidden"}>Where<select name="alertsScope">
+          <option value="city" ${p.alertsScope !== "all" ? "selected" : ""}>Only in my city / municipality</option>
+          <option value="all" ${p.alertsScope === "all" ? "selected" : ""}>Anywhere in Negros Occidental</option></select>
+          <span class="hint">At most one email a day${user.email ? `, sent to <strong>${esc(user.email)}</strong>` : ""}. Every email has an unsubscribe link.${getAuthState().mustConfirmEmail ? " Alerts start once you confirm your email (see the top of this page)." : ""}</span></label>
+      </fieldset>
       <fieldset>
         <legend>Experience &amp; resume</legend>
         <label>Skills<textarea name="skills" rows="2" maxlength="1000" placeholder="e.g. cooking Filipino dishes, ironing, caring for toddlers, basic first aid">${esc(p.skills)}</textarea></label>
@@ -1152,6 +1242,13 @@ function viewProfile() {
         <label>Resume link (optional)<input name="resumeUrl" type="url" maxlength="500" placeholder="https://drive.google.com/…" value="${esc(p.resumeUrl)}"><span class="hint">A Google Drive or other link. Set sharing to "Anyone with the link".</span></label>
         ${uploadsEnabled ? `<label>Upload resume (optional)<input name="resumeFile" type="file" accept="application/pdf,image/jpeg,image/png,image/webp"><span class="hint">PDF or photo, up to 5 MB.${p.resumeFileName ? ` Current file: <a href="${esc(p.resumeFileUrl)}" target="_blank" rel="noopener">${esc(p.resumeFileName)}</a>` : ""}</span></label>` : ""}
       </fieldset>` : ""}
+      ${!isNew ? (() => { const fbOn = store.providers().includes("facebook.com"); return `
+      <fieldset>
+        <legend>Sign-in methods</legend>
+        <div class="fb-link"><span>${FB_ICON} Facebook: <strong>${fbOn ? "Connected" : "Not connected"}</strong></span>
+          <button type="button" class="btn btn-ghost btn-sm" id="fb-link" data-on="${fbOn ? 1 : 0}">${fbOn ? "Remove" : "Connect Facebook"}</button></div>
+        <span class="hint">${fbOn ? "You can sign in with Facebook or your other method." : "Sign in faster with Facebook next time. We never post anything to your Facebook."}</span>
+      </fieldset>`; })() : ""}
       <label class="check"><input type="checkbox" name="consent" ${profile?.consent ? "checked" : ""}>
         <span>${role === "jobseeker" ? "I agree that my profile is shared with employers when I apply to their jobs." : "I agree to only post real jobs and to use applicants' details only for hiring."} I accept the <a href="#/terms" target="_blank">Terms</a> and <a href="#/privacy" target="_blank">Privacy notice</a>.</span></label>
       <p id="form-error" class="error" hidden></p>
@@ -1169,6 +1266,8 @@ function viewProfile() {
     const g = f.querySelector("[name=gender]:checked"); if (f.querySelector("[name=gender]")) p.gender = g ? g.value : "";
     ["jobCategories", "jobTypes"].forEach((k) => { if (f.querySelector(`[name=${k}]`)) p[k] = [...f.querySelectorAll(`[name=${k}]:checked`)].map((i) => i.value); });
     if (f.jobCategoryOther) p.jobCategoryOther = (p.jobCategories || []).includes("Other") ? f.jobCategoryOther.value.trim().replace(/\s+/g, " ").replace(/^./, (c) => c.toUpperCase()) : "";
+    if (f.emailNotify) p.emailNotify = f.emailNotify.checked;
+    if (f.alerts) { p.alerts = f.alerts.checked; p.alertsScope = f.alertsScope.value === "all" ? "all" : "city"; }
   };
 
   const bindForm = () => {
@@ -1177,6 +1276,7 @@ function viewProfile() {
       if (f.querySelectorAll("[name=jobCategories]:checked").length > 5) { cb.checked = false; toast("Pick up to 5 jobs"); }
       const jo = $("#jc-other"); if (jo) { jo.hidden = !f.querySelector('[name=jobCategories][value="Other"]:checked'); if (!jo.hidden && cb.value === "Other" && cb.checked) f.jobCategoryOther.focus(); }
     }));
+    f.alerts?.addEventListener("change", () => { $("#alerts-scope").hidden = !f.alerts.checked; });
     f.addEventListener("input", (e) => e.target.classList?.remove("invalid"));
     const pd = loadDraft(`profile:${role}`);
     if (pd) {
@@ -1185,6 +1285,7 @@ function viewProfile() {
       const a = ageFrom(f.birthDate?.value); if (f.birthDate && a != null) $("#age-out").textContent = `${a} years old`;
     }
     autosave(`profile:${role}`, f);
+    if (f.alerts) $("#alerts-scope").hidden = !f.alerts.checked; // a restored draft may have ticked it
     const paintStrength = () => { const box = $("#strength"); if (!box) return; collect(); box.outerHTML = strengthCard(p); };
     if (pd && role === "jobseeker") setTimeout(paintStrength);
     if (role === "jobseeker") { f.addEventListener("input", paintStrength); f.addEventListener("change", paintStrength); }
@@ -1200,6 +1301,13 @@ function viewProfile() {
     f.birthDate?.addEventListener("input", () => {
       const a = ageFrom(f.birthDate.value); const out = $("#age-out");
       out.textContent = a == null ? "Age" : `${a} years old`; out.classList.toggle("bad", a != null && a < 18);
+    });
+    $("#fb-link")?.addEventListener("click", async (e) => {
+      const b = e.currentTarget; const on = b.dataset.on === "1";
+      if (on && !confirmInline(b, "Click again to remove")) return;
+      b.disabled = true;
+      try { if (on) await store.unlinkFacebook(); else await store.linkFacebook(); toast(on ? "Facebook removed" : "Facebook connected"); viewProfile(); }
+      catch (ex) { b.disabled = false; toast(authError(ex)); }
     });
     $("#del-profile")?.addEventListener("click", async (e) => {
       if (!confirmInline(e.target, "Click again to delete")) return;
@@ -1217,7 +1325,8 @@ function viewProfile() {
       const ph = digits(phone).replace(/^\+/, "");
       if (ph.length < 10 || ph.length > 13) return fail("Enter a complete mobile number, e.g. 0917 123 4567.", f.phone);
       if (!p.city) return fail("Choose your city or municipality.", f.city);
-      if (p.messenger && !messengerUrl(p.messenger)) return fail("That Messenger username or link doesn't look right.", f.messenger);
+      if (p.messenger && !/^https?:\/\//i.test(p.messenger) && /facebook\.com|fb\.com|m\.me/i.test(p.messenger)) p.messenger = `https://${p.messenger.trim()}`;
+      if (p.messenger && !messengerUrl(p.messenger)) return fail("That Facebook link doesn't look right. It should look like https://facebook.com/yourname", f.messenger);
       const data = { role, fullName, phone, city: p.city, messenger: (p.messenger || "").trim(), photo: p.photo || "" };
       if (role === "jobseeker") {
         const age = ageFrom(p.birthDate);
@@ -1233,7 +1342,13 @@ function viewProfile() {
           skills: (p.skills || "").trim(), workHistory: (p.workHistory || "").trim(), education: (p.education || "").trim(),
           availability: p.availability || "", resumeUrl: (p.resumeUrl || "").trim(),
         });
+        if (p.alerts && !(p.jobCategories || []).length) return fail("Pick at least one job above so we know which alerts to send.", f.alerts);
+        if (p.alerts && !user.email) return fail("Your account has no email address, so we can't send job alerts.", f.alerts);
+        // A fresh unsubscribe token each time alerts are switched on, so an old unsubscribe click can't turn them off again.
+        Object.assign(data, { alerts: !!p.alerts, alertsScope: p.alertsScope || "city", alertsToken: p.alerts && !profile?.alerts ? alertToken() : (p.alertsToken || profile?.alertsToken || alertToken()) });
       } else {
+        data.alerts = false; // employers don't get job alerts (also turns them off when switching from jobseeker)
+        data.emailNotify = p.emailNotify !== false;
         data.companyName = (p.companyName || "").trim();
         let fb = (p.fbUrl || "").trim();
         if (fb && !/^https?:\/\//i.test(fb)) fb = `https://${fb}`;
@@ -1285,12 +1400,36 @@ function viewProfile() {
       ${isNew ? `<ul>${ROLES[k].points.map((t) => `<li>${t}</li>`).join("")}</ul>` : ""}
     </button>`;
 
+  // "Get the Verified badge" card for employers. The ID check itself is on its own page (#/verify).
+  const paintVerify = async () => {
+    const box = $("#verify-card"); if (!box) return;
+    const seeker = role === "jobseeker";
+    if (VERIFIED[user.uid]) { box.innerHTML = `<div class="vc-done">${SHIELD}<div><strong>You're a Verified ${seeker ? "jobseeker" : "employer"}.</strong><span class="small muted"> ${seeker ? "Employers see the badge when you apply." : "The badge shows on all your posts."}</span></div></div>`; return; }
+    const req = await store.myVerifyRequest();
+    if (!$("#verify-card")) return;
+    const st = req?.status;
+    box.innerHTML = `<div class="vc-head">${SHIELD}<div><strong>${st === "pending" ? "We're checking your ID" : st === "rejected" || st === "expired" ? "We couldn't verify you yet" : "Get the Verified badge"}</strong>
+      <p class="small muted">${st === "pending" ? "Usually within a day. We'll email you when it's done." : st === "rejected" || st === "expired" ? "You can send new photos." : seeker ? "Employers trust Verified jobseekers more and are more likely to message you. It takes 2 minutes." : "Jobseekers trust Verified employers more, and your posts get approved faster. It takes 2 minutes."}</p></div></div>
+      <a class="btn ${st === "pending" ? "btn-ghost" : "btn-primary"} btn-sm" href="#/verify">${st === "pending" ? "See status" : st ? "Try again" : "Get verified"}</a>`;
+  };
+
+  // Mobile number: confirmed, or a button to confirm it by text.
+  const paintPhone = async () => {
+    const st = await store.phoneStatus(); const box = $("#phone-card"); if (!box) return;
+    const prof = getAuthState().profile;
+    box.hidden = false;
+    if (phoneOk(st, prof)) { box.classList.add("ok"); box.innerHTML = `<div class="pc-head"><span class="pc-ico ok">✓</span><div><strong>Mobile number confirmed</strong><p class="small muted">${maskPhone(prof.phone)}. If you change your number, you'll confirm the new one.</p></div></div>`; return; }
+    box.classList.remove("ok");
+    phoneBox(box, { why: role === "employer" ? "You'll need this before posting a job." : "It shows employers your number is real.", onDone: paintPhone });
+  };
+
   const draw = () => {
     if (isNew && role) { try { const k = draftKey("role"); if (k) localStorage.setItem(k, role); } catch {} }
     const name = p.fullName || user.displayName || "";
     const step = !role ? 1 : 2;
     app.innerHTML = `
       <div class="profile-wrap">
+        ${getAuthState().mustConfirmEmail ? confirmEmailBox(role === "employer" ? "You'll need this before you can post a job." : "It keeps your account safe and lets us send job alerts.") : ""}
         <header class="profile-head">
           <div class="photo-col"><label class="photo-pick" title="Change photo">${avatar(name || user.email, p.photo, "lg")}<span class="photo-edit">${p.photo ? "Change" : "Add photo"}</span><input type="file" id="photo-in" accept="image/*" hidden></label>${p.photo ? `<button type="button" class="linkbtn small" id="photo-remove">Remove</button>` : ""}</div>
           <div>
@@ -1299,6 +1438,8 @@ function viewProfile() {
             <p class="muted">${isNew ? (role ? "Fill in your details. Fields marked * are required." : "How will you use Job Search PH? You can change this later.") : `Signed in as ${esc(user.email || user.displayName || "")}`}</p>
           </div>
         </header>
+        ${role && !isNew ? `<section class="verify-card" id="verify-card"></section>` : ""}
+        ${role && !isNew && smsEnabled ? `<section class="phone-card" id="phone-card" hidden></section>` : ""}
         ${isNew && !guided ? `<ol class="steps" aria-label="Progress"><li class="${step >= 1 ? "done" : ""} ${step === 1 ? "current" : ""}">Choose type</li><li class="${step === 2 ? "current" : ""}">Your details</li></ol>` : ""}
         ${guided ? `<div class="role-switch"><span class="role-now">${ICONS[role]}<span>${role === "employer" ? "Employer profile: post jobs and review applicants" : "Jobseeker profile: apply to jobs with one profile"}</span></span>
             <button type="button" class="linkbtn" data-role="${role === "employer" ? "jobseeker" : "employer"}">${role === "employer" ? "Looking for work instead?" : "Hiring instead?"}</button></div>`
@@ -1329,6 +1470,15 @@ function viewProfile() {
       if (first) $("#profile-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }));
     if (role) bindForm();
+    bindConfirmEmail(() => viewProfile());
+    if (role && !isNew) paintVerify();
+    if (role && !isNew && smsEnabled) paintPhone();
+    if (profileFocus === "emails" && $("#pf-emails")) {
+      profileFocus = "";
+      history.replaceState(null, "", `${location.pathname}${location.search}#/profile`);
+      const fs = $("#pf-emails");
+      setTimeout(() => { fs.scrollIntoView({ behavior: "smooth", block: "center" }); fs.classList.add("flash"); setTimeout(() => fs.classList.remove("flash"), 1700); }, 150);
+    }
     $("#photo-in")?.addEventListener("change", async (e) => {
       const file = e.target.files?.[0]; if (!file) return;
       e.target.value = "";
@@ -1364,25 +1514,231 @@ const TITLE_FOR = {
 const SCHEDULES = { household: ["Full-time", "Part-time"], business: ["Full-time", "Part-time", "Project-based", "Shifts"] };
 const RECOMMENDED = ["SSS", "PhilHealth", "Pag-IBIG", "13th month pay"];
 
-function viewPost() {
-  document.title = "Post a job | Job Search PH";
+/* ---------------- Get Verified (its own page): ID photo + selfie, checked by an admin ---------------- */
+async function viewVerify() {
+  document.title = "Get Verified | Job Search PH";
+  const { user, profile } = getAuthState();
+  if (!user) return goSignIn("Sign in to get verified");
+  if (!profile) { location.hash = "#/profile"; return; }
+  const back = `<p><a href="#/profile" class="back">← My profile</a></p>`;
+  const seeker = profile.role !== "employer";
+  const who = seeker ? "jobseeker" : "employer";
+  app.innerHTML = `${back}${SK.page()}`;
+  const req = await store.myVerifyRequest();
+  if (location.hash !== "#/verify") return;
+  const head = (title, sub) => `<header class="vp-head"><span class="vp-shield">${SHIELD}</span><div><p class="kicker">Get Verified</p><h1>${title}</h1><p class="muted">${sub}</p></div></header>`;
+  const privacy = `<aside class="vp-side"><div class="vp-privacy"><strong>${GI.shield || ""}How we protect your ID</strong><ul>
+      <li>Only Job Search PH admins see it. It's never shown on your profile or posts.</li>
+      <li>We stamp <em>"Job Search PH · verification only"</em> across your photos on your phone, before they're sent, so they can't be reused anywhere else.</li>
+      <li>Location and camera details are removed from the photos.</li>
+      <li>Deleted as soon as we decide, or after 14 days if we haven't.</li>
+      <li>We keep only: that you're verified, the type of ID, and the date.</li></ul>
+      <p class="small muted">Protected under the Data Privacy Act (RA 10173). <a href="#/privacy">Privacy policy</a></p></div></aside>`;
+  if (VERIFIED[user.uid]) {
+    app.innerHTML = `${back}<div class="vp-wrap">${head(`You're a Verified ${who}`, seeker ? "Employers see the green Verified badge when you apply." : "The green Verified badge shows on all your job posts.")}<p>${seeker ? `<a class="btn btn-primary" href="#/">Find jobs</a>` : `<a class="btn btn-primary" href="#/my">See my posts</a>`}</p></div>`;
+    return;
+  }
+  if (req?.status === "pending") {
+    app.innerHTML = `${back}<div class="vp-wrap">${head("We're checking your ID", "Usually within a day. We'll email you and send a notification when it's done.")}
+      <ol class="vp-track"><li class="done"><strong>Sent</strong><span>${req.createdAt ? ago(req.createdAt) : ""} · ${esc(req.idType || "ID")}</span></li><li class="now"><strong>Checking</strong><span>An admin compares your ID with your selfie</span></li><li><strong>Verified badge</strong><span>${seeker ? "Employers see it when you apply" : "Shows on all your posts"}</span></li></ol>
+      <p class="small muted">Sent the wrong photos? Cancel and send them again.</p><button class="btn btn-ghost btn-sm" type="button" id="vp-cancel">Cancel my request</button></div>`;
+    $("#vp-cancel").addEventListener("click", async (e) => { if (!confirmInline(e.target, "Click again to cancel")) return; await store.withdrawVerify().catch(() => {}); toast("Request cancelled. Your photos were deleted."); viewVerify(); });
+    return;
+  }
+  const again = req?.status === "rejected" || req?.status === "expired";
+  const drop = (name, title, hint, tips, capture) => `
+    <section class="vp-step"><header><span class="num">${name === "idPhoto" ? 2 : 3}</span><div><h2>${title}</h2><p class="muted small">${hint}</p></div></header>
+      <label class="vp-drop" data-drop="${name}"><input type="file" name="${name}" accept="image/*" capture="${capture}" hidden>
+        <span class="vp-empty"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg><strong>Take or upload a photo</strong><small>JPG or PNG</small></span>
+        <img alt="" hidden><span class="vp-retake" hidden>Retake</span></label>
+      <ul class="vp-tips">${tips.map(([ok, t]) => `<li class="${ok ? "ok" : "no"}">${ok ? "✓" : "✕"} ${t}</li>`).join("")}</ul>
+    </section>`;
+  app.innerHTML = `${back}<div class="vp-wrap">${head(seeker ? "Show employers you're real" : "Show jobseekers you're real", "It takes about 2 minutes. You'll need a valid government ID and your phone's camera.")}
+    ${again ? `<div class="notice vp-again"><strong>We couldn't verify you last time.</strong> ${req.status === "expired" ? "Your request expired before we checked it." : req.reason ? `Reason: ${esc(req.reason)}.` : ""} Please send new photos.</div>` : ""}
+    <div class="vp-grid">
+      <form id="vp-form" class="vp-steps" novalidate>
+        <section class="vp-step"><header><span class="num">1</span><div><h2>Which ID will you use?</h2><p class="muted small">Any valid government ID with your photo.</p></div></header>
+          <div class="vp-ids" role="radiogroup">${ID_TYPES.map((t) => `<label class="vp-id"><input type="radio" name="idType" value="${esc(t)}"><span>${esc(t)}</span></label>`).join("")}</div></section>
+        ${drop("idPhoto", "Take a photo of your ID", "The front side, with your name, photo and ID number easy to read.", [[1, "The whole ID is in the frame"], [1, "Flat surface, good light, no glare"], [0, "No photocopies, screenshots or edited photos"]], "environment")}
+        ${drop("selfie", "Take a selfie holding your ID", "Hold the same ID next to your face. Both should be clear.", [[1, "Your face and the ID are both visible"], [1, "Same ID as in step 2"], [0, "No sunglasses, mask or cap"]], "user")}
+        <section class="vp-step"><header><span class="num">4</span><div><h2>Review and send</h2></div></header>
+          <label class="fld">Facebook profile or page (optional, helps us check faster)<input name="fbUrl" type="url" maxlength="200" placeholder="https://facebook.com/yourname" value="${esc(profile.fbUrl || "")}"></label>
+          <label class="check small"><input type="checkbox" name="consent"><span>I agree that Job Search PH may look at my ID and selfie only to confirm I'm a real ${who}, as described in the box on this page.</span></label>
+          <p class="error" id="vp-error" hidden></p>
+          <button class="btn btn-primary btn-lg" type="submit">Send for checking</button>
+        </section>
+      </form>
+      ${privacy}
+    </div></div>`;
+  const f = $("#vp-form"); const pics = {};
+  f.addEventListener("change", () => { $("#vp-error").hidden = true; });
+  const stamp = `JOB SEARCH PH · VERIFICATION ONLY · ${new Date().toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })}`;
+  f.querySelectorAll("input[type=file]").forEach((inp) => inp.addEventListener("change", async () => {
+    const file = inp.files?.[0]; if (!file) return;
+    const box = inp.closest(".vp-drop"); box.classList.add("busy");
+    try {
+      pics[inp.name] = await shrinkImage(file, 1600, 290000, stamp);
+      const im = box.querySelector("img"); im.src = pics[inp.name]; im.hidden = false;
+      box.querySelector(".vp-empty").hidden = true; box.querySelector(".vp-retake").hidden = false; box.classList.add("has");
+    } catch (err) { toast(err.message); }
+    box.classList.remove("busy"); inp.value = ""; // the original file isn't kept anywhere
+  }));
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = $("#vp-error"); const fail = (m, el) => { err.textContent = m; err.hidden = false; (el || err).scrollIntoView({ block: "center", behavior: "smooth" }); };
+    err.hidden = true;
+    const idType = f.querySelector("[name=idType]:checked")?.value;
+    if (!idType) return fail("Choose the type of ID (step 1).", f.querySelector(".vp-ids"));
+    if (!pics.idPhoto) return fail("Add a photo of your ID (step 2).", f.querySelector('[data-drop="idPhoto"]'));
+    if (!pics.selfie) return fail("Add a selfie holding your ID (step 3).", f.querySelector('[data-drop="selfie"]'));
+    let fb = f.fbUrl.value.trim(); if (fb && !/^https?:\/\//i.test(fb)) fb = `https://${fb}`;
+    if (fb && !fbHref(fb)) return fail("The Facebook link should look like https://facebook.com/yourname", f.fbUrl);
+    if (!f.consent.checked) return fail("Tick the box to agree before sending.", f.consent);
+    const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Sending securely…";
+    try { await store.submitVerify({ idType, idPhoto: pics.idPhoto, selfie: pics.selfie, fbUrl: fb }); toast("Sent. We'll email you when it's checked."); viewVerify(); }
+    catch (ex) { console.error(ex); btn.disabled = false; btn.textContent = "Send for checking"; fail(ex.code === "permission-denied" ? "That didn't go through. Try smaller photos, or contact support." : `Couldn't send (${ex.code || ex.message}).`); }
+  });
+}
+
+/* ---------------- Confirm mobile number (6-digit code by text, via the SMS helper) ---------------- */
+const PHONE_SVG = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18h3"/></svg>`;
+const phoneOk = (st, profile) => !!(st && profile && st.phone && st.phone === normPhone(profile.phone));
+const maskPhone = (p) => { const n = normPhone(p); return n ? `0${n.slice(3, 6)} ••• ${n.slice(-4)}` : esc(p || ""); };
+// Draws the confirm-by-text flow into `box`. onDone() runs after a right code. onSkip (optional) shows
+// "Continue for now" when texts can't be sent (helper down, out of credit), so nobody gets stuck.
+function phoneBox(box, { why = "", onDone, onSkip } = {}) {
+  const { profile } = getAuthState();
+  let timer = null;
+  const stop = () => { if (timer) clearInterval(timer); timer = null; };
+  const start = () => {
+    stop();
+    box.innerHTML = `<div class="pc-head"><span class="pc-ico">${PHONE_SVG}</span><div><strong>Confirm your mobile number</strong>
+      <p class="small muted">${why ? `${esc(why)} ` : ""}We'll text a 6-digit code to <strong>${maskPhone(profile?.phone)}</strong>. <a href="#/profile">Wrong number?</a></p></div></div>
+      <p class="error" data-pc-err hidden></p>
+      <button class="btn btn-primary btn-sm" type="button" data-pc-send>Text me a code</button>`;
+    box.querySelector("[data-pc-send]").addEventListener("click", sendCode);
+  };
+  const fail = (msg, canSkip) => {
+    const e = box.querySelector("[data-pc-err]"); if (!e) return;
+    e.innerHTML = `${esc(msg)}${canSkip && onSkip ? ` <button type="button" class="linkbtn" data-pc-skip>Continue for now</button>` : ""}`; e.hidden = false;
+    box.querySelector("[data-pc-skip]")?.addEventListener("click", () => { stop(); onSkip(); });
+  };
+  const codeStep = (to) => {
+    box.innerHTML = `<div class="pc-head"><span class="pc-ico">${PHONE_SVG}</span><div><strong>Enter the code we texted you</strong>
+      <p class="small muted">Sent to <strong>${esc(to || maskPhone(profile?.phone))}</strong>. It can take a minute to arrive.</p></div></div>
+      <form class="pc-form" novalidate><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" aria-label="6-digit code">
+      <button class="btn btn-primary btn-sm" type="submit">Confirm</button></form>
+      <p class="error" data-pc-err hidden></p>
+      <p class="small muted pc-again"><button type="button" class="linkbtn" data-pc-resend disabled>Send a new code</button> <span data-pc-wait></span></p>`;
+    const inp = box.querySelector("[name=code]"); inp.focus();
+    inp.addEventListener("input", () => { inp.value = inp.value.replace(/\D/g, "").slice(0, 6); box.querySelector("[data-pc-err]").hidden = true; if (inp.value.length === 6) box.querySelector(".pc-form").requestSubmit(); });
+    box.querySelector(".pc-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (inp.value.length !== 6) return fail("Enter the 6-digit code.");
+      const b = box.querySelector(".pc-form button"); b.disabled = true; b.textContent = "Checking…";
+      try { await store.sms("verify", { code: inp.value }); stop(); toast("Mobile number confirmed"); onDone?.(); }
+      catch (ex) { b.disabled = false; b.textContent = "Confirm"; inp.select(); fail(ex.message); }
+    });
+    box.querySelector("[data-pc-resend]").addEventListener("click", sendCode);
+    countdown(60);
+  };
+  const countdown = (n) => {
+    stop();
+    const btn = box.querySelector("[data-pc-resend]"), w = box.querySelector("[data-pc-wait]"); if (!btn) return;
+    btn.disabled = true;
+    const tick = () => { if (!box.isConnected) return stop(); if (n <= 0) { stop(); btn.disabled = false; w.textContent = ""; return; } w.textContent = `in ${n}s`; n--; };
+    tick(); timer = setInterval(tick, 1000);
+  };
+  async function sendCode(e) {
+    const b = e?.currentTarget; if (b) { b.disabled = true; b.dataset.label = b.textContent; b.textContent = "Sending…"; }
+    try {
+      const r = await store.sms("send");
+      if (r.already) { toast("Your number is already confirmed"); return onDone?.(); }
+      codeStep(r.to);
+    } catch (ex) {
+      if (b) { b.disabled = false; b.textContent = b.dataset.label; }
+      if (ex.code === "wait" && box.querySelector(".pc-form")) { countdown(ex.wait || 60); return; }
+      if (ex.code === "wait") { codeStep(); countdown(ex.wait || 60); return; }
+      fail(ex.message, ["send_failed", "busy", "network", "server", "limit"].includes(ex.code));
+    }
+  }
+  start();
+  return { stop };
+}
+
+// Admin: mark which employers confirmed their number by text (placeholders: data-phonechk="<uid>").
+async function fillPhoneChecks() {
+  const els = [...document.querySelectorAll("[data-phonechk]:not([data-done])")]; if (!els.length) return;
+  els.forEach((el) => (el.dataset.done = "1"));
+  const ids = [...new Set(els.map((el) => el.dataset.phonechk))];
+  const res = Object.fromEntries(await Promise.all(ids.map(async (id) => [id, await store.phoneStatusFor(id)])));
+  els.forEach((el) => { const st = res[el.dataset.phonechk]; el.innerHTML = st && st.phone === normPhone(el.dataset.num) ? `<span class="badge badge-approved">Confirmed by text</span>` : `<span class="badge badge-closed">Not confirmed</span>`; });
+}
+
+// "Confirm your email" box for email + password accounts that haven't clicked the link yet.
+function confirmEmailBox(why) {
+  const { user } = getAuthState();
+  return `<div class="notice confirm-email" id="confirm-email"><div><strong>Confirm your email address.</strong> ${esc(why)} We sent a link to <strong>${esc(user?.email || "your email")}</strong>. Check your inbox (and Spam), click the link, then come back here.</div>
+    <div class="actions"><button class="btn btn-primary btn-sm" type="button" data-confirm="check">I've confirmed it</button><button class="btn btn-ghost btn-sm" type="button" data-confirm="resend">Send the link again</button></div></div>`;
+}
+function bindConfirmEmail(onDone) {
+  $("#confirm-email")?.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-confirm]"); if (!b) return;
+    b.disabled = true;
+    try {
+      if (b.dataset.confirm === "resend") { await store.sendVerification(); toast("Link sent. Check your email."); }
+      else if (await store.refreshVerified()) { toast("Email confirmed. Thank you!"); onDone(); return; }
+      else toast("Not confirmed yet. Click the link in the email first.");
+    } catch (ex) { toast(ex.code === "auth/too-many-requests" ? "Please wait a few minutes before asking for another link." : "Something went wrong. Try again."); }
+    b.disabled = false;
+  });
+}
+
+let phoneSkip = false; // texts couldn't be sent this visit, so posting isn't blocked
+async function viewPost(editId = null) {
+  document.title = `${editId ? "Edit post" : "Post a job"} | Job Search PH`;
   const { user, profile } = getAuthState();
   if (!user) {
     app.innerHTML = `<div class="empty"><h1>Post a job for free</h1><p class="muted">Create a free employer account to post jobs and review applicants in one place.</p><p><a class="btn btn-primary" href="#/signin" data-action="gosignin" data-intent="employer" data-purpose="Sign in to post a job">Sign in to post a job</a></p></div>`;
     return;
   }
   if (!profile) { returnTo = "#/post"; location.hash = "#/profile"; return; }
+  if (!editId && getAuthState().mustConfirmEmail && !getAuthState().isAdmin) {
+    app.innerHTML = `<div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1></div></div>${confirmEmailBox("We ask every employer to do this once before posting, so jobseekers know posts come from real people.")}`;
+    bindConfirmEmail(() => viewPost());
+    return;
+  }
+  // Employers confirm their mobile number once (text message code) before their first post.
+  if (!editId && smsEnabled && profile.role === "employer" && !getAuthState().isAdmin && !phoneSkip) {
+    const st = await store.phoneStatus();
+    if (location.hash !== "#/post") return;
+    if (!phoneOk(st, profile)) {
+      app.innerHTML = `<div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1></div></div><section class="phone-card" id="phone-gate"></section>`;
+      phoneBox($("#phone-gate"), { why: "We ask every employer to do this once, so jobseekers know posts come from real people.", onDone: () => viewPost(), onSkip: () => { phoneSkip = true; viewPost(); } });
+      return;
+    }
+  }
   if (profile.role !== "employer") {
     returnTo = "#/post";
     app.innerHTML = `<div class="empty"><h1>Hiring?</h1><p class="muted">Your profile is set to "I'm looking for work". Switch it to "I'm hiring" to post jobs.</p><p><a class="btn btn-primary" href="#/profile">Change profile type</a></p></div>`;
     return;
+  }
+  // Editing an existing post: load it and check it's theirs and still editable.
+  let editJob = null, editContact = null;
+  if (editId) {
+    app.innerHTML = `<div class="empty"><p class="muted">Loading your post…</p></div>`;
+    [editJob, editContact] = await Promise.all([store.getJob(editId), store.getContact(editId)]);
+    if (!editJob || editJob.ownerUid !== user.uid) { app.innerHTML = `<div class="empty"><h1>Post not found</h1><p class="muted">You can only edit your own posts.</p><p><a class="btn btn-primary" href="#/my">Go to My posts</a></p></div>`; return; }
+    if (editJob.status === "closed") { app.innerHTML = `<div class="empty"><h1>This post is closed</h1><p class="muted">Closed posts can't be edited. Post a new job instead.</p><p><a class="btn btn-primary" href="#/post">Post a job</a></p></div>`; return; }
   }
   const cityList = CITIES.filter((c) => c !== "Other");
   const radioPills = (name, list, sel, cls = "") => `<div class="pills ${cls}" role="radiogroup">${list.map(([v, l]) => `<label class="pill"><input type="radio" name="${name}" value="${esc(v)}" ${String(sel) === String(v) ? "checked" : ""}><span>${esc(l)}</span></label>`).join("")}</div>`;
   const stepper = (name, val, min, max) => `<div class="stepper"><button type="button" data-step="-1" data-for="${name}" aria-label="Less">−</button><input name="${name}" type="number" inputmode="numeric" min="${min}" max="${max}" value="${val}"><button type="button" data-step="1" data-for="${name}" aria-label="More">+</button></div>`;
 
   app.innerHTML = `
-    <div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1><p class="muted">Free to post. Reviewed within a day, then live for 30 days.</p><p class="usage" id="post-usage"></p></div></div>
+    ${editJob ? `<p><a href="#/my" class="back">← My posts</a></p>
+    <div class="page-head"><div><p class="kicker">Edit post</p><h1>${esc(editJob.title)}</h1><p class="muted">${editJob.status === "approved" ? "Saving sends your post back for a quick review. It's hidden from jobseekers until we approve the changes, usually within a day. It keeps its original expiry date, and your applicants and chats stay." : "Saving sends your post for review again."}</p></div></div>`
+    : `<div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1><p class="muted">Free to post. Reviewed within a day, then live for 30 days.</p><p class="usage" id="post-usage"></p></div></div>`}
     <div class="post-layout">
       <form id="post-form" class="form post-form" novalidate>
         <section class="pcard">
@@ -1465,9 +1821,9 @@ function viewPost() {
         </section>
 
         <section class="pcard">
-          <header><span class="num">8</span><div><h2>Your contact for the person you hire</h2><p>Applicants talk to you through Messages here. This contact is only shown to the person who accepts your job offer.</p></div></header>
-          ${radioPills("contactMethod", [["messenger", "Messenger"], ["phone", "Phone / SMS"], ["email", "Email"]], profile.messenger ? "messenger" : "phone", "tight")}
-          <label class="fld"><span class="sr">Contact</span><input name="contactValue" required maxlength="200" value="${esc(profile.messenger || profile.phone || "")}"></label>
+          <header><span class="num">8</span><div><h2>Your contact for the person you hire</h2><p>Applicants talk to you through Messages here. These are only shown to the person who accepts your job offer. We filled them in from your profile; change or remove any.</p></div></header>
+          <div id="contact-rows" class="contact-rows"></div>
+          <button type="button" class="btn btn-ghost btn-sm" id="add-contact">+ Add another contact</button>
         </section>
 
         <section class="pcard agree-box">
@@ -1478,7 +1834,7 @@ function viewPost() {
           <label class="check"><input type="checkbox" name="agreeTerms" required><span>Follow Philippine labor law, including the Kasambahay Law, and the <a href="#/terms" target="_blank">Terms</a></span></label>
         </section>
         <p id="form-error" class="error" hidden></p>
-        <button class="btn btn-primary btn-lg" type="submit">Submit for review</button>
+        <button class="btn btn-primary btn-lg" type="submit">${editJob ? "Save changes" : "Submit for review"}</button>
       </form>
       <aside class="post-side">
         <p class="label">Preview</p>
@@ -1488,7 +1844,7 @@ function viewPost() {
       </aside>
     </div>`;
 
-  if (!getAuthState().isAdmin) store.usage().then((u) => { const el = $("#post-usage"); if (el) el.textContent = `${u.postsM || 0} of ${LIMITS.posts} posts used this month`; }).catch(() => {});
+  if (!editJob && !getAuthState().isAdmin) store.usage().then((u) => { const el = $("#post-usage"); if (el) el.textContent = `${u.postsM || 0} of ${LIMITS.posts} posts used this month`; }).catch(() => {});
   const f = $("#post-form");
   const val = (n) => f.querySelector(`[name=${n}]:checked`)?.value ?? "";
   const workplace = () => val("workplace");
@@ -1558,7 +1914,7 @@ function viewPost() {
       const tag = $("#wh-tag"); tag.className = `h-tag ${len <= 8 ? "ok" : len === 10 ? "warn" : "mid"}`;
       tag.textContent = len < 8 ? "Short day" : len === 8 ? "Recommended" : len === 9 ? "Long day" : "Discouraged: 10 hrs is the max"; }
     const n = f.description.value.trim().length; counter.textContent = n < 30 ? `${n}/30 characters minimum` : `${n} characters`;
-    f.contactValue.placeholder = ph[val("contactMethod")] || "";
+    f.querySelectorAll(".crow").forEach((r) => { r.querySelector("[name=cValue]").placeholder = ph[r.querySelector("[name=cMethod]").value] || ""; });
     const box = $("#wage-box"); const min = currentMin(); const pay = Number(f.salaryMin.value) || 0; const per = val("salaryPeriod") || "month";
     // Only speak up when something is wrong: pay below the legal minimum, or pay that looks like a typo.
     const low = min && pay && pay < min.amount;
@@ -1584,8 +1940,9 @@ function viewPost() {
         autoTitle = arr ? `${arr} ${base}` : base; f.title.value = autoTitle; f.title.classList.remove("invalid");
       }
     }
-    if (e.target.name === "contactMethod") {
-      const m = e.target.value; f.contactValue.value = m === "phone" ? profile.phone : m === "messenger" ? (profile.messenger || "") : (user.email || "");
+    if (e.target.name === "cMethod") {
+      const m = e.target.value, inp = e.target.closest(".crow").querySelector("[name=cValue]");
+      inp.value = m === "phone" ? profile.phone || "" : m === "messenger" ? empMessenger : (user.email || "");
     }
     refresh();
   });
@@ -1609,14 +1966,40 @@ function viewPost() {
     return list.filter((b) => !t || b.toLowerCase().startsWith(t) || b.toLowerCase().split(/[\s.-]+/).some((w) => w.startsWith(t)))
       .map((b) => ({ value: b, html: hl(b, t), meta: "Barangay" }));
   }, () => refresh(), true);
+  // Contact rows: default to the employer's Messenger (from their Facebook link), phone and email.
+  const empMessenger = profile.messenger || messengerUrl(profile.fbUrl) || "";
+  const contactRow = (m = "phone", v = "") => `<div class="crow"><select name="cMethod" aria-label="Contact type">${[["messenger", "Messenger"], ["phone", "Phone / SMS"], ["email", "Email"]].map(([k, l]) => `<option value="${k}" ${k === m ? "selected" : ""}>${l}</option>`).join("")}</select>
+    <input name="cValue" maxlength="200" value="${esc(v)}" aria-label="Contact"><button type="button" class="crow-x" aria-label="Remove this contact">×</button></div>`;
+  const setContacts = (list) => { $("#contact-rows").innerHTML = list.map((c) => contactRow(c.contactMethod, c.contactValue)).join(""); };
+  setContacts([empMessenger && { contactMethod: "messenger", contactValue: empMessenger }, profile.phone && { contactMethod: "phone", contactValue: profile.phone }, user.email && { contactMethod: "email", contactValue: user.email }].filter(Boolean));
+  $("#add-contact").addEventListener("click", () => { if (f.querySelectorAll(".crow").length >= 4) return toast("Up to 4 contacts"); $("#contact-rows").insertAdjacentHTML("beforeend", contactRow("phone", "")); refresh(); $("#contact-rows .crow:last-child input").focus(); });
+  $("#contact-rows").addEventListener("click", (e) => { const x = e.target.closest(".crow-x"); if (!x) return; x.closest(".crow").remove(); refresh(); });
   renderOptions();
-  const draft = loadDraft("post");
+  // Edit mode: fill the form from the saved post.
+  if (editJob) {
+    const j = editJob, c = editContact || {};
+    const setRadio = (n, v) => { const r = [...f.querySelectorAll(`[name=${n}]`)].find((i) => i.value === String(v)); if (r) r.checked = true; };
+    const setVal = (n, v) => { if (f[n] && v != null) f[n].value = v; };
+    touchedBenefits = true;
+    setRadio("workplace", j.workplace || "household"); renderOptions();
+    setRadio("category", j.category); renderOptions();
+    setRadio("arrangement", j.arrangement); setRadio("schedule", j.schedule); setRadio("salaryPeriod", j.salaryPeriod || "month");
+    setRadio("reqExperience", j.reqExperience || 0); setRadio("reqEducation", j.reqEducation || "Any"); if (contactList(c).length) setContacts(contactList(c));
+    ["title", "categoryOther", "employerName", "city", "area", "salaryMin", "salaryMax", "startDate", "requirements", "description", "daysOff", "openings"].forEach((k) => setVal(k, j[k]));
+    setVal("address", j.addressHidden ? c.address : j.address); if (f.hideAddress) f.hideAddress.checked = !!j.addressHidden;
+    f.querySelectorAll("[name=benefits]").forEach((cb) => { cb.checked = (j.benefits || []).includes(cb.value); });
+    f.querySelectorAll("[name=reqList]").forEach((cb) => { cb.checked = (j.reqList || []).includes(cb.value); });
+    const hm = String(j.hours || "").match(/^(\d+) hours a day, (\d+):\d+\s*(AM|PM)/i);
+    if (hm) { f.hLen.value = hm[1]; f.hStart.value = (Number(hm[2]) % 12) + (hm[3].toUpperCase() === "PM" ? 12 : 0); }
+    autoTitle = "";
+  }
+  const draft = editJob ? null : loadDraft("post");
   if (draft) {
     applyDraft(f, draft); touchedBenefits = true; renderOptions(); applyDraft(f, draft);
     f.insertAdjacentHTML("afterbegin", draftNote());
     f.querySelector("[data-draft-clear]").addEventListener("click", () => { clearDraft("post"); viewPost(); });
   }
-  autosave("post", f);
+  if (!editJob) autosave("post", f);
   refresh();
 
   f.addEventListener("submit", async (e) => {
@@ -1631,7 +2014,6 @@ function viewPost() {
         title: "Add a job title (at least 3 characters).", category: "Choose a category.", arrangement: "Choose live-in or stay-out.",
         city: "Choose the city or municipality.", salaryMin: "Enter the pay. It must meet the legal minimum.",
         description: "Write a description of at least 30 characters: duties, schedule, household size.",
-        contactValue: "Add how applicants can contact you.",
         agreeWage: "Confirm that you'll pay at least the legal minimum.", agreeFee: "Confirm that you won't charge applicants any fee.",
         agreeAge: "Confirm that you'll only hire workers aged 18 or older.", agreeTerms: "Confirm that you'll follow labor law and the Terms.",
       };
@@ -1649,26 +2031,38 @@ function viewPost() {
     const min = currentMin();
     if (min && data.salaryMin < min.amount) return fail(`The pay is below the legal minimum of ₱${min.amount.toLocaleString("en-PH")} per ${data.salaryPeriod}. Please raise it.`, f.salaryMin);
     if (!(data.daysOff >= 2)) return fail("The minimum is 2 days off per month.", f.daysOff);
-    const contact = { contactMethod: val("contactMethod"), contactValue: f.contactValue.value.trim() };
+    const rows = [...f.querySelectorAll(".crow")].map((r) => ({ el: r.querySelector("[name=cValue]"), contactMethod: r.querySelector("[name=cMethod]").value, contactValue: r.querySelector("[name=cValue]").value.trim() })).filter((c) => c.contactValue);
+    if (!rows.length) return fail("Add at least one way for the person you hire to reach you.", $("#add-contact"));
+    for (const r of rows) {
+      if (!contactLink(r)) return fail("That contact doesn't look right. Check the username, number or email.", r.el);
+      if (r.contactMethod === "phone" && digits(r.contactValue).length < 10) return fail("Please enter a complete phone number.", r.el);
+    }
+    const contacts = rows.slice(0, 4).map(({ contactMethod, contactValue }) => ({ contactMethod, contactValue }));
+    const contact = { ...contacts[0], contacts };
     if (workplace() === "business" && f.hideAddress.checked && data.address) { contact.address = data.address; data.address = ""; data.addressHidden = true; }
-    if (!contactLink(contact)) return fail("That contact doesn't look right. Check the username, number or email.", f.contactValue);
-    if (contact.contactMethod === "phone" && digits(contact.contactValue).length < 10) return fail("Please enter a complete phone number.", f.contactValue);
     const pw = payWarning(data);
     if (pw) {
       const sure = await showDialog({ title: "Is the pay correct?", body: `${esc(pw.msg)} Applicants will see exactly what you enter, so a typo can attract the wrong people or look like a scam.`, actions: [{ label: "Let me fix it", value: false, primary: true }, { label: "Yes, it's correct", value: true }] });
       if (!sure) { const el = f[pw.field]; el.classList.add("invalid"); el.scrollIntoView({ block: "center", behavior: "smooth" }); setTimeout(() => el.focus({ preventScroll: true }), 300); return; }
     }
-    const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Submitting…";
+    const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = editJob ? "Saving…" : "Submitting…";
     try {
       if (!data.address) delete data.address; // older rules don't know this field yet
       if (!data.categoryOther) delete data.categoryOther;
+      if (editJob) {
+        if (workplace() === "business") data.addressHidden = !!contact.address;
+        await store.editJob(editJob.id, data, contact);
+        jobsCache = null;
+        app.innerHTML = `<div class="empty"><h1>Changes saved</h1><p class="muted">Your post is back in review. We'll check the changes soon${editJob.status === "approved" ? " and it will be live again with its original expiry date" : ""}. Your applicants and chats are unchanged.</p><p><a class="btn btn-primary" href="#/my">Go to My posts</a></p></div>`;
+        return;
+      }
       await store.createJob(data, contact);
       clearDraft("post");
       jobsCache = null;
       app.innerHTML = `<div class="empty"><h1>Thanks! Your post is under review.</h1><p class="muted">We'll check it soon. Applicants will appear under My posts once it's live.</p><p><a class="btn btn-primary" href="#/my">Go to My posts</a> <a class="btn btn-ghost" href="#/post" id="again">Post another</a></p></div>`;
       $("#again").addEventListener("click", (ev) => { ev.preventDefault(); viewPost(); });
     } catch (ex) {
-      console.error(ex); btn.disabled = false; btn.textContent = "Submit for review";
+      console.error(ex); btn.disabled = false; btn.textContent = editJob ? "Save changes" : "Submit for review";
       fail(ex.code === "limit-reached" ? limitMsg.posts : ex.code === "permission-denied"
         ? "The database rejected this post. If you just updated the site, publish the latest database rules in Firebase, then try again."
         : `Could not submit (${ex.code || ex.message || "unknown error"}). Please try again.`);
@@ -1696,7 +2090,7 @@ async function viewMy() {
           <div class="muted small">${esc(j.city)} · posted ${ago(j.createdAt)}${j.expiresAt ? ` · ${isLive(j) ? "expires" : "expired"} ${new Date(j.expiresAt).toLocaleDateString("en-PH")}` : ""}</div>
           ${j.status === "pending" && j.infoNote ? `<div class="info-ask"><strong>We need a bit more before approving this post:</strong> ${esc(j.infoNote)}.<span class="small muted"> Add your Facebook link or permit on your <a href="#/profile">profile</a>, or send the rest to us.</span><a class="btn btn-primary btn-sm" href="#/support" data-reply-info="${esc(j.id)}">Reply to Job Search PH</a></div>` : ""}</div>
         <div><a class="btn btn-ghost btn-sm" href="#/applicants/${encodeURIComponent(j.id)}">${a.length} applicant${a.length === 1 ? "" : "s"}${fresh ? ` <span class="dot">${fresh} new</span>` : ""}</a></div>
-        <div class="actions">${j.status === "approved" || j.status === "pending" ? `<button class="btn btn-ghost btn-sm" data-close="${esc(j.id)}">Mark filled / close</button>` : ""}</div>
+        <div class="actions">${j.status !== "closed" ? `<a class="btn btn-ghost btn-sm" href="#/post/edit/${encodeURIComponent(j.id)}">Edit</a>` : ""}${j.status === "approved" || j.status === "pending" ? `<button class="btn btn-ghost btn-sm" data-close="${esc(j.id)}">Mark filled / close</button>` : ""}</div>
       </div>`; }).join("")}</div>` : `<div class="empty"><p>You haven't posted any jobs yet.</p></div>`;
   };
   $("#mine").addEventListener("click", async (e) => {
@@ -1709,7 +2103,19 @@ async function viewMy() {
   draw().catch((e) => { console.error(e); $("#mine").innerHTML = `<p class="error">Could not load your posts (${esc(e.code || e.message)}).</p>`; });
 }
 
-function applicantCard(a) {
+// Fit score box on an applicant card: score, label, and the reasons behind it.
+function fitHtml(fit, top) {
+  if (!fit) return "";
+  const cls = fit.score >= 80 ? "great" : fit.score >= 60 ? "good" : fit.score >= 40 ? "ok" : "weak";
+  return `<div class="fit fit-${cls}">
+    <div class="fit-top"><span class="fit-score">${fit.score}<small>/100</small></span><strong>${fit.label}</strong>${top ? `<span class="fit-best">Best fit so far</span>` : ""}
+      <span class="fit-bar" aria-hidden="true"><i style="width:${fit.score}%"></i></span></div>
+    ${fit.good.length ? `<ul class="fit-good">${fit.good.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>` : ""}
+    ${fit.gaps.length ? `<ul class="fit-gaps">${fit.gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>` : ""}
+  </div>`;
+}
+
+function applicantCard(a, { top = false, readOnly = false } = {}) {
   const x = a.applicant || {};
   const m = messengerUrl(x.messenger);
   const st = chatState(a);
@@ -1719,7 +2125,7 @@ function applicantCard(a) {
   const facts = [
     ["Phone", x.phone ? `<span class="copyable">${esc(x.phone)}</span>` : ""],
     ["Email", x.email ? `<a href="mailto:${esc(x.email)}">${esc(x.email)}</a>` : ""],
-    ["Messenger", m ? `<a href="${esc(m)}" target="_blank" rel="noopener nofollow">${esc(String(x.messenger).replace(/^https?:\/\/(www\.)?/, ""))}</a>` : ""],
+    ["Facebook", m ? `<a href="${esc(m)}" target="_blank" rel="noopener nofollow">Message on Messenger</a>` : ""],
     ["Lives in", esc(x.city || "")],
     ["Experience", exp],
     ["Can start", esc(x.availability || "")],
@@ -1729,13 +2135,14 @@ function applicantCard(a) {
   const cats = wantList(x);
   const dash = `<span class="none">Not added</span>`;
   return `
-  <article class="applicant ap2 ${a.status === "new" ? "is-new" : ""} ${DECLINED.includes(a.status) ? "declined" : ""}">
+  <article class="applicant ap2 ${a.status === "new" ? "is-new" : ""} ${DECLINED.includes(a.status) ? "declined" : ""} ${top ? "is-top" : ""}">
     <header class="ap-head">
       ${avatar(x.fullName, x.photo, "md")}
       <div class="ap-name"><h3>${esc(x.fullName)}${x.age ? `, ${esc(x.age)}` : ""}</h3>
         <p class="muted small">${[x.gender && esc(x.gender), esc(x.city || ""), `applied ${ago(a.createdAt)}`].filter(Boolean).join(" · ")}</p></div>
-      <div class="ap-badges">${founderBadge(a.applicantUid, "jobseeker")}${strengthChip(x)}${appBadge(a.status, true)}</div>
+      <div class="ap-badges">${verifiedBadge(a.applicantUid)}${founderBadge(a.applicantUid, "jobseeker")}${strengthChip(x)}${appBadge(a.status, true)}</div>
     </header>
+    ${fitHtml(a.fit, top)}
     ${a.message ? `<div class="ap-msg"><span class="label">Their message</span><p>${nl2br(a.message)}</p></div>` : ""}
     <dl class="ap-facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v || dash}</dd></div>`).join("")}</dl>
     <div class="ap-long">
@@ -1743,8 +2150,8 @@ function applicantCard(a) {
       <div><span class="label">Skills</span><p>${x.skills ? esc(x.skills) : dash}</p></div>
       <div><span class="label">Work history</span><p>${x.workHistory ? nl2br(x.workHistory) : dash}</p></div>
     </div>
-    ${a.status === "hired" ? `<div class="actions emp-row">${employmentHtml(a)}</div>` : ""}
-    <footer class="ap-foot">
+    ${a.status === "hired" && !readOnly ? `<div class="actions emp-row">${employmentHtml(a)}</div>` : ""}
+    ${readOnly ? "" : `<footer class="ap-foot">
       <div class="ap-contact">
         <a class="btn ${st.open ? "btn-primary" : "btn-ghost"} btn-sm" href="#/chat/${encodeURIComponent(a.id)}">${st.open ? `Message${isUnread(inbox.find((i) => i.id === a.id) || a) ? " · new" : ""}` : "View chat"}</a>
         ${CAN_SMS && x.phone ? `<a class="btn btn-ghost btn-sm" href="tel:${esc(digits(x.phone))}">Call</a><a class="btn btn-ghost btn-sm" href="sms:${esc(digits(x.phone))}">Text</a>` : ""}
@@ -1756,7 +2163,7 @@ function applicantCard(a) {
         ${["new", "shortlisted"].includes(a.status) ? `<button class="btn btn-ghost btn-sm" data-st="not_selected" data-id="${esc(a.id)}">Not a fit</button>` : ""}
         ${["new", "shortlisted", "not_selected"].includes(a.status) ? `<button class="btn btn-primary btn-sm" data-st="offered" data-id="${esc(a.id)}">Offer the job</button>` : ""}
       </div>
-    </footer>
+    </footer>`}
   </article>`;
 }
 
@@ -1766,10 +2173,15 @@ async function viewApplicants(jobId) {
   if (!user) return goSignIn("Sign in to see applicants");
   app.innerHTML = SK.page();
   const job = await store.getJob(jobId);
-  if (!job || job.ownerUid !== user.uid) { app.innerHTML = `<div class="empty"><h1>Not found</h1><p class="muted">This post isn't yours or no longer exists.</p></div>`; return; }
+  const adminView = !!job && job.ownerUid !== user.uid && getAuthState().isAdmin; // admins can look, not act
+  if (!job || (job.ownerUid !== user.uid && !adminView)) { app.innerHTML = `<div class="empty"><h1>Not found</h1><p class="muted">This post isn't yours or no longer exists.</p></div>`; return; }
   let tab = "all";
+  let sort = (() => { try { return localStorage.getItem("jsph-ap-sort") || "fit"; } catch { return "fit"; } })();
   const draw = async () => {
-    const apps = (await store.applicationsForJob(jobId)).sort((a, b) => b.createdAt - a.createdAt);
+    const raw = await (adminView ? store.applicationsForJobAdmin(jobId) : store.applicationsForJob(jobId));
+    const ranked = rankApplicants(job, raw);
+    const bestId = ranked.find((a) => !DECLINED.includes(a.status))?.id;
+    const apps = sort === "fit" ? ranked : [...ranked].sort((a, b) => b.createdAt - a.createdAt);
     const group = (s) => (s === "offer_declined" ? "not_selected" : s);
     const counts = { all: apps.length, new: 0, shortlisted: 0, offered: 0, hired: 0, not_selected: 0 };
     apps.forEach((a) => counts[group(a.status)]++);
@@ -1777,13 +2189,17 @@ async function viewApplicants(jobId) {
     const openings = Number(job.openings) || 1;
     const filled = job.status === "approved" && counts.hired >= openings;
     app.innerHTML = `
-      <p><a href="#/my" class="back">← My posts</a></p>
+      <p><a href="${adminView ? `#/job/${encodeURIComponent(job.id)}` : "#/my"}" class="back">← ${adminView ? "Back to the post" : "My posts"}</a></p>
       <div class="page-head"><div><h1>Applicants</h1><p class="muted">${esc(job.title)} · ${esc(job.city)} ${statusBadge(job)}</p></div></div>
-      ${filled ? `<div class="notice filled"><div><strong>All ${openings} opening${openings === 1 ? " is" : "s are"} filled.</strong> Close the post so it leaves search and the other applicants know.</div><button class="btn btn-primary btn-sm" id="close-filled">Close the post</button></div>` : ""}
+      ${adminView ? `<p class="notice small">Admin view: you can see who applied, but only the employer can shortlist, offer or message.</p>` : ""}
+      ${filled && !adminView ? `<div class="notice filled"><div><strong>All ${openings} opening${openings === 1 ? " is" : "s are"} filled.</strong> Close the post so it leaves search and the other applicants know.</div><button class="btn btn-primary btn-sm" id="close-filled">Close the post</button></div>` : ""}
       <div class="tabs" role="tablist">${[["all", "All"], ["new", "New"], ["shortlisted", "Shortlisted"], ["offered", "Offered"], ["hired", "Hired"], ["not_selected", "Not a fit"]]
         .map(([k, v]) => `<button class="tab ${tab === k ? "active" : ""}" data-tab="${k}">${v} <span class="count">${counts[k]}</span></button>`).join("")}</div>
-      <div class="applicants">${shown.length ? shown.map(applicantCard).join("") : `<div class="empty"><p>${apps.length ? "No applicants in this group." : "No applicants yet. Share your post to get more."}</p></div>`}</div>`;
+      ${apps.length > 1 ? `<div class="ap-sort"><span class="small muted">Sort:</span><div class="pills tight" role="radiogroup">${[["fit", "Best fit first"], ["new", "Newest first"]].map(([v, l]) => `<label class="pill"><input type="radio" name="ap-sort" value="${v}" ${sort === v ? "checked" : ""}><span>${l}</span></label>`).join("")}</div>
+        <span class="small muted fit-note">Fit score compares their profile with your post. It's a guide; you decide.</span></div>` : ""}
+      <div class="applicants">${shown.length ? shown.map((a) => applicantCard(a, { top: a.id === bestId && apps.length > 1 && a.fit.score >= 40, readOnly: adminView })).join("") : `<div class="empty"><p>${apps.length ? "No applicants in this group." : "No applicants yet. Share your post to get more."}</p></div>`}</div>`;
     app.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { tab = b.dataset.tab; draw(); }));
+    app.querySelectorAll("[name=ap-sort]").forEach((r) => r.addEventListener("change", () => { sort = r.value; try { localStorage.setItem("jsph-ap-sort", sort); } catch {} draw(); }));
     app.querySelectorAll("[data-emp]").forEach((b) => b.addEventListener("click", () => {
       const a = apps.find((x) => x.id === b.dataset.id); if (a) handleEmployment(b, a, draw);
     }));
@@ -2019,36 +2435,38 @@ async function viewChat(appId) {
   if (location.hash !== here) return;
   if (!a) { app.innerHTML = `<div class="empty"><h1>Conversation not found</h1><p class="muted">It may have been withdrawn.</p><p><a class="btn btn-primary" href="#/messages">Back to Messages</a></p></div>`; return; }
   const me = user.uid; const iAmEmployer = a.employerUid === me;
-  const name = otherName(a);
+  const adminView = a.applicantUid !== me && a.employerUid !== me && getAuthState().isAdmin; // read-only
+  const name = adminView ? `${a.employerName || "Employer"} ↔ ${a.applicant?.fullName || "Applicant"}` : otherName(a);
   const x = a.applicant || {};
   app.innerHTML = `
     <div class="chat-wrap">
       <header class="chat-head">
         <a href="#/messages" class="back" aria-label="Back to messages">←</a>
         ${avatar(name, iAmEmployer ? x.photo : "")}
-        <div class="chat-who"><strong>${esc(name)}</strong> ${(iAmEmployer ? founderBadge(a.applicantUid, "jobseeker", { short: true }) : verifiedBadge(a.employerUid, { short: true }) + founderBadge(a.employerUid, "employer", { short: true }))}
+        <div class="chat-who"><strong>${esc(name)}</strong> ${(iAmEmployer ? verifiedBadge(a.applicantUid, { short: true }) + founderBadge(a.applicantUid, "jobseeker", { short: true }) : verifiedBadge(a.employerUid, { short: true }) + founderBadge(a.employerUid, "employer", { short: true }))}
           <span class="muted small">${iAmEmployer ? `${x.age ? `${esc(x.age)} · ` : ""}${esc(x.city || "")} · ` : ""}<a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a></span></div>
         <span id="chat-badge"></span>
       </header>
       <div id="chat-banner"></div>
       <div class="chat-body" id="chat-body">${SK.chat()}</div>
-      <form class="chat-form" id="chat-form">
+      ${adminView ? `<p class="chat-note small muted">Admin view: read-only. Messages from the employer are on the right.</p>` : `<form class="chat-form" id="chat-form">
+        <label class="chat-photo btn btn-ghost" title="Send a photo" aria-label="Send a photo"><input type="file" id="chat-photo" accept="image/*" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></label>
         <textarea id="chat-input" name="text" rows="1" maxlength="1000" placeholder="Write a message…" aria-label="Message"></textarea>
         <button class="btn btn-primary" type="submit" aria-label="Send">Send</button>
       </form>
-      <p class="chat-note small muted">Keep chats about this job. Never send money or ID numbers here.</p>
+      <p class="chat-note small muted">Keep chats about this job. Never send money, codes or ID numbers here.</p>`}
     </div>`;
-  const body = $("#chat-body"), form = $("#chat-form"), input = $("#chat-input");
+  const body = $("#chat-body"), form = $("#chat-form") || document.createElement("form"), input = $("#chat-input") || document.createElement("textarea");
   const paintState = () => {
     const st = chatState(a);
     $("#chat-badge").innerHTML = appBadge(a.status, iAmEmployer);
-    const emp = (a.status === "hired" && !a.employmentEnded && a.endRequestedBy ? `<div class="chat-banner emp">${employmentHtml(a)}</div>` : "")
+    const emp = adminView ? "" : (a.status === "hired" && !a.employmentEnded && a.endRequestedBy ? `<div class="chat-banner emp">${employmentHtml(a)}</div>` : "")
       + (a.status === "offered" ? `<div class="chat-banner emp">${iAmEmployer ? `<span class="emp-state">You offered ${esc(name)} the job. Waiting for them to accept.</span>` : offerHtml(a)}</div>` : "");
     $("#chat-banner").innerHTML = emp + (st.declined
       ? `<p class="chat-banner ${st.open ? "" : "closed"}">${st.open
           ? `${a.status === "offer_declined" ? (iAmEmployer ? `${esc(name)} declined your offer.` : "You declined this offer.") : iAmEmployer ? "You marked this applicant as not a fit." : "The employer chose other applicants."} This chat closes in <strong>${st.hoursLeft} hour${st.hoursLeft === 1 ? "" : "s"}</strong>.`
           : "This chat has closed. You can still read past messages."}</p>` : "");
-    input.disabled = !st.open; form.querySelector("button").disabled = !st.open;
+    input.disabled = !st.open; form.querySelectorAll("button, input").forEach((el) => (el.disabled = !st.open));
     input.placeholder = st.open ? "Write a message…" : "Chat closed";
     form.classList.toggle("closed", !st.open);
   };
@@ -2067,18 +2485,47 @@ async function viewChat(appId) {
     let lastDay = "";
     body.innerHTML = intro + msgs.map((m) => {
       const day = new Date(m.createdAt).toDateString(); const sep = day !== lastDay ? `<p class="day">${new Date(m.createdAt).toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric" })}</p>` : ""; lastDay = day;
-      return `${sep}<div class="msg ${m.fromUid === me ? "mine" : "theirs"}"><p>${nl2br(m.text)}</p><small>${m.pending ? "Sending…" : fmt(m.createdAt)}</small></div>`;
+      const mine = adminView ? m.fromUid === a.employerUid : m.fromUid === me;
+      const photo = safePhoto(m.photo);
+      const flags = mine && !adminView ? [] : scamFlags(m.text);
+      const warn = flags.length ? `<div class="msg-warn">⚠ Careful: this message ${esc(flags.map((f) => f.label).join(", "))}. ${!adminView && !iAmEmployer ? `Real employers never ask you to pay, or for codes or ID numbers. <a href="#/job/${encodeURIComponent(a.jobId)}">Report this post</a>` : adminView ? "" : "Don't share codes or account numbers."}</div>` : "";
+      return `${sep}<div class="msg ${mine ? "mine" : "theirs"}">${adminView ? `<span class="msg-who">${esc(m.fromUid === a.employerUid ? a.employerName || "Employer" : x.fullName || "Applicant")}</span>` : ""}${photo ? `<img class="msg-photo" src="${photo}" alt="Photo" loading="lazy">` : ""}${m.text ? `<p>${nl2br(m.text)}</p>` : ""}<small>${m.pending ? "Sending…" : fmt(m.createdAt)}</small></div>${warn}`;
     }).join("");
     if (msgs.length !== lastCount) { body.scrollTop = body.scrollHeight; lastCount = msgs.length; }
-    store.markSeen(a);
+    if (!adminView) store.markSeen(a);
   });
   // Keep the countdown and status fresh.
   const tick = setInterval(async () => { if (!$("#chat-form")) return clearInterval(tick); const fresh = await store.getApplication(a.id); if (fresh) { a = fresh; paintState(); } }, 60000);
   input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; });
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !CAN_SMS) { e.preventDefault(); form.requestSubmit(); } });
+  body.addEventListener("click", (e) => { const im = e.target.closest(".msg-photo"); if (im) showPhoto(im.src); });
+  // Before sending: warn about money, fees, codes, ID numbers and odd links.
+  const okToSend = async (text) => {
+    const flags = scamFlags(text); if (!flags.length) return true;
+    const serious = iAmEmployer && flags.some((f) => SERIOUS.includes(f.type));
+    return showDialog({
+      title: serious ? "Asking for money isn't allowed" : "Check this message",
+      body: serious
+        ? "Asking applicants for money, fees, deposits or one-time codes isn't allowed on Job Search PH. Messages like this are reviewed by our team, and accounts that ask for money are banned."
+        : `This message ${esc(flags.map((f) => f.label).join(", "))}. Never share one-time codes, ID numbers or bank details in chat.`,
+      actions: [{ label: "Edit message", value: false, primary: true }, { label: "Send anyway", value: true }],
+    });
+  };
+  $("#chat-photo")?.addEventListener("change", async (e) => {
+    const file = e.target.files?.[0]; e.target.value = ""; if (!file || input.disabled) return;
+    let photo;
+    try { photo = await shrinkChatPhoto(file); } catch (err) { return toast(err.message); }
+    const text = input.value.trim();
+    const ok = await showDialog({ title: "Send this photo?", body: `<img class="photo-preview" src="${photo}" alt="">${text ? `<p class="small muted">With your message: “${esc(text.slice(0, 120))}”</p>` : ""}<p class="small muted">Don't send photos of IDs, bank cards or codes.</p>`, actions: [{ label: "Cancel", value: false }, { label: "Send photo", value: true, primary: true }] });
+    if (!ok || (text && !(await okToSend(text)))) return;
+    input.value = ""; input.style.height = "auto";
+    try { await store.sendMessage(a, text, photo); a = (await store.getApplication(a.id)) || a; }
+    catch (err) { console.error(err); input.value = text; toast(err.code === "limit-reached" ? limitMsg.messages : err.code === "too-fast" ? "Slow down a little. Wait a moment before sending again." : "The photo wasn't sent. Try again."); }
+  });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = input.value.trim(); if (!text || input.disabled) return;
+    if (!(await okToSend(text))) return;
     input.value = ""; input.style.height = "auto";
     try { await store.sendMessage(a, text); a = (await store.getApplication(a.id)) || a; }
     catch (err) {
@@ -2087,7 +2534,7 @@ async function viewChat(appId) {
       const fresh = await store.getApplication(a.id); if (fresh) { a = fresh; paintState(); }
     }
   });
-  if (!CAN_SMS) input.focus();
+  if (!CAN_SMS && !adminView) input.focus();
 }
 
 /* ---------------- Admin ---------------- */
@@ -2175,7 +2622,7 @@ async function viewAdminUser(id) {
   if (!isAdmin) { app.innerHTML = `<div class="empty"><h1>Not authorized</h1></div>`; return; }
   app.innerHTML = SK.rows(5);
   let d;
-  try { d = await store.adminUser(id); } catch (e) { console.error(e); app.innerHTML = `<div class="empty"><p>Couldn't load this user (${esc(e.code || e.message)}).</p></div>`; return; }
+  try { d = await store.adminUser(id); d.phoneCheck = await store.phoneStatusFor(id); } catch (e) { console.error(e); app.innerHTML = `<div class="empty"><p>Couldn't load this user (${esc(e.code || e.message)}).</p></div>`; return; }
   const u = d.user;
   if (!u) { app.innerHTML = `<div class="empty"><h1>User not found</h1><p class="muted">They may have deleted their profile.</p><p><a class="btn btn-ghost" href="#/admin/users">Back to users</a></p></div>`; return; }
   const ban = d.ban; const isSeeker = u.role === "jobseeker";
@@ -2183,7 +2630,7 @@ async function viewAdminUser(id) {
   const m = messengerUrl(u.messenger);
   const live = d.posts.filter((j) => isLive(j));
   const facts = [
-    fact("Email", u.email ? `<a href="mailto:${esc(u.email)}">${esc(u.email)}</a>` : ""), fact("Phone", u.phone ? `<span class="copyable">${esc(u.phone)}</span>` : ""),
+    fact("Email", u.email ? `<a href="mailto:${esc(u.email)}">${esc(u.email)}</a>` : ""), fact("Phone", u.phone ? `<span class="copyable">${esc(u.phone)}</span>${d.phoneCheck ? (d.phoneCheck.phone === normPhone(u.phone) ? ` <span class="badge badge-approved">Confirmed by text</span>` : ` <span class="badge badge-pending">Changed since confirmed</span>`) : smsEnabled ? ` <span class="badge badge-closed">Not confirmed</span>` : ""}` : ""),
     fact("Messenger", m ? `<a href="${esc(m)}" target="_blank" rel="noopener nofollow">${esc(u.messenger)}</a>` : ""), fact("City", esc(u.city || "")),
     fact("Joined", u.createdAt ? new Date(u.createdAt).toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }) : ""),
     fact("Last updated", u.updatedAt ? ago(u.updatedAt) : ""),
@@ -2193,7 +2640,7 @@ async function viewAdminUser(id) {
       : [fact("Household / business", esc(u.companyName || "")), fact("Job posts", `${d.posts.length} total · ${live.length} live`),
         fact("Facebook", fbHref(u.fbUrl) ? `<a href="${esc(fbHref(u.fbUrl))}" target="_blank" rel="noopener nofollow">${esc(fbHref(u.fbUrl).replace(/^https?:\/\/(www\.)?/, ""))}</a>` : ""),
         fact("Permit / DTI", esc(u.bizReg || ""))]),
-    fact("Signs in with", u.signIn === "google" ? "Google" : u.signIn === "password" ? `Email &amp; password${u.emailVerified ? " (confirmed)" : " (not confirmed)"}` : ""),
+    fact("Signs in with", u.signIn === "google" ? "Google" : u.signIn === "facebook" ? "Facebook" : u.signIn === "password" ? `Email &amp; password${u.emailVerified ? " (confirmed)" : " (not confirmed)"}` : ""),
     fact("User ID", `<span class="copyable small">${esc(u.id)}</span>`),
   ];
   const appRow = (a, who) => `<li><a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a><span class="muted small">${who} · ${ago(a.createdAt)}</span>${appBadge(a.status, true)}</li>`;
@@ -2205,28 +2652,28 @@ async function viewAdminUser(id) {
           ${avatar(u.fullName, u.photo, "lg")}
           <div><h1>${esc(u.fullName || "(no name)")}</h1>
             <p class="muted">${isSeeker ? "Jobseeker" : "Employer"}${u.companyName && !isSeeker ? ` · ${esc(u.companyName)}` : ""}${u.city ? ` · ${esc(u.city)}` : ""}</p>
-            <div class="au-tags">${isSeeker ? "" : verifiedBadge(u.id)}${founderBadge(u.id, u.role)}${isSeeker ? strengthChip(u) : ""}${ban ? `<span class="badge badge-banned">Banned</span>` : `<span class="badge badge-approved">Active</span>`}</div></div>
+            <div class="au-tags">${verifiedBadge(u.id)}${founderBadge(u.id, u.role)}${isSeeker ? strengthChip(u) : ""}${ban ? `<span class="badge badge-banned">Banned</span>` : `<span class="badge badge-approved">Active</span>`}</div></div>
         </header>
         <dl class="ap-facts au-facts">${facts.join("")}</dl>
         ${isSeeker ? `<div class="ap-long au-long">
           <div><span class="label">Jobs they want</span>${wantList(u).length ? `<ul class="meta">${wantList(u).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : `<p><span class="none">Not added</span></p>`}</div>
           <div><span class="label">Skills</span><p>${u.skills ? esc(u.skills) : `<span class="none">Not added</span>`}</p></div>
           <div><span class="label">Work history</span><p>${u.workHistory ? nl2br(u.workHistory) : `<span class="none">Not added</span>`}</p></div></div>` : ""}
-        ${!isSeeker ? `<h2>Job posts (${d.posts.length})</h2>${d.posts.length ? `<ul class="au-list">${d.posts.sort((a, b) => b.createdAt - a.createdAt).map((j) => `<li><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.city)} · ${salaryText(j)} · ${ago(j.createdAt)} · ${d.received.filter((a) => a.jobId === j.id).length} applicants</span>${statusBadge(j)}</li>`).join("")}</ul>` : `<p class="muted">No posts.</p>`}` : ""}
+        ${!isSeeker ? `<h2>Job posts (${d.posts.length})</h2>${d.posts.length ? `<ul class="au-list">${d.posts.sort((a, b) => b.createdAt - a.createdAt).map((j) => `<li><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.city)} · ${salaryText(j)} · ${ago(j.createdAt)} · ${(() => { const n = d.received.filter((a) => a.jobId === j.id).length; return n ? `<a href="#/applicants/${encodeURIComponent(j.id)}">${n} applicant${n === 1 ? "" : "s"}</a>` : "0 applicants"; })()}</span>${statusBadge(j)}</li>`).join("")}</ul>` : `<p class="muted">No posts.</p>`}` : ""}
         ${isSeeker ? `<h2>Applications (${d.applied.length})</h2>${d.applied.length ? `<ul class="au-list">${d.applied.sort((a, b) => b.createdAt - a.createdAt).map((a) => appRow(a, esc(a.employerName || ""))).join("")}</ul>` : `<p class="muted">No applications.</p>`}` : ""}
       </section>
       <aside class="au-side">
-        <div class="an-card au-ban">
+        ${u.role ? `<div class="an-card au-verify">${VERIFIED[id] ? `<h3>${SHIELD} Verified ${isSeeker ? "jobseeker" : "employer"}</h3><p class="small muted">${esc(VERIFIED[id].method)}${VERIFIED[id].at ? ` · ${ago(VERIFIED[id].at)}` : ""}</p><button class="btn btn-ghost btn-block" id="au-unverify">Remove Verified badge</button>`
+          : `<h3>Verify this ${isSeeker ? "jobseeker" : "employer"}</h3><p class="small muted">Call their number or check their Facebook first. ${isSeeker ? "Verified jobseekers get a badge employers see when they apply." : "Verified employers get a badge on every post."}</p><button class="btn btn-ghost btn-block" id="au-verify">Verify ${isSeeker ? "jobseeker" : "employer"}</button>`}</div>` : ""}
+        <div class="an-card au-ban ${ban ? "" : "quiet"}">
           ${ban ? `<h3>Banned</h3><p class="small"><strong>Reason:</strong> ${esc(ban.reason)}</p>${ban.note ? `<p class="small muted">${esc(ban.note)}</p>` : ""}<p class="small muted">Since ${ban.bannedAt ? ago(ban.bannedAt) : "–"}</p>
             <button class="btn btn-ghost btn-block" id="au-unban">Lift ban</button>`
-          : `<h3>Ban this user</h3><p class="small muted">They'll still be able to sign in, but can't post, apply, message, report or edit their profile. They'll see a "suspended" screen with a link to support.</p>
+          : `<details class="au-more"><summary>More actions</summary><h3>Ban this user</h3><p class="small muted">They'll still be able to sign in, but can't post, apply, message, report or edit their profile. They'll see a "suspended" screen with a link to support.</p>
             <label class="small">Reason<select id="au-reason">${BAN_REASONS.map((r) => `<option>${esc(r)}</option>`).join("")}</select></label>
             <label class="small">Note (optional, shown only to admins)<textarea id="au-note" rows="2" maxlength="500" placeholder="What happened?"></textarea></label>
             ${!isSeeker && live.length ? `<label class="check small"><input type="checkbox" id="au-close" checked><span>Also close their ${live.length} live post${live.length === 1 ? "" : "s"}</span></label>` : ""}
-            <button class="btn btn-danger btn-block" id="au-ban">Ban user</button>`}
+            <button class="btn btn-danger btn-block" id="au-ban">Ban user</button></details>`}
         </div>
-        ${!isSeeker ? `<div class="an-card au-verify">${VERIFIED[id] ? `<h3>${SHIELD} Verified employer</h3><p class="small muted">${esc(VERIFIED[id].method)}${VERIFIED[id].at ? ` · ${ago(VERIFIED[id].at)}` : ""}</p><button class="btn btn-ghost btn-block" id="au-unverify">Remove Verified badge</button>`
-          : `<h3>Verify this employer</h3><p class="small muted">Call their number or check their Facebook first. Verified employers get a badge on every post.</p><button class="btn btn-ghost btn-block" id="au-verify">Verify employer</button>`}</div>` : ""}
         ${user.uid === id ? `<p class="small muted">This is your own account.</p>` : ""}
       </aside>
     </div>`;
@@ -2244,7 +2691,7 @@ async function viewAdminUser(id) {
   $("#au-verify")?.addEventListener("click", async () => {
     const method = await pickDialog({ title: `Verify ${esc(u.fullName || "this employer")}?`, body: "Only verify after you've confirmed they're a real person or business. How did you check?", options: VERIFY_METHODS, confirm: "Verify" });
     if (!method) return;
-    try { VERIFIED = await store.verify(id, method.join(", ").slice(0, 60)); toast("Employer verified"); viewAdminUser(id); }
+    try { VERIFIED = await store.verify(id, method.join(", ").slice(0, 60)); toast("Verified"); viewAdminUser(id); }
     catch (e) { console.error(e); toast(e.code === "permission-denied" ? "Couldn't verify. Publish the latest database rules first." : "Couldn't verify. Try again."); }
   });
   $("#au-unverify")?.addEventListener("click", async (e) => {
@@ -2476,7 +2923,7 @@ async function viewAdmin() {
   const { user, isAdmin } = getAuthState();
   if (!user) return goSignIn("Admin sign in");
   if (!isAdmin) { app.innerHTML = `<div class="empty"><h1>Not authorized</h1><p class="muted">This account is not an admin.</p></div>`; return; }
-  const tabs = { analytics: "Analytics", users: "Users", pending: "Pending", approved: "Live", reports: "Reports", support: "Support", rejected: "Rejected", closed: "Closed" };
+  const tabs = { analytics: "Analytics", users: "Users", pending: "Pending", approved: "Live", reports: "Reports", flags: "Chat flags", verify: "ID checks", support: "Support", rejected: "Rejected", closed: "Closed" };
   app.innerHTML = `
     <div class="page-head"><h1>Admin</h1></div>
     <div class="tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<button role="tab" class="tab ${adminTab === k ? "active" : ""}" data-tab="${k}">${v}${k === "pending" && pendingForAdmin ? ` <span class="count">${pendingForAdmin}</span>` : ""}</button>`).join("")}</div>
@@ -2503,6 +2950,45 @@ async function viewAdmin() {
         </article>`).join("")}</div>`
       : `<div class="empty"><p>${supportView === "done" ? "Nothing marked done yet." : supportView === "all" ? "No support messages yet." : "No open support messages. 🎉"}</p></div>`}`;
     body.querySelectorAll("[data-sview]").forEach((b) => b.addEventListener("click", () => { supportView = b.dataset.sview; viewAdmin(); }));
+  } else if (adminTab === "verify") {
+    // Employers and jobseekers asking for the Verified badge: compare the ID with the selfie, then decide.
+    const [reqs, ctx] = await Promise.all([store.listVerifyRequests().catch(() => []), store.adminAll().catch(() => null)]);
+    const users = ctx ? Object.fromEntries(ctx.users.map((u) => [u.id, u])) : {};
+    reqs.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    body.innerHTML = `<p class="small muted">Check that the ID looks real, the name matches their profile, and the face in the selfie matches the ID. The photos are deleted as soon as you approve or reject.</p>
+      ${reqs.length ? reqs.map((r) => { const u = users[r.id] || {}; const fb = fbHref(r.fbUrl || u.fbUrl); return `
+      <article class="vr-item" data-vr="${esc(r.id)}">
+        <header><strong>${esc(u.fullName || "User")}</strong> <span class="badge ${u.role === "jobseeker" ? "badge-app-new" : "badge-approved"}">${u.role === "jobseeker" ? "Jobseeker" : "Employer"}</span>${u.companyName && u.role !== "jobseeker" ? ` · ${esc(u.companyName)}` : ""} <span class="muted small">· ${esc(r.idType)} · sent ${r.createdAt ? ago(r.createdAt) : ""}</span>
+          <a class="small" href="#/admin/user/${encodeURIComponent(r.id)}">Profile →</a></header>
+        <div class="vr-pics">${[["idPhoto", "ID"], ["selfie", "Selfie with ID"]].map(([k, l]) => safePhoto(r[k]) ? `<figure><img class="vr-img" src="${safePhoto(r[k])}" alt="${l}"><figcaption>${l}</figcaption></figure>` : `<p class="muted small">${l}: missing</p>`).join("")}</div>
+        <p class="small">${u.phone ? `Phone: <a href="tel:${esc(digits(u.phone))}">${esc(u.phone)}</a> · ` : ""}${fb ? `<a href="${esc(fb)}" target="_blank" rel="noopener nofollow">Facebook</a>` : "No Facebook link"}</p>
+        <div class="actions"><button class="btn btn-primary btn-sm" data-vr-ok="${esc(r.id)}">Approve</button><button class="btn btn-ghost btn-sm" data-vr-no="${esc(r.id)}">Reject</button></div>
+      </article>`; }).join("") : `<div class="empty"><p>No ID checks waiting. 🎉</p></div>`}`;
+    body.addEventListener("click", async (e) => {
+      const im = e.target.closest(".vr-img"); if (im) return showPhoto(im.src);
+      const ok = e.target.closest("[data-vr-ok]"), no = e.target.closest("[data-vr-no]"); if (!ok && !no) return;
+      const id = (ok || no).dataset[ok ? "vrOk" : "vrNo"]; const r = reqs.find((x) => x.id === id);
+      let reason = "";
+      if (no) { const picked = await pickDialog({ title: "Why can't you verify them?", body: "They'll see this and can send new photos.", options: ["The photos are blurry or cut off", "The name doesn't match their profile", "The face doesn't match the ID", "The ID looks edited or expired"], multi: false, other: "Other reason" }); if (!picked) return; reason = picked.join("; "); }
+      try {
+        VERIFIED = await store.decideVerify(id, { approve: !!ok, reason, idType: r?.idType });
+        const sk = users[id]?.role === "jobseeker";
+        store.notify(id, ok ? { type: "verified", title: `You're a Verified ${sk ? "jobseeker" : "employer"}`, body: sk ? "Your ID was checked. Employers now see the Verified badge when you apply." : "Your ID was checked. The Verified badge now shows on all your posts.", link: "#/profile" } : { type: "verify_rejected", title: "We couldn't verify your ID", body: `${reason}. You can send new photos from your profile.`.slice(0, 300), link: "#/profile" }).catch(() => {});
+        toast(ok ? "Verified. Photos deleted." : "Rejected. Photos deleted."); viewAdmin();
+      } catch (ex) { console.error(ex); toast("Couldn't save the decision"); }
+    });
+  } else if (adminTab === "flags") {
+    // Chat messages the email robot flagged (money, fees, codes, ID numbers, odd links).
+    const flags = await store.listFlags().catch(() => []);
+    body.innerHTML = `<p class="small muted">Chat messages that look like a scam (money, fees, one-time codes, ID numbers or odd links). Checked every 15 minutes. Open the chat to see the whole conversation.</p>
+      ${flags.length ? `<div class="table">${flags.map((f) => `
+      <div class="trow">
+        <div><strong>${esc((f.types || []).map((t) => ({ money: "Money", fee: "Fee", otp: "One-time code", id: "ID / account number", link: "Link" }[t] || t)).join(" · "))}</strong>
+          <div class="small">“${esc(f.text || (f.photo ? "(photo)" : ""))}”</div>
+          <div class="muted small">From ${esc(f.fromName || "")} (${f.fromRole === "employer" ? "employer" : "jobseeker"}) · ${esc(f.jobTitle || "")} · ${f.createdAt ? ago(f.createdAt) : ""}</div></div>
+        <div class="actions"><a class="btn btn-ghost btn-sm" href="#/chat/${encodeURIComponent(f.appId)}">Open chat</a>${f.fromUid ? `<a class="btn btn-ghost btn-sm" href="#/admin/user/${encodeURIComponent(f.fromUid)}">Sender</a>` : ""}<button class="btn btn-ghost btn-sm" data-flag-done="${esc(f.id)}">Looks fine</button></div>
+      </div>`).join("")}</div>` : `<div class="empty"><p>No flagged chat messages. 🎉</p></div>`}`;
+    body.querySelectorAll("[data-flag-done]").forEach((b) => b.addEventListener("click", async () => { try { await store.dismissFlag(b.dataset.flagDone); b.closest(".trow").remove(); toast("Cleared"); } catch { toast("Couldn't clear it"); } }));
   } else if (adminTab === "reports") {
     const reports = await store.listReports();
     const jobs = {};
@@ -2537,14 +3023,14 @@ async function viewAdmin() {
         ${o ? `<dl class="ec-facts">
           ${row("Account", `${esc(o.fullName || "")}${o.companyName ? ` · ${esc(o.companyName)}` : ""} ${founderBadge(o.id, "employer", { short: true })}`)}
           ${row("Joined", o.createdAt ? `${new Date(o.createdAt).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })} (${ago(o.createdAt)})` : "")}
-          ${row("Phone", o.phone ? `<a href="tel:${esc(digits(o.phone))}">${esc(o.phone)}</a>` : "")}
-          ${row("Email", o.email ? `<a href="mailto:${esc(o.email)}">${esc(o.email)}</a> <span class="muted small">${o.signIn === "google" ? "· Google account" : o.signIn === "password" ? (o.emailVerified ? "· confirmed" : "· not confirmed") : ""}</span>` : "")}
+          ${row("Phone", o.phone ? `<a href="tel:${esc(digits(o.phone))}">${esc(o.phone)}</a>${smsEnabled ? ` <span data-phonechk="${esc(o.id)}" data-num="${esc(o.phone)}"></span>${(setTimeout(fillPhoneChecks, 0), "")}` : ""}` : "")}
+          ${row("Email", o.email ? `<a href="mailto:${esc(o.email)}">${esc(o.email)}</a> <span class="muted small">${o.signIn === "google" ? "· Google account" : o.signIn === "facebook" ? "· Facebook account" : o.signIn === "password" ? (o.emailVerified ? "· confirmed" : "· not confirmed") : ""}</span>` : "")}
           ${row("Facebook", fb ? `<a href="${esc(fb)}" target="_blank" rel="noopener nofollow">${esc(fb.replace(/^https?:\/\/(www\.)?/, ""))}</a>` : "")}
           ${row("Messenger", m ? `<a href="${esc(m)}" target="_blank" rel="noopener nofollow">${esc(o.messenger)}</a>` : "")}
           ${row("Permit / DTI", esc(o.bizReg || ""))}
           ${row("Lives in", esc(o.city || ""))}
           ${row("Posts", `${posts.length} total · ${posts.filter(isLive).length} live · ${posts.filter((x) => x.status === "rejected").length} rejected`)}
-          ${adminTab === "pending" ? row("Applicant contact", c ? `${esc(c.contactMethod)} — ${esc(c.contactValue)}` : "") + (c?.address ? row("Private address", esc(c.address)) : "") : ""}
+          ${adminTab === "pending" ? row("Applicant contact", c ? esc(contactText(c)) : "") + (c?.address ? row("Private address", esc(c.address)) : "") : ""}
         </dl>` : ""}
         ${flags.length ? `<ul class="ec-flags">${flags.map(([lv, t]) => `<li class="${lv}">${t}</li>`).join("")}</ul>` : ""}
         ${j.infoNote ? `<p class="ec-asked small"><strong>You asked ${j.infoAt ? ago(j.infoAt) : ""}:</strong> ${esc(j.infoNote)}</p>` : ""}
@@ -2552,7 +3038,7 @@ async function viewAdmin() {
     };
     body.innerHTML = list.length ? list.map((j) => `
       <div class="admin-item">
-        <div><strong>${esc(j.title)}</strong> ${statusBadge(j)} ${j.featured ? `<span class="badge badge-featured">Featured</span>` : ""}${j.infoNote && j.status === "pending" ? ` <span class="badge badge-app-shortlisted">Waiting for employer</span>` : ""}
+        <div><strong>${esc(j.title)}</strong> ${statusBadge(j)} ${j.featured ? `<span class="badge badge-featured">Featured</span>` : ""}${j.infoNote && j.status === "pending" ? ` <span class="badge badge-app-shortlisted">Waiting for employer</span>` : ""}${j.editedAt && j.status === "pending" ? ` <span class="badge badge-app-shortlisted">Edited ${ago(j.editedAt)}${j.approvedAt ? " · was live" : ""}</span>` : ""}
           <div class="muted small">${esc(j.employerName)} · ${esc(j.city)} · ${esc(j.category)}${j.categoryOther ? ` (${esc(j.categoryOther)})` : ""} · ${esc(j.employmentType)} · ${salaryText(j)} · submitted ${ago(j.createdAt)}</div></div>
         ${adminTab === "pending" ? empPanel(j) : ""}
         <details data-contact="${esc(j.id)}" ${adminTab === "pending" ? "open" : ""}><summary>${adminTab === "pending" ? "Job details" : "View details"}</summary>
@@ -2570,7 +3056,7 @@ async function viewAdmin() {
     body.querySelectorAll("details[data-contact]").forEach((d) => d.addEventListener("toggle", async () => {
       if (!d.open || d.dataset.loaded || !d.querySelector(".contact-line")) return; d.dataset.loaded = 1;
       const c = await store.getContact(d.dataset.contact);
-      d.querySelector(".contact-line span").textContent = c ? `${c.contactMethod} — ${c.contactValue}${c.address ? ` · Private address: ${c.address}` : ""}` : "not set";
+      d.querySelector(".contact-line span").textContent = c ? `${contactText(c)}${c.address ? ` · Private address: ${c.address}` : ""}` : "not set";
     }));
   }
 
@@ -2585,7 +3071,7 @@ async function viewAdmin() {
         const method = await pickDialog({ title: "Verify this employer?", body: `Only verify after you've confirmed they're a real person or business. A <strong>Verified</strong> badge will show on all their posts. How did you check?`, options: VERIFY_METHODS, confirm: "Verify" });
         if (!method) return;
         await store.verify(aj.ownerUid, method.join(", ").slice(0, 60));
-        VERIFIED = await store.verifiedList(); toast("Employer verified"); return viewAdmin();
+        VERIFIED = await store.verifiedList(); toast("Verified"); return viewAdmin();
       }
       if (act === "askinfo") {
         if (!aj) return;
@@ -2597,8 +3083,11 @@ async function viewAdmin() {
         toast("Request sent"); return viewAdmin();
       }
       if (act === "approve") {
-        await store.approve(id);
-        if (aj) store.notify(aj.ownerUid, { type: "job_approved", title: "Your job post is live", body: `${aj.title} is now visible to jobseekers for 30 days.`, link: `#/job/${id}`, jobId: id }).catch(() => {});
+        const wasLive = aj && aj.approvedAt && aj.expiresAt && aj.expiresAt > Date.now();
+        await store.approve(id, aj);
+        if (aj) store.notify(aj.ownerUid, wasLive
+          ? { type: "job_approved", title: "Your changes are live", body: `The changes to ${aj.title} are approved and the post is visible again.`, link: `#/job/${id}`, jobId: id }
+          : { type: "job_approved", title: "Your job post is live", body: `${aj.title} is now visible to jobseekers for 30 days.`, link: `#/job/${id}`, jobId: id }).catch(() => {});
       }
       if (act === "reject") {
         await store.updateJob(id, { status: "rejected" });
@@ -2749,8 +3238,8 @@ function viewStatic(page) {
     privacy: {
       title: "Privacy policy",
       html: legalPage("Privacy policy", "How Job Search PH collects, uses and protects your personal data, in line with the Data Privacy Act of 2012 (RA 10173) and the rules of the National Privacy Commission.", [
-        ["Data we collect", `<ul><li><strong>Account:</strong> your email and sign-in method (Google or email and password).</li><li><strong>Jobseeker profile:</strong> name, photo (optional), birthdate (we show employers your age, not your birthdate), gender, mobile number, city, Messenger, jobs wanted, experience, skills, work history, education and resume link.</li><li><strong>Employer profile:</strong> name, photo (optional), household or business name, mobile number, city and Messenger.</li><li><strong>Activity on the site:</strong> job posts, applications, chat messages, interview and hiring status, notifications, reports and support messages.</li><li><strong>Anti-spam counters:</strong> how many applications, posts, messages and reports you sent today.</li><li><strong>On your device only:</strong> your light or dark mode choice.</li></ul><p>We don't use advertising trackers, and we don't sell your data.</p>`],
-        ["Why we use it", `<ul><li>To run your account and show your posts, applications and messages;</li><li>To share your profile with employers you apply to, and employer contact details with the worker they hire;</li><li>To review job posts, prevent spam, fraud and abuse, and handle reports and appeals;</li><li>To reply to support requests and improve the site.</li></ul>`],
+        ["Data we collect", `<ul><li><strong>Account:</strong> your email and sign-in method (Google, Facebook, or email and password). If you use Facebook, we only receive your name, email and profile picture, and we never post to your Facebook.</li><li><strong>Jobseeker profile:</strong> name, photo (optional), birthdate (we show employers your age, not your birthdate), gender, mobile number, city, Messenger, jobs wanted, experience, skills, work history, education and resume link.</li><li><strong>Employer profile:</strong> name, photo (optional), household or business name, mobile number, city and Messenger.</li><li><strong>Activity on the site:</strong> job posts, applications, chat messages, interview and hiring status, notifications, reports and support messages.</li><li><strong>Get Verified (optional, for employers and jobseekers):</strong> a photo of your ID and a selfie holding it. They're stamped "Job Search PH · verification only" on your device before sending, and their location and camera details are removed. Only Job Search PH admins see them, only to confirm you're a real person. They're deleted as soon as we approve or reject, or after 14 days if we haven't. We keep only that you were verified, the type of ID and the date.</li><li><strong>Anti-spam counters:</strong> how many applications, posts, messages and reports you sent today.</li><li><strong>On your device only:</strong> your light or dark mode choice.</li></ul><p>We don't use advertising trackers, and we don't sell your data.</p>`],
+        ["Why we use it", `<ul><li>To run your account and show your posts, applications and messages;</li><li>To share your profile with employers you apply to, and employer contact details with the worker they hire;</li><li>To review job posts, prevent spam, fraud and abuse, and handle reports and appeals;</li><li>To reply to support requests and improve the site;</li><li>If you turn on job alerts, to email you new jobs that match the jobs and city on your profile. Emails are sent through our email provider, Resend. Unsubscribe with the link in any email or in My profile.</li></ul>`],
         ["Who can see it", `<ul><li><strong>Everyone:</strong> live job posts (title, employer or household name, area, pay and details). Employer contact details are not public.</li><li><strong>Employers you apply to:</strong> your profile, photo, age, contact details, message, experience and resume.</li><li><strong>The worker you hire:</strong> the employer contact you entered on the post, once they accept your job offer.</li><li><strong>The person you're chatting with:</strong> your messages.</li><li><strong>Job Search PH admins:</strong> all data, only to run and keep the site safe.</li><li><strong>Service provider:</strong> the site runs on Google Firebase, which stores data for us under its own security and privacy terms.</li></ul><p>We may also disclose data when the law requires it, such as a lawful order from the authorities.</p>`],
         ["How long we keep it", `<ul><li>Your profile stays until you delete it.</li><li>Job posts expire after 30 days and stay in your account until removed.</li><li>Applications and chats stay so both sides can refer back to them. Chats with declined applicants close after 48 hours but remain readable.</li><li>Reports and safety records are kept as long as needed to protect users, then deleted.</li></ul>`],
         ["How we protect it", `<p>Data is stored on Google Firebase with access rules that let each person see only what they're allowed to. Admin access is limited to authorized Job Search PH staff. No system is perfectly secure, so please use a strong password and keep it private.</p>`],
@@ -2766,6 +3255,19 @@ function viewStatic(page) {
   app.querySelectorAll("[data-sec]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); document.getElementById(a.dataset.sec)?.scrollIntoView({ behavior: "smooth", block: "start" }); }));
 }
 
+/* ---------------- Unsubscribe from job alert emails (link in every email, works signed out) ---------------- */
+async function viewUnsubscribe(token) {
+  document.title = "Unsubscribe | Job Search PH";
+  app.innerHTML = `<div class="empty"><h1>Stopping job alerts…</h1></div>`;
+  try {
+    await store.unsubscribe(token);
+    app.innerHTML = `<div class="empty"><h1>You're unsubscribed</h1><p class="muted">We won't send you job alert emails anymore. Changed your mind? Turn them back on in <a href="#/profile">My profile</a>.</p><p><a class="btn btn-primary" href="#/">Browse jobs</a></p></div>`;
+  } catch (e) {
+    console.error(e);
+    app.innerHTML = `<div class="empty"><h1>That link didn't work</h1><p class="muted">Sign in and switch off <strong>Job alerts by email</strong> in <a href="#/profile">My profile</a>, or email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a> and we'll do it for you.</p></div>`;
+  }
+}
+
 /* ---------------- Router ---------------- */
 let lastUid;
 async function route() {
@@ -2774,6 +3276,7 @@ async function route() {
   const [, page, arg, arg2] = (location.hash || "#/").split("/");
   window.scrollTo(0, 0);
   const { user, profile, banned, isAdmin } = getAuthState();
+  if (page === "unsubscribe") return viewUnsubscribe(arg || "");
   if (user && banned && !isAdmin && !["support", "safety", "terms", "privacy"].includes(page || "")) return viewSuspended(banned);
   // New accounts finish their profile first; browsing jobs and reading info pages still work.
   if (user && !profile && !["", "job", "profile", "signin", "safety", "terms", "privacy", "support"].includes(page || "")) {
@@ -2784,8 +3287,9 @@ async function route() {
   // Keep only the ID: share menus sometimes glue the title/text onto the link ("…/job/abc123%20Live-in%20Yaya").
   if (page === "job" && arg) { let raw = arg; try { raw = decodeURIComponent(arg); } catch {} const id = (raw.match(/^[A-Za-z0-9_-]+/) || [""])[0]; if (id && id !== raw) { history.replaceState(null, "", `${location.pathname}${location.search}#/job/${id}`); } return viewJob(id); }
   if (page === "signin") return viewSignIn();
-  if (page === "profile") return viewProfile();
-  if (page === "post") return viewPost();
+  if (page === "profile") return viewProfile(arg === "emails" ? "emails" : "");
+  if (page === "verify") return viewVerify();
+  if (page === "post") return viewPost(arg === "edit" && arg2 ? decodeURIComponent(arg2) : null);
   if (page === "my") return viewMy();
   if (page === "applicants" && arg) return viewApplicants(decodeURIComponent(arg));
   if (page === "applications") return viewApplications();
@@ -2793,7 +3297,7 @@ async function route() {
   if (page === "support") return viewSupport();
   if (page === "chat" && arg) return viewChat(decodeURIComponent(arg));
   if (page === "admin" && arg === "user" && arg2) return viewAdminUser(decodeURIComponent(arg2));
-  if (page === "admin") { if (["analytics", "users", "pending", "approved", "reports", "support", "rejected", "closed"].includes(arg)) adminTab = arg; return viewAdmin(); }
+  if (page === "admin") { if (["analytics", "users", "pending", "approved", "reports", "flags", "verify", "support", "rejected", "closed"].includes(arg)) adminTab = arg; return viewAdmin(); }
   if (["safety", "terms", "privacy"].includes(page)) return viewStatic(page);
   location.hash = "#/";
 }
@@ -2810,7 +3314,13 @@ onAuth(async (s) => {
   if (changed && uidNow && location.hash === "#/signin") return finishAuthFlow();
   route();
 });
+// Test site: loud banner, and keep it out of Google.
+if (IS_STAGING) {
+  document.body.insertAdjacentHTML("afterbegin", `<div class="staging-banner"><strong>TEST SITE</strong> · Not the real Job Search PH. Everything here is test data. <a href="https://jobsearchph.com">Go to the real site →</a></div>`);
+  const m = document.createElement("meta"); m.name = "robots"; m.content = "noindex, nofollow"; document.head.appendChild(m);
+  document.title = `[TEST] ${document.title}`;
+}
 store.init().catch((err) => {
   console.error(err);
-  app.innerHTML = `<p class="error">Could not start the site. Please refresh.</p>`;
+  app.innerHTML = `<p class="error">${IS_STAGING ? esc(err.message) : "Could not start the site. Please refresh."}</p>`;
 });

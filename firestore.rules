@@ -46,7 +46,7 @@ service cloud.firestore {
           'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
           'birthDate','gender','jobCategories','jobTypes','experienceYears','skills','workHistory',
           'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email','src','jobCategoryOther',
-          'fbUrl','bizReg','signIn','emailVerified'])
+          'fbUrl','bizReg','signIn','emailVerified','alerts','alertsScope','alertsToken','emailNotify'])
         && d.role in ['jobseeker', 'employer']
         && str(d.fullName, 2, 80)
         && str(d.phone, 7, 20)
@@ -72,8 +72,14 @@ service cloud.firestore {
         && optStr(d.get('jobCategoryOther', null), 40)
         && optStr(d.get('fbUrl', null), 200)
         && optStr(d.get('bizReg', null), 60)
-        && (d.get('signIn', null) == null || d.signIn in ['', 'google', 'password'])
-        && (d.get('emailVerified', null) == null || d.emailVerified is bool);
+        && (d.get('signIn', null) == null || d.signIn in ['', 'google', 'password', 'facebook'])
+        && (d.get('emailVerified', null) == null || d.emailVerified is bool)
+        // Job alert emails (opt-in). The token is the secret in the unsubscribe link.
+        && (d.get('alerts', null) == null || d.alerts is bool)
+        && (d.get('alertsScope', null) == null || d.alertsScope in ['city', 'all'])
+        && (d.get('alertsToken', null) == null || (d.alertsToken is string && d.alertsToken.matches('[A-Za-z0-9]{32}')))
+        // Employers: emails about new applicants and their posts (on unless turned off).
+        && (d.get('emailNotify', null) == null || d.emailNotify is bool);
     }
 
     match /users/{uid} {
@@ -89,7 +95,7 @@ service cloud.firestore {
           'salaryMin','salaryMax','salaryPeriod','description','requirements',
           'area','address','addressHidden','workplace','arrangement','schedule','hours','daysOff','daysOffPer','openings','startDate','benefits',
           'reqExperience','reqEducation','reqList',
-          'ownerUid','status','featured','createdAt','updatedAt','approvedAt','expiresAt'])
+          'ownerUid','status','featured','createdAt','updatedAt','approvedAt','expiresAt','editedAt','infoNote','infoAt'])
         && str(d.title, 3, 100)
         && str(d.category, 1, 40)
         && optStr(d.get('categoryOther', null), 40)
@@ -131,13 +137,28 @@ service cloud.firestore {
                     && request.resource.data.createdAt == request.time
                     && request.resource.data.approvedAt == null
                     && request.resource.data.expiresAt == null
-                    && (isAdmin() || bumpedPost());
+                    && (isAdmin() || bumpedPost())
+                    // Email + password accounts must confirm their email before posting.
+                    && (isAdmin() || request.auth.token.firebase.sign_in_provider != 'password' || request.auth.token.email_verified == true);
       // Owners may only close their own post. Admins can change anything.
       allow update: if isAdmin()
                     || (signedIn()
                         && resource.data.ownerUid == me()
                         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
                         && request.resource.data.status == 'closed');
+      // Owners may edit their post (not a closed one). It goes back to review, and they can't
+      // touch the status flags, dates, featured or the admin's note.
+      allow update: if signedIn() && notBanned()
+                    && resource.data.ownerUid == me()
+                    && resource.data.status in ['pending', 'approved', 'rejected']
+                    && request.resource.data.status == 'pending'
+                    && request.resource.data.editedAt == request.time
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'title','category','categoryOther','employerName','city','area','address','addressHidden','workplace',
+                         'arrangement','schedule','employmentType','salaryMin','salaryMax','salaryPeriod','hours','daysOff','daysOffPer',
+                         'openings','startDate','benefits','reqExperience','reqEducation','reqList','requirements','description',
+                         'status','updatedAt','editedAt'])
+                    && validJob(request.resource.data);
       allow delete: if isAdmin();
 
       // Employer contact details: visible to the owner, admins, and the worker they hired.
@@ -148,7 +169,9 @@ service cloud.firestore {
                             && get(/databases/$(database)/documents/applications/$(jobId + '_' + me())).data.status == 'hired')));
         allow create, update: if signedIn() && notBanned() && docId == 'contact'
                     && getAfter(/databases/$(database)/documents/jobs/$(jobId)).data.ownerUid == me()
-                    && request.resource.data.keys().hasOnly(['contactMethod', 'contactValue', 'address'])
+                    && request.resource.data.keys().hasOnly(['contactMethod', 'contactValue', 'address', 'contacts'])
+                    && (request.resource.data.get('contacts', null) == null
+                        || (request.resource.data.contacts is list && request.resource.data.contacts.size() >= 1 && request.resource.data.contacts.size() <= 4))
                     && optStr(request.resource.data.get('address', null), 200)
                     && request.resource.data.contactMethod in ['messenger', 'phone', 'email']
                     && str(request.resource.data.contactValue, 3, 200);
@@ -212,9 +235,15 @@ service cloud.firestore {
         allow read: if party() || isAdmin();
         allow create: if party() && notBanned()
                       && chatOpen()
-                      && request.resource.data.keys().hasOnly(['fromUid', 'text', 'createdAt'])
+                      && request.resource.data.keys().hasOnly(['fromUid', 'text', 'createdAt', 'photo'])
                       && request.resource.data.fromUid == me()
-                      && str(request.resource.data.text, 1, 1000)
+                      // A message is text, or a small JPEG photo (stored inline) with optional text.
+                      && (request.resource.data.get('photo', null) == null
+                          ? str(request.resource.data.text, 1, 1000)
+                          : (str(request.resource.data.text, 0, 1000)
+                             && request.resource.data.photo is string
+                             && request.resource.data.photo.size() <= 150000
+                             && request.resource.data.photo.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+')))
                       && request.resource.data.createdAt == request.time
                       && bumped('messages')
                       && getAfter(limPath()).data.msgAt == request.time
@@ -343,6 +372,31 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
+    /* ---------- Get Verified: an employer's ID photo + selfie, for an admin to check ----------
+       Only that employer and admins can read it. When an admin decides, the photos are deleted
+       and only the decision stays (status, ID type, reason). */
+    function idImage(p) { return p is string && p.size() <= 300000 && p.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+'); }
+    function validVerify(d) {
+      return d.keys().hasOnly(['idType', 'idPhoto', 'selfie', 'fbUrl', 'consent', 'status', 'createdAt', 'updatedAt'])
+        && str(d.idType, 2, 40) && idImage(d.idPhoto) && idImage(d.selfie)
+        && optStr(d.get('fbUrl', null), 200) && d.consent == true && d.status == 'pending'
+        && d.createdAt == request.time && d.updatedAt == request.time;
+    }
+    match /verifyRequests/{uid} {
+      allow read: if (signedIn() && me() == uid) || isAdmin();
+      allow create: if signedIn() && me() == uid && notBanned() && validVerify(request.resource.data);
+      // Send again after a rejection (not after approval).
+      allow update: if isAdmin() || (signedIn() && me() == uid && notBanned() && resource.data.status != 'approved' && validVerify(request.resource.data));
+      allow delete: if (signedIn() && me() == uid) || isAdmin();
+    }
+
+    // Mobile numbers confirmed by a texted code. Written only by the SMS helper (service account).
+    // smsCodes, smsPhones and meta/sms (codes and daily limits) have no client access at all.
+    match /phoneVerified/{uid} {
+      allow read: if (signedIn() && me() == uid) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
     // Employers an admin has checked (phone call, Facebook, business permit…). Public so the badge shows.
     match /verified/{uid} {
       allow read: if true;
@@ -350,6 +404,28 @@ service cloud.firestore {
                     && request.resource.data.keys().hasOnly(['at', 'by', 'method'])
                     && str(request.resource.data.method, 1, 60);
       allow delete: if isAdmin();
+    }
+
+    /* ---------- Job alert emails ----------
+       The unsubscribe link in each email writes unsubscribes/{token}, no sign-in needed.
+       Nobody can read these; the daily alert job (server key) turns alerts off and deletes them.
+       alertState/{uid} is the job's own bookkeeping (when each person was last emailed). */
+    match /unsubscribes/{token} {
+      // update too, so clicking the link twice still works
+      allow create, update: if token.matches('[A-Za-z0-9]{32}')
+                    && request.resource.data.keys().hasOnly(['at'])
+                    && request.resource.data.at == request.time;
+      allow read, delete: if false;
+    }
+    match /alertState/{uid} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Chat messages the email robot flagged as possible scams. Written by the server only.
+    match /flags/{id} {
+      allow read, delete: if isAdmin();
+      allow create, update: if false;
     }
 
     match /bans/{uid} {

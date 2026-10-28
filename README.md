@@ -8,7 +8,7 @@ A free job listing board for household, service and local jobs in Negros Occiden
 
 Job Search PH only publishes listings. It does not recruit, screen, match or place workers.
 
-Plain HTML/CSS/JS on GitHub Pages, with Firebase Auth (Google and email/password) and Firestore on the free plan. No build step for the app.
+Plain HTML/CSS/JS on GitHub Pages, with Firebase Auth (Google, Facebook and email/password) and Firestore on the free plan. No build step for the app.
 
 ## Run it locally
 
@@ -18,6 +18,16 @@ python3 -m http.server 8000
 ```
 
 This talks to the live Firebase project. For testing without touching real data, run the Firebase emulators (Firestore on port 8085, Auth on 9099) and open `http://localhost:8000/?emu`.
+
+## Test site first, then live
+
+Real people use jobsearchph.com, so every change goes to the **test site** first:
+
+1. `scripts/deploy-staging.sh` publishes the current code to https://staging.jobsearchph.com (repo `Job-Search-PH-staging`). It uses a separate Firebase project with test data only, shows a yellow TEST SITE banner, and is hidden from Google.
+2. Check it there (both phones if it's a big change). Publish any rules change to the **test** Firebase project first.
+3. When it's good, push to this repo to update the live site, and publish the rules to the **live** Firebase project.
+
+`assets/firebase-config.js` picks the database by address: `staging.*` uses the test project and never falls back to the real one.
 
 ## Important: publish the rules after every change
 
@@ -53,7 +63,52 @@ Add `?src=<name>` to any link, e.g. `https://jobsearchph.com/?src=fb-bacolod-gro
 | `assets/firebase-config.js` | Firebase keys, listing length |
 | `assets/styles.css` | Styles (light and dark) |
 | `firestore.rules` | Database security rules |
+| `assets/match.js` | Fit score (applicant vs. job), shared by the site and the emails |
+| `assets/safety.js` | Spots scam-looking chat messages, shared by the chat and the emails |
 | `scripts/build-job-pages.mjs` | Static job pages for search engines |
+| `scripts/send-emails.mjs` | Automatic emails every 15 minutes (see below) |
+| `scripts/send-job-alerts.mjs` | Daily job alerts for jobseekers |
+| `scripts/lib/` | Shared Firestore and email code for the two email scripts |
+
+## Job alert emails
+
+Jobseekers tick **Job alerts by email** on their profile and choose "only my city" or "anywhere in Negros Occidental". Every morning (6:41 AM PH) `.github/workflows/job-alerts.yml` runs `scripts/send-job-alerts.mjs`, which emails each of them the jobs approved since their last alert whose category is one they picked. No new matches means no email. Emails go out through Resend from `alerts@jobsearchph.com`, with links tagged `?src=job-alert`.
+
+- **Secrets** (repo → Settings → Secrets and variables → Actions): `FIREBASE_SERVICE_ACCOUNT` (Firebase → Project settings → Service accounts → Generate new private key; paste the whole JSON) and `RESEND_API_KEY`. The script picks the Firebase project from the key, so the staging repo uses the staging project's key.
+- **Variable** (staging repo only): `SITE_URL` = `https://staging.jobsearchph.com`.
+- **Unsubscribe** works without signing in: the link writes `unsubscribes/{token}`, and the next run turns alerts off on that profile. `alertState/{uid}` records when each person was last emailed.
+- **Test**: Actions → Job alert emails → Run workflow → `dry-run` prints the emails without sending. Locally: `node scripts/send-job-alerts.mjs --fixture scripts/sample-alerts.json`.
+- **Limit**: Resend's free plan allows 100 emails a day and 3,000 a month. The script stops at `MAX_EMAILS` (90), and anyone it skips gets their alert on the next run.
+
+## Automatic emails (every 15 minutes)
+
+`.github/workflows/emails.yml` runs `scripts/send-emails.mjs`. Same secrets as job alerts; optional repo variable `ADMIN_EMAIL` (default jobsearchph.official@gmail.com).
+
+- **Employers:** one email per new applicant, with the applicant's fit score, how many have applied, and the best fit so far. Also "we got your post", "your post is live", "your changes are live" and "not approved". They can turn these off in My profile.
+- **Quiet employers (10 AM daily):** no live post for 30+ days → "Still hiring?" (at most once a month); signed up but never posted after a week → one nudge. Max 20 a day.
+- **Admin:** one summary email when there's something to do: posts to review, edited posts, support messages, reports, flagged chat messages and ID checks.
+- **Get Verified:** "You're verified" / "We couldn't verify your ID yet".
+- Nothing is sent twice: each email's key is saved in `mailLog/{key}`, and `meta/mailer.lastRun` remembers the last run.
+- Test locally against the emulator: `FIRESTORE_EMULATOR_HOST=127.0.0.1:8085 EMAIL_OUTBOX=/tmp/outbox node scripts/send-emails.mjs` writes the emails as files instead of sending.
+- Both email scripts skip quietly until `FIREBASE_SERVICE_ACCOUNT` is added.
+
+## Fit score
+
+On an employer's applicant list, each applicant gets a 0–100 fit score with the reasons (job type, city, experience, live-in/schedule, education, skills from the post's checklist, availability). The best fit is shown first and highlighted; "Newest first" is one tap away. It's a sorting aid for people who applied to that post, not a recommendation, and the employer decides.
+
+## Chat safety and photos
+
+People can send a photo in chat (shrunk to under ~100 KB and stored with the message, because Storage needs the paid plan). `assets/safety.js` spots money/payment-app requests, fees, one-time codes, ID or account numbers and unknown links. Employers get a warning before sending such a message, jobseekers see a caution note under it, and the email robot saves it to **Admin → Chat flags** (admins can open any chat read-only).
+
+## Email confirmation
+
+Email + password sign-ups get Firebase's confirmation email. Employers must click it before posting (also enforced in `firestore.rules`); Google and Facebook sign-ins are not affected. Job alerts only go to confirmed addresses.
+
+## Facebook login
+
+Needs a Meta app (developers.facebook.com → My Apps → Create app → "Authenticate and request data from users with Facebook Login"). In Firebase → Authentication → Sign-in method → Facebook, paste the Meta **App ID** and **App secret**, then copy the **OAuth redirect URI** Firebase shows into Meta → Facebook Login → Settings → Valid OAuth Redirect URIs. Do this for both Firebase projects (live and test). Meta also needs the Privacy Policy URL and a data-deletion URL before the app can go Live; until then only people listed as app testers can use it.
+
+Inside the Facebook/Messenger app, "Continue with Facebook" uses a full-page redirect instead of a popup. People who already have an account with the same email sign in their usual way first, then connect Facebook in My profile.
 
 ## Checking employers
 
@@ -61,6 +116,8 @@ Every pending post in **Admin → Pending** shows an *Employer check*: account a
 
 - **Ask for more info** keeps the post pending and notifies the employer, who can reply through support or update their profile.
 - **Verify employer** (after a call or a Facebook check) adds a green *Verified* badge to all their posts. Remove it from their page in Admin → Users.
+- **Get Verified (ID + selfie):** employers can send a photo of a government ID and a selfie holding it from their profile. Review them in **Admin → ID checks**. Approving gives the Verified badge; rejecting asks for a reason. Either way the photos are deleted right away and only the decision is kept.
+- **Editing:** employers can edit pending, live or rejected posts. An edit sends the post back to Pending with an "Edited" badge; re-approving a post that was live keeps its original date and expiry.
 
 ## Making someone an admin
 
