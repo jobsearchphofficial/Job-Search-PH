@@ -1198,6 +1198,7 @@ function viewProfile() {
       const a = ageFrom(f.birthDate?.value); if (f.birthDate && a != null) $("#age-out").textContent = `${a} years old`;
     }
     autosave(`profile:${role}`, f);
+    if (f.alerts) $("#alerts-scope").hidden = !f.alerts.checked; // a restored draft may have ticked it
     const paintStrength = () => { const box = $("#strength"); if (!box) return; collect(); box.outerHTML = strengthCard(p); };
     if (pd && role === "jobseeker") setTimeout(paintStrength);
     if (role === "jobseeker") { f.addEventListener("input", paintStrength); f.addEventListener("change", paintStrength); }
