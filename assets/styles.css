@@ -1053,3 +1053,15 @@ input[type="date"]::-webkit-date-and-time-value { text-align: left; }
 /* Confirm your email */
 .confirm-email { display: grid; gap: 10px; margin-bottom: 16px; }
 .confirm-email .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Chat: photos, scam warnings, admin view */
+.chat-form { align-items: flex-end; }
+.chat-photo { flex: none; padding: 0 10px; height: 42px; display: inline-flex; align-items: center; cursor: pointer; }
+.msg-photo { display: block; max-width: min(260px, 70vw); max-height: 320px; border-radius: 10px; margin: 2px 0 6px; cursor: zoom-in; object-fit: cover; }
+.msg-warn { max-width: 85%; margin: -2px 0 10px; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--peach); border: 1px solid var(--warn-line); color: var(--orange-text); font-size: .82rem; line-height: 1.4; }
+.msg.mine + .msg-warn { margin-left: auto; }
+.msg-who { display: block; font-size: .72rem; font-weight: 600; opacity: .7; margin-bottom: 2px; }
+.photo-preview { display: block; max-width: 100%; max-height: 50vh; border-radius: 10px; margin: 6px auto 10px; }
+.lightbox { position: fixed; inset: 0; z-index: 200; background: rgba(10, 14, 30, .88); display: flex; align-items: center; justify-content: center; padding: 16px; cursor: zoom-out; }
+.lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+.lightbox button { position: absolute; top: 12px; right: 16px; width: 40px; height: 40px; border-radius: 50%; border: 0; background: rgba(255,255,255,.15); color: #fff; font-size: 1.5rem; cursor: pointer; }

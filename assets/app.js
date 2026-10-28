@@ -1,6 +1,7 @@
 import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793187527";
 import { IS_STAGING } from "./firebase-config.js?v=1793187527";
 import { fitScore, rankApplicants } from "./match.js?v=1793187527";
+import { scamFlags, SERIOUS } from "./safety.js?v=1793187527";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -305,6 +306,36 @@ function shrinkPhoto(file) {
     img.src = url;
   });
 }
+// Shrink a photo for chat: longest side up to 1280px, JPEG under ~100 KB (the database stores it inline).
+function shrinkChatPhoto(file) {
+  return new Promise((resolve, reject) => {
+    if (!/^image\//.test(file.type)) return reject(new Error("Choose a photo (JPG or PNG)."));
+    const img = new Image(); const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let max = 1280, out = "";
+      for (let tries = 0; tries < 6; tries++) {
+        const k = Math.min(1, max / Math.max(img.width, img.height));
+        const c = document.createElement("canvas"); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height);
+        let q = 0.8; out = c.toDataURL("image/jpeg", q);
+        while (out.length > 140000 && q > 0.45) { q -= 0.1; out = c.toDataURL("image/jpeg", q); }
+        if (out.length <= 140000) return resolve(out);
+        max = Math.round(max * 0.75);
+      }
+      reject(new Error("That photo is too big. Try a smaller one."));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That photo couldn't be read. Try another one.")); };
+    img.src = url;
+  });
+}
+const safePhoto = (p) => (typeof p === "string" && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(p) ? p : "");
+// Full-screen view of a chat photo.
+function showPhoto(src) {
+  const d = document.createElement("div"); d.className = "lightbox"; d.innerHTML = `<img src="${src}" alt="Photo"><button type="button" aria-label="Close">×</button>`;
+  d.addEventListener("click", () => d.remove()); document.body.appendChild(d);
+}
+
 // Crop dialog: drag to move, slider/scroll/pinch to zoom. Resolves a 256px JPEG data URL, or null on cancel.
 function cropPhoto(file) {
   return new Promise((resolve, reject) => {
@@ -2179,7 +2210,8 @@ async function viewChat(appId) {
   if (location.hash !== here) return;
   if (!a) { app.innerHTML = `<div class="empty"><h1>Conversation not found</h1><p class="muted">It may have been withdrawn.</p><p><a class="btn btn-primary" href="#/messages">Back to Messages</a></p></div>`; return; }
   const me = user.uid; const iAmEmployer = a.employerUid === me;
-  const name = otherName(a);
+  const adminView = a.applicantUid !== me && a.employerUid !== me && getAuthState().isAdmin; // read-only
+  const name = adminView ? `${a.employerName || "Employer"} ↔ ${a.applicant?.fullName || "Applicant"}` : otherName(a);
   const x = a.applicant || {};
   app.innerHTML = `
     <div class="chat-wrap">
@@ -2192,23 +2224,24 @@ async function viewChat(appId) {
       </header>
       <div id="chat-banner"></div>
       <div class="chat-body" id="chat-body">${SK.chat()}</div>
-      <form class="chat-form" id="chat-form">
+      ${adminView ? `<p class="chat-note small muted">Admin view: read-only. Messages from the employer are on the right.</p>` : `<form class="chat-form" id="chat-form">
+        <label class="chat-photo btn btn-ghost" title="Send a photo" aria-label="Send a photo"><input type="file" id="chat-photo" accept="image/*" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></label>
         <textarea id="chat-input" name="text" rows="1" maxlength="1000" placeholder="Write a message…" aria-label="Message"></textarea>
         <button class="btn btn-primary" type="submit" aria-label="Send">Send</button>
       </form>
-      <p class="chat-note small muted">Keep chats about this job. Never send money or ID numbers here.</p>
+      <p class="chat-note small muted">Keep chats about this job. Never send money, codes or ID numbers here.</p>`}
     </div>`;
-  const body = $("#chat-body"), form = $("#chat-form"), input = $("#chat-input");
+  const body = $("#chat-body"), form = $("#chat-form") || document.createElement("form"), input = $("#chat-input") || document.createElement("textarea");
   const paintState = () => {
     const st = chatState(a);
     $("#chat-badge").innerHTML = appBadge(a.status, iAmEmployer);
-    const emp = (a.status === "hired" && !a.employmentEnded && a.endRequestedBy ? `<div class="chat-banner emp">${employmentHtml(a)}</div>` : "")
+    const emp = adminView ? "" : (a.status === "hired" && !a.employmentEnded && a.endRequestedBy ? `<div class="chat-banner emp">${employmentHtml(a)}</div>` : "")
       + (a.status === "offered" ? `<div class="chat-banner emp">${iAmEmployer ? `<span class="emp-state">You offered ${esc(name)} the job. Waiting for them to accept.</span>` : offerHtml(a)}</div>` : "");
     $("#chat-banner").innerHTML = emp + (st.declined
       ? `<p class="chat-banner ${st.open ? "" : "closed"}">${st.open
           ? `${a.status === "offer_declined" ? (iAmEmployer ? `${esc(name)} declined your offer.` : "You declined this offer.") : iAmEmployer ? "You marked this applicant as not a fit." : "The employer chose other applicants."} This chat closes in <strong>${st.hoursLeft} hour${st.hoursLeft === 1 ? "" : "s"}</strong>.`
           : "This chat has closed. You can still read past messages."}</p>` : "");
-    input.disabled = !st.open; form.querySelector("button").disabled = !st.open;
+    input.disabled = !st.open; form.querySelectorAll("button, input").forEach((el) => (el.disabled = !st.open));
     input.placeholder = st.open ? "Write a message…" : "Chat closed";
     form.classList.toggle("closed", !st.open);
   };
@@ -2227,18 +2260,47 @@ async function viewChat(appId) {
     let lastDay = "";
     body.innerHTML = intro + msgs.map((m) => {
       const day = new Date(m.createdAt).toDateString(); const sep = day !== lastDay ? `<p class="day">${new Date(m.createdAt).toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric" })}</p>` : ""; lastDay = day;
-      return `${sep}<div class="msg ${m.fromUid === me ? "mine" : "theirs"}"><p>${nl2br(m.text)}</p><small>${m.pending ? "Sending…" : fmt(m.createdAt)}</small></div>`;
+      const mine = adminView ? m.fromUid === a.employerUid : m.fromUid === me;
+      const photo = safePhoto(m.photo);
+      const flags = mine && !adminView ? [] : scamFlags(m.text);
+      const warn = flags.length ? `<div class="msg-warn">⚠ Careful: this message ${esc(flags.map((f) => f.label).join(", "))}. ${!adminView && !iAmEmployer ? `Real employers never ask you to pay, or for codes or ID numbers. <a href="#/job/${encodeURIComponent(a.jobId)}">Report this post</a>` : adminView ? "" : "Don't share codes or account numbers."}</div>` : "";
+      return `${sep}<div class="msg ${mine ? "mine" : "theirs"}">${adminView ? `<span class="msg-who">${esc(m.fromUid === a.employerUid ? a.employerName || "Employer" : x.fullName || "Applicant")}</span>` : ""}${photo ? `<img class="msg-photo" src="${photo}" alt="Photo" loading="lazy">` : ""}${m.text ? `<p>${nl2br(m.text)}</p>` : ""}<small>${m.pending ? "Sending…" : fmt(m.createdAt)}</small></div>${warn}`;
     }).join("");
     if (msgs.length !== lastCount) { body.scrollTop = body.scrollHeight; lastCount = msgs.length; }
-    store.markSeen(a);
+    if (!adminView) store.markSeen(a);
   });
   // Keep the countdown and status fresh.
   const tick = setInterval(async () => { if (!$("#chat-form")) return clearInterval(tick); const fresh = await store.getApplication(a.id); if (fresh) { a = fresh; paintState(); } }, 60000);
   input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; });
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !CAN_SMS) { e.preventDefault(); form.requestSubmit(); } });
+  body.addEventListener("click", (e) => { const im = e.target.closest(".msg-photo"); if (im) showPhoto(im.src); });
+  // Before sending: warn about money, fees, codes, ID numbers and odd links.
+  const okToSend = async (text) => {
+    const flags = scamFlags(text); if (!flags.length) return true;
+    const serious = iAmEmployer && flags.some((f) => SERIOUS.includes(f.type));
+    return showDialog({
+      title: serious ? "Asking for money isn't allowed" : "Check this message",
+      body: serious
+        ? "Asking applicants for money, fees, deposits or one-time codes isn't allowed on Job Search PH. Messages like this are reviewed by our team, and accounts that ask for money are banned."
+        : `This message ${esc(flags.map((f) => f.label).join(", "))}. Never share one-time codes, ID numbers or bank details in chat.`,
+      actions: [{ label: "Edit message", value: false, primary: true }, { label: "Send anyway", value: true }],
+    });
+  };
+  $("#chat-photo")?.addEventListener("change", async (e) => {
+    const file = e.target.files?.[0]; e.target.value = ""; if (!file || input.disabled) return;
+    let photo;
+    try { photo = await shrinkChatPhoto(file); } catch (err) { return toast(err.message); }
+    const text = input.value.trim();
+    const ok = await showDialog({ title: "Send this photo?", body: `<img class="photo-preview" src="${photo}" alt="">${text ? `<p class="small muted">With your message: “${esc(text.slice(0, 120))}”</p>` : ""}<p class="small muted">Don't send photos of IDs, bank cards or codes.</p>`, actions: [{ label: "Cancel", value: false }, { label: "Send photo", value: true, primary: true }] });
+    if (!ok || (text && !(await okToSend(text)))) return;
+    input.value = ""; input.style.height = "auto";
+    try { await store.sendMessage(a, text, photo); a = (await store.getApplication(a.id)) || a; }
+    catch (err) { console.error(err); input.value = text; toast(err.code === "limit-reached" ? limitMsg.messages : err.code === "too-fast" ? "Slow down a little. Wait a moment before sending again." : "The photo wasn't sent. Try again."); }
+  });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = input.value.trim(); if (!text || input.disabled) return;
+    if (!(await okToSend(text))) return;
     input.value = ""; input.style.height = "auto";
     try { await store.sendMessage(a, text); a = (await store.getApplication(a.id)) || a; }
     catch (err) {
@@ -2247,7 +2309,7 @@ async function viewChat(appId) {
       const fresh = await store.getApplication(a.id); if (fresh) { a = fresh; paintState(); }
     }
   });
-  if (!CAN_SMS) input.focus();
+  if (!CAN_SMS && !adminView) input.focus();
 }
 
 /* ---------------- Admin ---------------- */
@@ -2636,7 +2698,7 @@ async function viewAdmin() {
   const { user, isAdmin } = getAuthState();
   if (!user) return goSignIn("Admin sign in");
   if (!isAdmin) { app.innerHTML = `<div class="empty"><h1>Not authorized</h1><p class="muted">This account is not an admin.</p></div>`; return; }
-  const tabs = { analytics: "Analytics", users: "Users", pending: "Pending", approved: "Live", reports: "Reports", support: "Support", rejected: "Rejected", closed: "Closed" };
+  const tabs = { analytics: "Analytics", users: "Users", pending: "Pending", approved: "Live", reports: "Reports", flags: "Chat flags", support: "Support", rejected: "Rejected", closed: "Closed" };
   app.innerHTML = `
     <div class="page-head"><h1>Admin</h1></div>
     <div class="tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<button role="tab" class="tab ${adminTab === k ? "active" : ""}" data-tab="${k}">${v}${k === "pending" && pendingForAdmin ? ` <span class="count">${pendingForAdmin}</span>` : ""}</button>`).join("")}</div>
@@ -2663,6 +2725,18 @@ async function viewAdmin() {
         </article>`).join("")}</div>`
       : `<div class="empty"><p>${supportView === "done" ? "Nothing marked done yet." : supportView === "all" ? "No support messages yet." : "No open support messages. 🎉"}</p></div>`}`;
     body.querySelectorAll("[data-sview]").forEach((b) => b.addEventListener("click", () => { supportView = b.dataset.sview; viewAdmin(); }));
+  } else if (adminTab === "flags") {
+    // Chat messages the email robot flagged (money, fees, codes, ID numbers, odd links).
+    const flags = await store.listFlags().catch(() => []);
+    body.innerHTML = `<p class="small muted">Chat messages that look like a scam (money, fees, one-time codes, ID numbers or odd links). Checked every 15 minutes. Open the chat to see the whole conversation.</p>
+      ${flags.length ? `<div class="table">${flags.map((f) => `
+      <div class="trow">
+        <div><strong>${esc((f.types || []).map((t) => ({ money: "Money", fee: "Fee", otp: "One-time code", id: "ID / account number", link: "Link" }[t] || t)).join(" · "))}</strong>
+          <div class="small">“${esc(f.text || (f.photo ? "(photo)" : ""))}”</div>
+          <div class="muted small">From ${esc(f.fromName || "")} (${f.fromRole === "employer" ? "employer" : "jobseeker"}) · ${esc(f.jobTitle || "")} · ${f.createdAt ? ago(f.createdAt) : ""}</div></div>
+        <div class="actions"><a class="btn btn-ghost btn-sm" href="#/chat/${encodeURIComponent(f.appId)}">Open chat</a>${f.fromUid ? `<a class="btn btn-ghost btn-sm" href="#/admin/user/${encodeURIComponent(f.fromUid)}">Sender</a>` : ""}<button class="btn btn-ghost btn-sm" data-flag-done="${esc(f.id)}">Looks fine</button></div>
+      </div>`).join("")}</div>` : `<div class="empty"><p>No flagged chat messages. 🎉</p></div>`}`;
+    body.querySelectorAll("[data-flag-done]").forEach((b) => b.addEventListener("click", async () => { try { await store.dismissFlag(b.dataset.flagDone); b.closest(".trow").remove(); toast("Cleared"); } catch { toast("Couldn't clear it"); } }));
   } else if (adminTab === "reports") {
     const reports = await store.listReports();
     const jobs = {};
@@ -2970,7 +3044,7 @@ async function route() {
   if (page === "support") return viewSupport();
   if (page === "chat" && arg) return viewChat(decodeURIComponent(arg));
   if (page === "admin" && arg === "user" && arg2) return viewAdminUser(decodeURIComponent(arg2));
-  if (page === "admin") { if (["analytics", "users", "pending", "approved", "reports", "support", "rejected", "closed"].includes(arg)) adminTab = arg; return viewAdmin(); }
+  if (page === "admin") { if (["analytics", "users", "pending", "approved", "reports", "flags", "support", "rejected", "closed"].includes(arg)) adminTab = arg; return viewAdmin(); }
   if (["safety", "terms", "privacy"].includes(page)) return viewStatic(page);
   location.hash = "#/";
 }

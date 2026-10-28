@@ -65,12 +65,13 @@ const docOut = (d) => ({ id: d.name.split("/").pop(), ...Object.fromEntries(Obje
 // filters: list of [field, op, value]. op is a Firestore REST operator: EQUAL, GREATER_THAN, …
 // value may be a string, boolean, number or Date. All filters are ANDed. Equality + one range field works
 // without a custom index; anything else may need one, so the scripts keep queries simple.
-export async function query(collectionId, filters = [], limit = 5000) {
+// parent: a document path for subcollections, e.g. "applications/abc" to query its "messages".
+export async function query(collectionId, filters = [], limit = 5000, parent = "") {
   const sq = { from: [{ collectionId }], limit };
   const fs = filters.map(([f, op, v]) => ({ fieldFilter: { field: { fieldPath: f }, op, value: toValue(v) } }));
   if (fs.length === 1) sq.where = fs[0];
   if (fs.length > 1) sq.where = { compositeFilter: { op: "AND", filters: fs } };
-  const rows = await api("POST", ":runQuery", { structuredQuery: sq });
+  const rows = await api("POST", `${parent ? `/${parent}` : ""}:runQuery`, { structuredQuery: sq });
   return rows.filter((r) => r.document).map((r) => docOut(r.document));
 }
 

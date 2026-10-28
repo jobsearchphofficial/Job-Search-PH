@@ -374,23 +374,24 @@ export const store = {
     return F.onSnapshot(F.query(F.collection(db, "applications", appId, "messages"), F.orderBy("createdAt", "asc"), F.limit(500)),
       (s) => cb(s.docs.map((d) => ({ id: d.id, ...d.data(), createdAt: toMs(d.data().createdAt) || Date.now(), pending: d.metadata.hasPendingWrites }))), (e) => cb(null, e));
   },
-  async sendMessage(a, text) {
+  async sendMessage(a, text, photo = "") {
     const me = uid(); const iAmEmployer = a.employerUid === me;
     const u = await this.usage();
     if (u.msgAt && typeof u.msgAt.toMillis === "function" && Date.now() - u.msgAt.toMillis() < 2500) throw Object.assign(new Error("slow"), { code: "too-fast" });
     const b = F.writeBatch(db);
-    b.set(F.doc(F.collection(db, "applications", a.id, "messages")), { fromUid: me, text, createdAt: F.serverTimestamp() });
+    b.set(F.doc(F.collection(db, "applications", a.id, "messages")), { fromUid: me, text, createdAt: F.serverTimestamp(), ...(photo ? { photo } : {}) });
+    const preview = photo ? `📷 Photo${text ? `: ${text}` : ""}` : text;
     await this._bump(b, "messages", { msgAt: F.serverTimestamp() });
     await b.commit();
     const otherSeen = iAmEmployer ? a.applicantSeenAt : a.employerSeenAt;
     const otherCaughtUp = !a.lastMessageAt || a.lastMessageFrom === (iAmEmployer ? a.applicantUid : a.employerUid) || (otherSeen && otherSeen >= a.lastMessageAt);
     await F.updateDoc(F.doc(db, "applications", a.id), {
-      lastMessageAt: F.serverTimestamp(), lastMessageFrom: me, lastMessageText: text.slice(0, 140),
+      lastMessageAt: F.serverTimestamp(), lastMessageFrom: me, lastMessageText: preview.slice(0, 140),
       [iAmEmployer ? "employerSeenAt" : "applicantSeenAt"]: F.serverTimestamp(),
     });
     if (otherCaughtUp) {
       const fromName = iAmEmployer ? (a.employerName || "The employer") : (a.applicant?.fullName || "An applicant");
-      await this.notify(iAmEmployer ? a.applicantUid : a.employerUid, { type: "message", title: `New message from ${fromName}`, body: text.slice(0, 120), link: `#/chat/${a.id}`, appId: a.id, jobId: a.jobId }).catch(() => {});
+      await this.notify(iAmEmployer ? a.applicantUid : a.employerUid, { type: "message", title: `New message from ${fromName}`, body: preview.slice(0, 120), link: `#/chat/${a.id}`, appId: a.id, jobId: a.jobId }).catch(() => {});
     }
   },
   async markSeen(a) {
@@ -471,6 +472,12 @@ export const store = {
     const s = await F.getDocs(F.query(F.collection(db, "reports"), F.orderBy("createdAt", "desc"), F.limit(200)));
     return s.docs.map(norm);
   },
+  // Chat messages flagged by the email robot (scripts/send-emails.mjs).
+  async listFlags() {
+    const s = await F.getDocs(F.query(F.collection(db, "flags"), F.orderBy("createdAt", "desc"), F.limit(200)));
+    return s.docs.map(norm);
+  },
+  async dismissFlag(id) { await F.deleteDoc(F.doc(db, "flags", id)); },
   async dismissReport(id) { await F.deleteDoc(F.doc(db, "reports", id)); },
   async clearReportsFor(jobId) {
     const s = await F.getDocs(F.query(F.collection(db, "reports"), F.where("jobId", "==", jobId)));

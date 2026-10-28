@@ -26,6 +26,9 @@ const now = Date.now();
 // The same fit score the website shows (assets/match.js), loaded as a module.
 const matchSrc = await readFile(join(ROOT, "assets/match.js"), "utf8");
 const { rankApplicants } = await import(`data:text/javascript;base64,${Buffer.from(matchSrc).toString("base64")}`);
+// The same scam checker the chat page uses (assets/safety.js).
+const safetySrc = await readFile(join(ROOT, "assets/safety.js"), "utf8");
+const { scamFlags, SERIOUS } = await import(`data:text/javascript;base64,${Buffer.from(safetySrc).toString("base64")}`);
 
 const first = (n) => String(n || "").trim().split(/\s+/)[0] || "there";
 const settingsNote = `You're getting this because you posted a job on Job Search PH. <a href="${link("#/profile")}" style="color:#777777;">Turn off these emails</a> in My profile.`;
@@ -129,8 +132,32 @@ async function postUpdates(since) {
   return pendingForAdmin;
 }
 
+/* ---------- Chat safety: flag messages that look like a scam (for the admin's Chat flags tab) ---------- */
+async function scanChats(since) {
+  const found = [];
+  const apps = await query("applications", [["lastMessageAt", "GREATER_THAN", new Date(since)]]);
+  for (const a of apps) {
+    const msgs = await query("messages", [["createdAt", "GREATER_THAN", new Date(since)]], 500, `applications/${a.id}`);
+    for (const m of msgs) {
+      const fromEmployer = m.fromUid === a.employerUid;
+      // Money, fees and codes from anyone; ID numbers and odd links only from employers.
+      const flags = scamFlags(m.text).filter((f) => SERIOUS.includes(f.type) || fromEmployer);
+      if (!flags.length) continue;
+      const id = `${a.id}_${m.id}`;
+      if (await get(`flags/${id}`)) continue;
+      const f = { appId: a.id, msgId: m.id, jobId: a.jobId || "", jobTitle: a.jobTitle || "", fromUid: m.fromUid, toUid: fromEmployer ? a.applicantUid : a.employerUid,
+        fromRole: fromEmployer ? "employer" : "jobseeker", fromName: fromEmployer ? a.employerName || "" : a.applicant?.fullName || "", text: String(m.text || "").slice(0, 300),
+        types: flags.map((x) => x.type), createdAt: new Date(m.createdAt || now) };
+      await patch(`flags/${id}`, f);
+      found.push({ id, ...f });
+      console.log(`Flagged chat ${id}: ${f.types.join(",")}`);
+    }
+  }
+  return found;
+}
+
 /* ---------- 3. Admin summary ---------- */
-async function adminSummary(since, pendingJobs) {
+async function adminSummary(since, pendingJobs, flagged = []) {
   const [support, reports] = await Promise.all([
     query("support", [["createdAt", "GREATER_THAN", new Date(since)]]).catch(() => []),
     query("reports", [["createdAt", "GREATER_THAN", new Date(since)]]).catch(() => []),
@@ -139,11 +166,12 @@ async function adminSummary(since, pendingJobs) {
     ...pendingJobs.filter((j) => (j.editedAt || j.createdAt) > since).map((j) => ({ key: `admin_job_${j.id}_${j.editedAt || j.createdAt}`, kind: j.editedAt ? "Edited post to re-check" : "New post to review", text: `${j.title} · ${j.employerName} · ${j.city}`, href: link("#/admin/pending", "email-admin") })),
     ...support.map((s) => ({ key: `admin_support_${s.id}`, kind: `Support: ${s.topic || "message"}`, text: `${s.name || ""}: ${String(s.message || "").slice(0, 140)}`, href: link("#/admin/support", "email-admin") })),
     ...reports.map((r) => ({ key: `admin_report_${r.id}`, kind: `Report: ${r.reason}`, text: `Job ${r.jobId}${r.details ? ` · ${String(r.details).slice(0, 120)}` : ""}`, href: link(`#/job/${r.jobId}`, "email-admin") })),
+    ...flagged.map((f) => ({ key: `admin_flag_${f.id}`, kind: `Chat flag: ${f.types.join(", ")}`, text: `${f.fromName} (${f.fromRole}) · ${f.jobTitle}: “${f.text.slice(0, 120)}”`, href: link("#/admin/flags", "email-admin") })),
   ];
   const todo = [];
   for (const it of items) if (!(await seen(it.key))) todo.push(it);
   if (!todo.length) return;
-  const NOUN = { "New post to review": ["new post to review", "new posts to review"], "Edited post to re-check": ["edited post to re-check", "edited posts to re-check"], Support: ["support message", "support messages"], Report: ["report", "reports"] };
+  const NOUN = { "New post to review": ["new post to review", "new posts to review"], "Edited post to re-check": ["edited post to re-check", "edited posts to re-check"], Support: ["support message", "support messages"], Report: ["report", "reports"], "Chat flag": ["flagged chat message", "flagged chat messages"] };
   const counts = {};
   todo.forEach((t) => { const k = t.kind.split(":")[0]; counts[k] = (counts[k] || 0) + 1; });
   const summary = Object.entries(counts).map(([k, n]) => `${n} ${(NOUN[k] || [k.toLowerCase(), `${k.toLowerCase()}s`])[n === 1 ? 0 : 1]}`).join(", ");
@@ -201,7 +229,8 @@ async function main() {
   try {
     await newApplicants(since);
     const pending = capped ? [] : await postUpdates(since);
-    if (!capped) await adminSummary(since, pending);
+    const flagged = await scanChats(since).catch((e) => { console.error(`Chat scan failed: ${e.message}`); return []; });
+    if (!capped) await adminSummary(since, pending, flagged);
     if (!capped) await employerReminders();
   } catch (e) {
     if (e.status === 429 || e.status === 403) { console.error(`Stopping: Resend limit or key problem. ${e.message}`); process.exitCode = 1; return; }
