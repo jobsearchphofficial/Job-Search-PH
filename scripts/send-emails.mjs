@@ -157,6 +157,39 @@ async function adminSummary(since, pendingJobs) {
   }
 }
 
+/* ---------- 4. Reminders for employers who haven't posted in a while (once a day, 10 AM PH) ---------- */
+async function employerReminders() {
+  const ph = new Date(now + 8 * 3600000);
+  if (!process.env.FORCE_REMINDERS && ph.getUTCHours() !== 10) return;
+  const month = ph.toISOString().slice(0, 7);
+  const [emps, jobs, bans] = await Promise.all([query("users", [["role", "EQUAL", "employer"]]), query("jobs"), query("bans").catch(() => [])]);
+  const banned = new Set(bans.map((b) => b.id));
+  const byOwner = {};
+  jobs.forEach((j) => (byOwner[j.ownerUid] ||= []).push(j));
+  let n = 0;
+  for (const emp of emps) {
+    if (!emp.email || emp.emailNotify === false || banned.has(emp.id)) continue;
+    const posts = byOwner[emp.id] || [];
+    if (posts.some((j) => j.status === "pending" || (j.status === "approved" && (!j.expiresAt || j.expiresAt > now)))) continue;
+    let key, subject, title, body;
+    if (!posts.length) {
+      if (!emp.createdAt || now - emp.createdAt < 7 * 86400000) continue;
+      key = `remind_${emp.id}_first`; subject = "Ready to post your first job?"; title = "Ready to post your first job?";
+      body = `<p style="margin:0 0 12px 0;font-size:15px;line-height:22px;color:#444444;">Hi ${esc(first(emp.fullName))}, you made an employer account on Job Search PH but haven't posted a job yet. It's free and takes about 2 minutes. Jobseekers in Negros Occidental can apply and message you right on the site.</p>${button(link("#/post", "email-remind"), "Post a job for free")}`;
+    } else {
+      const last = posts.reduce((a, b) => ((b.createdAt || 0) > (a.createdAt || 0) ? b : a));
+      if (now - (last.createdAt || 0) < 30 * 86400000) continue;
+      key = `remind_${emp.id}_${month}`; subject = "Still hiring? Post a job in 2 minutes"; title = "Still hiring?";
+      body = `<p style="margin:0 0 12px 0;font-size:15px;line-height:22px;color:#444444;">Hi ${esc(first(emp.fullName))}, you don't have any live job posts on Job Search PH right now. If you need help again, posting is free and jobseekers can apply the same day.</p>
+        ${card(`<div style="font-size:12px;color:#777777;text-transform:uppercase;letter-spacing:.5px;">Your last post</div><div style="font-size:15px;font-weight:bold;color:#111111;margin-top:2px;">${esc(last.title)}</div><div>${esc(last.city || "")} · ${new Date(last.createdAt).toLocaleDateString("en-PH", { month: "long", day: "numeric", year: "numeric" })}</div>`)}
+        ${button(link("#/post", "email-remind"), "Post a job")}`;
+    }
+    if (await seen(key)) continue;
+    if (await deliver(key, emp.email, { subject, html: layout({ title, preheader: subject, body, footerNote: settingsNote, safety: false }), text: `${title} ${link("#/post", "email-remind")}` })) n++;
+    if (capped || n >= 20) return; // leave room in the daily Resend limit for job alerts and applicant emails
+  }
+}
+
 async function main() {
   // Not set up yet: skip quietly instead of failing every 15 minutes.
   if (!hasFirebaseKey()) { console.log("Emails aren't set up yet: add the FIREBASE_SERVICE_ACCOUNT secret (and RESEND_API_KEY). Skipping."); return; }
@@ -169,6 +202,7 @@ async function main() {
     await newApplicants(since);
     const pending = capped ? [] : await postUpdates(since);
     if (!capped) await adminSummary(since, pending);
+    if (!capped) await employerReminders();
   } catch (e) {
     if (e.status === 429 || e.status === 403) { console.error(`Stopping: Resend limit or key problem. ${e.message}`); process.exitCode = 1; return; }
     throw e;

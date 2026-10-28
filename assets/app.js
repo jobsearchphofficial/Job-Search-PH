@@ -1180,7 +1180,7 @@ function viewProfile() {
         <label id="alerts-scope" ${p.alerts ? "" : "hidden"}>Where<select name="alertsScope">
           <option value="city" ${p.alertsScope !== "all" ? "selected" : ""}>Only in my city / municipality</option>
           <option value="all" ${p.alertsScope === "all" ? "selected" : ""}>Anywhere in Negros Occidental</option></select>
-          <span class="hint">At most one email a day${user.email ? `, sent to <strong>${esc(user.email)}</strong>` : ""}. Every email has an unsubscribe link.</span></label>
+          <span class="hint">At most one email a day${user.email ? `, sent to <strong>${esc(user.email)}</strong>` : ""}. Every email has an unsubscribe link.${getAuthState().mustConfirmEmail ? " Alerts start once you confirm your email (see the top of this page)." : ""}</span></label>
       </fieldset>
       <fieldset>
         <legend>Experience &amp; resume</legend>
@@ -1356,6 +1356,7 @@ function viewProfile() {
     const step = !role ? 1 : 2;
     app.innerHTML = `
       <div class="profile-wrap">
+        ${getAuthState().mustConfirmEmail ? confirmEmailBox(role === "employer" ? "You'll need this before you can post a job." : "It keeps your account safe and lets us send job alerts.") : ""}
         <header class="profile-head">
           <div class="photo-col"><label class="photo-pick" title="Change photo">${avatar(name || user.email, p.photo, "lg")}<span class="photo-edit">${p.photo ? "Change" : "Add photo"}</span><input type="file" id="photo-in" accept="image/*" hidden></label>${p.photo ? `<button type="button" class="linkbtn small" id="photo-remove">Remove</button>` : ""}</div>
           <div>
@@ -1394,6 +1395,7 @@ function viewProfile() {
       if (first) $("#profile-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }));
     if (role) bindForm();
+    bindConfirmEmail(() => viewProfile());
     $("#photo-in")?.addEventListener("change", async (e) => {
       const file = e.target.files?.[0]; if (!file) return;
       e.target.value = "";
@@ -1429,6 +1431,25 @@ const TITLE_FOR = {
 const SCHEDULES = { household: ["Full-time", "Part-time"], business: ["Full-time", "Part-time", "Project-based", "Shifts"] };
 const RECOMMENDED = ["SSS", "PhilHealth", "Pag-IBIG", "13th month pay"];
 
+// "Confirm your email" box for email + password accounts that haven't clicked the link yet.
+function confirmEmailBox(why) {
+  const { user } = getAuthState();
+  return `<div class="notice confirm-email" id="confirm-email"><div><strong>Confirm your email address.</strong> ${esc(why)} We sent a link to <strong>${esc(user?.email || "your email")}</strong>. Check your inbox (and Spam), click the link, then come back here.</div>
+    <div class="actions"><button class="btn btn-primary btn-sm" type="button" data-confirm="check">I've confirmed it</button><button class="btn btn-ghost btn-sm" type="button" data-confirm="resend">Send the link again</button></div></div>`;
+}
+function bindConfirmEmail(onDone) {
+  $("#confirm-email")?.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-confirm]"); if (!b) return;
+    b.disabled = true;
+    try {
+      if (b.dataset.confirm === "resend") { await store.sendVerification(); toast("Link sent. Check your email."); }
+      else if (await store.refreshVerified()) { toast("Email confirmed. Thank you!"); onDone(); return; }
+      else toast("Not confirmed yet. Click the link in the email first.");
+    } catch (ex) { toast(ex.code === "auth/too-many-requests" ? "Please wait a few minutes before asking for another link." : "Something went wrong. Try again."); }
+    b.disabled = false;
+  });
+}
+
 async function viewPost(editId = null) {
   document.title = `${editId ? "Edit post" : "Post a job"} | Job Search PH`;
   const { user, profile } = getAuthState();
@@ -1437,6 +1458,11 @@ async function viewPost(editId = null) {
     return;
   }
   if (!profile) { returnTo = "#/post"; location.hash = "#/profile"; return; }
+  if (!editId && getAuthState().mustConfirmEmail && !getAuthState().isAdmin) {
+    app.innerHTML = `<div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1></div></div>${confirmEmailBox("We ask every employer to do this once before posting, so jobseekers know posts come from real people.")}`;
+    bindConfirmEmail(() => viewPost());
+    return;
+  }
   if (profile.role !== "employer") {
     returnTo = "#/post";
     app.innerHTML = `<div class="empty"><h1>Hiring?</h1><p class="muted">Your profile is set to "I'm looking for work". Switch it to "I'm hiring" to post jobs.</p><p><a class="btn btn-primary" href="#/profile">Change profile type</a></p></div>`;

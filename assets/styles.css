@@ -1049,3 +1049,7 @@ input[type="date"]::-webkit-date-and-time-value { text-align: left; }
 .crow-x { height: 40px; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--card); color: var(--slate); font-size: 1.2rem; cursor: pointer; }
 .crow-x:hover { color: var(--red); border-color: var(--bad-line); }
 @media (max-width: 420px) { .crow { grid-template-columns: 1fr 40px; } .crow select { grid-column: 1 / -1; } }
+
+/* Confirm your email */
+.confirm-email { display: grid; gap: 10px; margin-bottom: 16px; }
+.confirm-email .actions { display: flex; gap: 8px; flex-wrap: wrap; }

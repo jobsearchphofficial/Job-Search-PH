@@ -137,7 +137,9 @@ service cloud.firestore {
                     && request.resource.data.createdAt == request.time
                     && request.resource.data.approvedAt == null
                     && request.resource.data.expiresAt == null
-                    && (isAdmin() || bumpedPost());
+                    && (isAdmin() || bumpedPost())
+                    // Email + password accounts must confirm their email before posting.
+                    && (isAdmin() || request.auth.token.firebase.sign_in_provider != 'password' || request.auth.token.email_verified == true);
       // Owners may only close their own post. Admins can change anything.
       allow update: if isAdmin()
                     || (signedIn()

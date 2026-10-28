@@ -46,6 +46,13 @@ export function ageFrom(birthDate) {
   return a;
 }
 
+// Signed in with email + password and hasn't clicked the confirmation link yet.
+// (Same test as firestore.rules uses before allowing a new job post.)
+async function needsConfirm(user) {
+  if (!user || user.emailVerified) return false;
+  try { return (await user.getIdTokenResult()).signInProvider === "password"; } catch { return false; }
+}
+
 async function loadProfile(user) {
   if (!user) return { profile: null, isAdmin: false, banned: null };
   const [p, a, b] = await Promise.all([
@@ -111,8 +118,8 @@ export const store = {
       F.connectFirestoreEmulator(db, "127.0.0.1", 8085);
     }
     A.onAuthStateChanged(auth, async (user) => {
-      const extra = await loadProfile(user);
-      state = { user: user ? { uid: user.uid, displayName: user.displayName, email: user.email } : null, ...extra, ready: true };
+      const [extra, mustConfirmEmail] = await Promise.all([loadProfile(user), needsConfirm(user)]);
+      state = { user: user ? { uid: user.uid, displayName: user.displayName, email: user.email } : null, ...extra, mustConfirmEmail, ready: true };
       emit();
     });
   },
@@ -144,6 +151,19 @@ export const store = {
   async signUpEmail(email, pw, name) {
     const cred = await A.createUserWithEmailAndPassword(auth, email, pw);
     if (name) await A.updateProfile(cred.user, { displayName: name }).catch(() => {});
+    A.sendEmailVerification(cred.user, { url: `${location.origin}/#/profile` }).catch(() => {});
+  },
+  // Email confirmation for email + password accounts.
+  async sendVerification() { await A.sendEmailVerification(auth.currentUser, { url: `${location.origin}/#/profile` }); },
+  // After they click the link: refresh the account (and its token, which the database rules read).
+  async refreshVerified() {
+    const u = auth.currentUser; if (!u) return false;
+    await u.reload(); await u.getIdToken(true);
+    const must = await needsConfirm(auth.currentUser);
+    state = { ...state, mustConfirmEmail: must };
+    if (!must && state.profile && !state.profile.emailVerified) await this.saveProfile({}).catch(() => {});
+    else emit();
+    return !must;
   },
   async resetPassword(email) { await A.sendPasswordResetEmail(auth, email); },
   async signOut() { await A.signOut(auth); },
