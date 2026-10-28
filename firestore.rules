@@ -167,7 +167,9 @@ service cloud.firestore {
                             && get(/databases/$(database)/documents/applications/$(jobId + '_' + me())).data.status == 'hired')));
         allow create, update: if signedIn() && notBanned() && docId == 'contact'
                     && getAfter(/databases/$(database)/documents/jobs/$(jobId)).data.ownerUid == me()
-                    && request.resource.data.keys().hasOnly(['contactMethod', 'contactValue', 'address'])
+                    && request.resource.data.keys().hasOnly(['contactMethod', 'contactValue', 'address', 'contacts'])
+                    && (request.resource.data.get('contacts', null) == null
+                        || (request.resource.data.contacts is list && request.resource.data.contacts.size() >= 1 && request.resource.data.contacts.size() <= 4))
                     && optStr(request.resource.data.get('address', null), 200)
                     && request.resource.data.contactMethod in ['messenger', 'phone', 'email']
                     && str(request.resource.data.contactValue, 3, 200);

@@ -429,6 +429,15 @@ function contactLink(c) {
   const m = messengerUrl(v);
   return m ? { href: m, label: "Message on Messenger", text: v } : null;
 }
+// A post's private contact can hold several ways to reach the employer (contacts list);
+// older posts have just one (contactMethod + contactValue).
+function contactList(c) {
+  if (!c) return [];
+  const list = Array.isArray(c.contacts) && c.contacts.length ? c.contacts : [{ contactMethod: c.contactMethod, contactValue: c.contactValue }];
+  return list.filter((x) => x && x.contactMethod && x.contactValue);
+}
+const CONTACT_LABEL = { messenger: "Messenger", phone: "Phone", email: "Email" };
+const contactText = (c) => contactList(c).map((x) => `${CONTACT_LABEL[x.contactMethod] || x.contactMethod}: ${x.contactValue}`).join(" · ");
 
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.classList.add("show");
@@ -961,7 +970,7 @@ async function renderApplyPanel(j, isOwner) {
       ${!isOwner ? `<p class="muted">${apps.length} applicant${apps.length === 1 ? "" : "s"}${fresh ? ` · ${fresh} new` : ""}</p>${apps.length ? `<a class="btn btn-ghost btn-block" href="#/applicants/${encodeURIComponent(j.id)}">See who applied</a>` : ""}` : ""}
       ${isOwner ? `<p class="muted">${apps.length} applicant${apps.length === 1 ? "" : "s"}${fresh ? ` · ${fresh} new` : ""}</p>
       <a class="btn btn-primary btn-block" href="#/applicants/${encodeURIComponent(j.id)}">View applicants</a>${j.status !== "closed" ? `<a class="btn btn-ghost btn-block" href="#/post/edit/${encodeURIComponent(j.id)}">Edit post</a>` : ""}` : ""}
-      ${contact ? `<p class="small muted">Contact shown to the person you hire: ${esc(contact.contactMethod)} · ${esc(contact.contactValue)}</p>` : ""}`;
+      ${contact ? `<p class="small muted">Contact shown to the person you hire: ${esc(contactText(contact))}</p>` : ""}`;
     return;
   }
   if (!user) {
@@ -987,16 +996,16 @@ async function renderApplyPanel(j, isOwner) {
   const employed = apps.find((a) => a.status === "hired" && !a.employmentEnded && isFullTime(a.jobSchedule, a.jobArrangement));
   if (mine) {
     const rawContact = mine.status === "hired" ? await store.getContact(j.id).catch(() => null) : null;
-    const c = rawContact ? contactLink(rawContact) : null;
+    const links = contactList(rawContact).map(contactLink).filter(Boolean);
     panel.innerHTML = `
       <h2>${mine.status === "new" ? "Application sent" : mine.status === "offered" ? "You got a job offer!" : `You applied ${appBadge(mine.status)}`}</h2>
       ${mine.status === "offered" ? `<p>${esc(mine.employerName || "The employer")} wants to hire you. Accept to start, or decline if it's not right for you.</p><div class="actions offer-row">${offerHtml(mine)}</div>` : ""}
       <p class="muted">Sent ${ago(mine.createdAt)}. ${mine.status === "hired" ? "You're hired. Coordinate your start with the employer below." : "The employer can see your profile. Replies come through Messages here on Job Search PH."}</p>
       ${rawContact?.address ? `<p class="small"><strong>Work address</strong><br>${esc(rawContact.address)}${j.area ? `, ${esc(j.area)}` : ""}, ${esc(j.city)}</p>` : ""}
-      ${c ? `<p class="small"><strong>Employer contact</strong></p>
-        <a class="btn btn-primary btn-block" href="${esc(c.href)}" target="_blank" rel="noopener nofollow">${esc(c.label)}</a>
+      ${links.length ? `<p class="small"><strong>Employer contact</strong></p>
+        ${links.map((c, i) => `<a class="btn ${i ? "btn-ghost" : "btn-primary"} btn-block" href="${esc(c.href)}" target="_blank" rel="noopener nofollow">${esc(c.label)}</a>
         ${c.extra ? `<a class="btn btn-ghost btn-block" href="${esc(c.extra)}">Send a text</a>` : ""}
-        <p class="small muted copyable">${esc(c.text)}</p>` : ""}
+        <p class="small muted copyable">${esc(c.text)}</p>`).join("")}` : ""}
       <a class="btn ${mine.status === "offered" ? "btn-ghost" : "btn-primary"} btn-block" href="#/chat/${encodeURIComponent(mine.id)}">${chatState(mine).open ? "Message the employer" : "View chat"}</a>
       ${mine.status === "new" || mine.status === "shortlisted" ? `<p class="withdraw-line"><button type="button" class="linkbtn small muted" id="withdraw">Withdraw application</button></p>` : ""}`;
     panel.querySelector(".offer-row")?.addEventListener("click", (e) => { const b = e.target.closest("[data-offer]"); if (b) handleOffer(b, mine, () => renderApplyPanel(j, false)); });
@@ -1531,9 +1540,9 @@ async function viewPost(editId = null) {
         </section>
 
         <section class="pcard">
-          <header><span class="num">8</span><div><h2>Your contact for the person you hire</h2><p>Applicants talk to you through Messages here. This contact is only shown to the person who accepts your job offer.</p></div></header>
-          ${radioPills("contactMethod", [["messenger", "Messenger"], ["phone", "Phone / SMS"], ["email", "Email"]], profile.messenger ? "messenger" : "phone", "tight")}
-          <label class="fld"><span class="sr">Contact</span><input name="contactValue" required maxlength="200" value="${esc(profile.messenger || profile.phone || "")}"></label>
+          <header><span class="num">8</span><div><h2>Your contact for the person you hire</h2><p>Applicants talk to you through Messages here. These are only shown to the person who accepts your job offer. We filled them in from your profile; change or remove any.</p></div></header>
+          <div id="contact-rows" class="contact-rows"></div>
+          <button type="button" class="btn btn-ghost btn-sm" id="add-contact">+ Add another contact</button>
         </section>
 
         <section class="pcard agree-box">
@@ -1624,7 +1633,7 @@ async function viewPost(editId = null) {
       const tag = $("#wh-tag"); tag.className = `h-tag ${len <= 8 ? "ok" : len === 10 ? "warn" : "mid"}`;
       tag.textContent = len < 8 ? "Short day" : len === 8 ? "Recommended" : len === 9 ? "Long day" : "Discouraged: 10 hrs is the max"; }
     const n = f.description.value.trim().length; counter.textContent = n < 30 ? `${n}/30 characters minimum` : `${n} characters`;
-    f.contactValue.placeholder = ph[val("contactMethod")] || "";
+    f.querySelectorAll(".crow").forEach((r) => { r.querySelector("[name=cValue]").placeholder = ph[r.querySelector("[name=cMethod]").value] || ""; });
     const box = $("#wage-box"); const min = currentMin(); const pay = Number(f.salaryMin.value) || 0; const per = val("salaryPeriod") || "month";
     // Only speak up when something is wrong: pay below the legal minimum, or pay that looks like a typo.
     const low = min && pay && pay < min.amount;
@@ -1650,8 +1659,9 @@ async function viewPost(editId = null) {
         autoTitle = arr ? `${arr} ${base}` : base; f.title.value = autoTitle; f.title.classList.remove("invalid");
       }
     }
-    if (e.target.name === "contactMethod") {
-      const m = e.target.value; f.contactValue.value = m === "phone" ? profile.phone : m === "messenger" ? (profile.messenger || "") : (user.email || "");
+    if (e.target.name === "cMethod") {
+      const m = e.target.value, inp = e.target.closest(".crow").querySelector("[name=cValue]");
+      inp.value = m === "phone" ? profile.phone || "" : m === "messenger" ? (profile.messenger || "") : (user.email || "");
     }
     refresh();
   });
@@ -1675,6 +1685,13 @@ async function viewPost(editId = null) {
     return list.filter((b) => !t || b.toLowerCase().startsWith(t) || b.toLowerCase().split(/[\s.-]+/).some((w) => w.startsWith(t)))
       .map((b) => ({ value: b, html: hl(b, t), meta: "Barangay" }));
   }, () => refresh(), true);
+  // Contact rows: default to the employer's Messenger, phone and email from their profile.
+  const contactRow = (m = "phone", v = "") => `<div class="crow"><select name="cMethod" aria-label="Contact type">${[["messenger", "Messenger"], ["phone", "Phone / SMS"], ["email", "Email"]].map(([k, l]) => `<option value="${k}" ${k === m ? "selected" : ""}>${l}</option>`).join("")}</select>
+    <input name="cValue" maxlength="200" value="${esc(v)}" aria-label="Contact"><button type="button" class="crow-x" aria-label="Remove this contact">×</button></div>`;
+  const setContacts = (list) => { $("#contact-rows").innerHTML = list.map((c) => contactRow(c.contactMethod, c.contactValue)).join(""); };
+  setContacts([profile.messenger && { contactMethod: "messenger", contactValue: profile.messenger }, profile.phone && { contactMethod: "phone", contactValue: profile.phone }, user.email && { contactMethod: "email", contactValue: user.email }].filter(Boolean));
+  $("#add-contact").addEventListener("click", () => { if (f.querySelectorAll(".crow").length >= 4) return toast("Up to 4 contacts"); $("#contact-rows").insertAdjacentHTML("beforeend", contactRow("phone", "")); refresh(); $("#contact-rows .crow:last-child input").focus(); });
+  $("#contact-rows").addEventListener("click", (e) => { const x = e.target.closest(".crow-x"); if (!x) return; x.closest(".crow").remove(); refresh(); });
   renderOptions();
   // Edit mode: fill the form from the saved post.
   if (editJob) {
@@ -1685,10 +1702,9 @@ async function viewPost(editId = null) {
     setRadio("workplace", j.workplace || "household"); renderOptions();
     setRadio("category", j.category); renderOptions();
     setRadio("arrangement", j.arrangement); setRadio("schedule", j.schedule); setRadio("salaryPeriod", j.salaryPeriod || "month");
-    setRadio("reqExperience", j.reqExperience || 0); setRadio("reqEducation", j.reqEducation || "Any"); setRadio("contactMethod", c.contactMethod);
+    setRadio("reqExperience", j.reqExperience || 0); setRadio("reqEducation", j.reqEducation || "Any"); if (contactList(c).length) setContacts(contactList(c));
     ["title", "categoryOther", "employerName", "city", "area", "salaryMin", "salaryMax", "startDate", "requirements", "description", "daysOff", "openings"].forEach((k) => setVal(k, j[k]));
     setVal("address", j.addressHidden ? c.address : j.address); if (f.hideAddress) f.hideAddress.checked = !!j.addressHidden;
-    setVal("contactValue", c.contactValue);
     f.querySelectorAll("[name=benefits]").forEach((cb) => { cb.checked = (j.benefits || []).includes(cb.value); });
     f.querySelectorAll("[name=reqList]").forEach((cb) => { cb.checked = (j.reqList || []).includes(cb.value); });
     const hm = String(j.hours || "").match(/^(\d+) hours a day, (\d+):\d+\s*(AM|PM)/i);
@@ -1716,7 +1732,6 @@ async function viewPost(editId = null) {
         title: "Add a job title (at least 3 characters).", category: "Choose a category.", arrangement: "Choose live-in or stay-out.",
         city: "Choose the city or municipality.", salaryMin: "Enter the pay. It must meet the legal minimum.",
         description: "Write a description of at least 30 characters: duties, schedule, household size.",
-        contactValue: "Add how applicants can contact you.",
         agreeWage: "Confirm that you'll pay at least the legal minimum.", agreeFee: "Confirm that you won't charge applicants any fee.",
         agreeAge: "Confirm that you'll only hire workers aged 18 or older.", agreeTerms: "Confirm that you'll follow labor law and the Terms.",
       };
@@ -1734,10 +1749,15 @@ async function viewPost(editId = null) {
     const min = currentMin();
     if (min && data.salaryMin < min.amount) return fail(`The pay is below the legal minimum of ₱${min.amount.toLocaleString("en-PH")} per ${data.salaryPeriod}. Please raise it.`, f.salaryMin);
     if (!(data.daysOff >= 2)) return fail("The minimum is 2 days off per month.", f.daysOff);
-    const contact = { contactMethod: val("contactMethod"), contactValue: f.contactValue.value.trim() };
+    const rows = [...f.querySelectorAll(".crow")].map((r) => ({ el: r.querySelector("[name=cValue]"), contactMethod: r.querySelector("[name=cMethod]").value, contactValue: r.querySelector("[name=cValue]").value.trim() })).filter((c) => c.contactValue);
+    if (!rows.length) return fail("Add at least one way for the person you hire to reach you.", $("#add-contact"));
+    for (const r of rows) {
+      if (!contactLink(r)) return fail("That contact doesn't look right. Check the username, number or email.", r.el);
+      if (r.contactMethod === "phone" && digits(r.contactValue).length < 10) return fail("Please enter a complete phone number.", r.el);
+    }
+    const contacts = rows.slice(0, 4).map(({ contactMethod, contactValue }) => ({ contactMethod, contactValue }));
+    const contact = { ...contacts[0], contacts };
     if (workplace() === "business" && f.hideAddress.checked && data.address) { contact.address = data.address; data.address = ""; data.addressHidden = true; }
-    if (!contactLink(contact)) return fail("That contact doesn't look right. Check the username, number or email.", f.contactValue);
-    if (contact.contactMethod === "phone" && digits(contact.contactValue).length < 10) return fail("Please enter a complete phone number.", f.contactValue);
     const pw = payWarning(data);
     if (pw) {
       const sure = await showDialog({ title: "Is the pay correct?", body: `${esc(pw.msg)} Applicants will see exactly what you enter, so a typo can attract the wrong people or look like a scam.`, actions: [{ label: "Let me fix it", value: false, primary: true }, { label: "Yes, it's correct", value: true }] });
@@ -2658,7 +2678,7 @@ async function viewAdmin() {
           ${row("Permit / DTI", esc(o.bizReg || ""))}
           ${row("Lives in", esc(o.city || ""))}
           ${row("Posts", `${posts.length} total · ${posts.filter(isLive).length} live · ${posts.filter((x) => x.status === "rejected").length} rejected`)}
-          ${adminTab === "pending" ? row("Applicant contact", c ? `${esc(c.contactMethod)} — ${esc(c.contactValue)}` : "") + (c?.address ? row("Private address", esc(c.address)) : "") : ""}
+          ${adminTab === "pending" ? row("Applicant contact", c ? esc(contactText(c)) : "") + (c?.address ? row("Private address", esc(c.address)) : "") : ""}
         </dl>` : ""}
         ${flags.length ? `<ul class="ec-flags">${flags.map(([lv, t]) => `<li class="${lv}">${t}</li>`).join("")}</ul>` : ""}
         ${j.infoNote ? `<p class="ec-asked small"><strong>You asked ${j.infoAt ? ago(j.infoAt) : ""}:</strong> ${esc(j.infoNote)}</p>` : ""}
@@ -2684,7 +2704,7 @@ async function viewAdmin() {
     body.querySelectorAll("details[data-contact]").forEach((d) => d.addEventListener("toggle", async () => {
       if (!d.open || d.dataset.loaded || !d.querySelector(".contact-line")) return; d.dataset.loaded = 1;
       const c = await store.getContact(d.dataset.contact);
-      d.querySelector(".contact-line span").textContent = c ? `${c.contactMethod} — ${c.contactValue}${c.address ? ` · Private address: ${c.address}` : ""}` : "not set";
+      d.querySelector(".contact-line span").textContent = c ? `${contactText(c)}${c.address ? ` · Private address: ${c.address}` : ""}` : "not set";
     }));
   }
 

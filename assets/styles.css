@@ -1041,3 +1041,11 @@ input[type="date"]::-webkit-date-and-time-value { text-align: left; }
 .au-more > summary { cursor: pointer; font-size: .85rem; color: var(--slate); list-style: none; }
 .au-more > summary::before { content: "▸ "; } .au-more[open] > summary::before { content: "▾ "; }
 .au-more[open] > summary { margin-bottom: 8px; }
+
+/* Post form: several contacts */
+.contact-rows { display: grid; gap: 8px; margin-bottom: 10px; }
+.crow { display: grid; grid-template-columns: minmax(110px, 150px) 1fr 40px; gap: 8px; align-items: center; }
+.crow select, .crow input { width: 100%; }
+.crow-x { height: 40px; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--card); color: var(--slate); font-size: 1.2rem; cursor: pointer; }
+.crow-x:hover { color: var(--red); border-color: var(--bad-line); }
+@media (max-width: 420px) { .crow { grid-template-columns: 1fr 40px; } .crow select { grid-column: 1 / -1; } }
