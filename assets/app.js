@@ -1,5 +1,6 @@
 import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS } from "./store.js?v=1793187527";
 import { IS_STAGING } from "./firebase-config.js?v=1793187527";
+import { fitScore, rankApplicants } from "./match.js?v=1793187527";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -953,10 +954,11 @@ async function renderApplyPanel(j, isOwner) {
   const { user, profile, isAdmin } = getAuthState();
 
   if (isOwner || isAdmin) {
-    const [apps, contact] = await Promise.all([isOwner ? store.applicationsForJob(j.id).catch(() => []) : [], store.getContact(j.id)]);
+    const [apps, contact] = await Promise.all([(isOwner ? store.applicationsForJob(j.id) : store.applicationsForJobAdmin(j.id)).catch(() => []), store.getContact(j.id)]);
     const fresh = apps.filter((a) => a.status === "new").length;
     panel.innerHTML = `
       <h2>${isOwner ? "Your post" : "Admin view"}</h2>
+      ${!isOwner ? `<p class="muted">${apps.length} applicant${apps.length === 1 ? "" : "s"}${fresh ? ` · ${fresh} new` : ""}</p>${apps.length ? `<a class="btn btn-ghost btn-block" href="#/applicants/${encodeURIComponent(j.id)}">See who applied</a>` : ""}` : ""}
       ${isOwner ? `<p class="muted">${apps.length} applicant${apps.length === 1 ? "" : "s"}${fresh ? ` · ${fresh} new` : ""}</p>
       <a class="btn btn-primary btn-block" href="#/applicants/${encodeURIComponent(j.id)}">View applicants</a>${j.status !== "closed" ? `<a class="btn btn-ghost btn-block" href="#/post/edit/${encodeURIComponent(j.id)}">Edit post</a>` : ""}` : ""}
       ${contact ? `<p class="small muted">Contact shown to the person you hire: ${esc(contact.contactMethod)} · ${esc(contact.contactValue)}</p>` : ""}`;
@@ -1792,7 +1794,19 @@ async function viewMy() {
   draw().catch((e) => { console.error(e); $("#mine").innerHTML = `<p class="error">Could not load your posts (${esc(e.code || e.message)}).</p>`; });
 }
 
-function applicantCard(a) {
+// Fit score box on an applicant card: score, label, and the reasons behind it.
+function fitHtml(fit, top) {
+  if (!fit) return "";
+  const cls = fit.score >= 80 ? "great" : fit.score >= 60 ? "good" : fit.score >= 40 ? "ok" : "weak";
+  return `<div class="fit fit-${cls}">
+    <div class="fit-top"><span class="fit-score">${fit.score}<small>/100</small></span><strong>${fit.label}</strong>${top ? `<span class="fit-best">Best fit so far</span>` : ""}
+      <span class="fit-bar" aria-hidden="true"><i style="width:${fit.score}%"></i></span></div>
+    ${fit.good.length ? `<ul class="fit-good">${fit.good.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>` : ""}
+    ${fit.gaps.length ? `<ul class="fit-gaps">${fit.gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>` : ""}
+  </div>`;
+}
+
+function applicantCard(a, { top = false, readOnly = false } = {}) {
   const x = a.applicant || {};
   const m = messengerUrl(x.messenger);
   const st = chatState(a);
@@ -1812,13 +1826,14 @@ function applicantCard(a) {
   const cats = wantList(x);
   const dash = `<span class="none">Not added</span>`;
   return `
-  <article class="applicant ap2 ${a.status === "new" ? "is-new" : ""} ${DECLINED.includes(a.status) ? "declined" : ""}">
+  <article class="applicant ap2 ${a.status === "new" ? "is-new" : ""} ${DECLINED.includes(a.status) ? "declined" : ""} ${top ? "is-top" : ""}">
     <header class="ap-head">
       ${avatar(x.fullName, x.photo, "md")}
       <div class="ap-name"><h3>${esc(x.fullName)}${x.age ? `, ${esc(x.age)}` : ""}</h3>
         <p class="muted small">${[x.gender && esc(x.gender), esc(x.city || ""), `applied ${ago(a.createdAt)}`].filter(Boolean).join(" · ")}</p></div>
       <div class="ap-badges">${founderBadge(a.applicantUid, "jobseeker")}${strengthChip(x)}${appBadge(a.status, true)}</div>
     </header>
+    ${fitHtml(a.fit, top)}
     ${a.message ? `<div class="ap-msg"><span class="label">Their message</span><p>${nl2br(a.message)}</p></div>` : ""}
     <dl class="ap-facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v || dash}</dd></div>`).join("")}</dl>
     <div class="ap-long">
@@ -1826,8 +1841,8 @@ function applicantCard(a) {
       <div><span class="label">Skills</span><p>${x.skills ? esc(x.skills) : dash}</p></div>
       <div><span class="label">Work history</span><p>${x.workHistory ? nl2br(x.workHistory) : dash}</p></div>
     </div>
-    ${a.status === "hired" ? `<div class="actions emp-row">${employmentHtml(a)}</div>` : ""}
-    <footer class="ap-foot">
+    ${a.status === "hired" && !readOnly ? `<div class="actions emp-row">${employmentHtml(a)}</div>` : ""}
+    ${readOnly ? "" : `<footer class="ap-foot">
       <div class="ap-contact">
         <a class="btn ${st.open ? "btn-primary" : "btn-ghost"} btn-sm" href="#/chat/${encodeURIComponent(a.id)}">${st.open ? `Message${isUnread(inbox.find((i) => i.id === a.id) || a) ? " · new" : ""}` : "View chat"}</a>
         ${CAN_SMS && x.phone ? `<a class="btn btn-ghost btn-sm" href="tel:${esc(digits(x.phone))}">Call</a><a class="btn btn-ghost btn-sm" href="sms:${esc(digits(x.phone))}">Text</a>` : ""}
@@ -1839,7 +1854,7 @@ function applicantCard(a) {
         ${["new", "shortlisted"].includes(a.status) ? `<button class="btn btn-ghost btn-sm" data-st="not_selected" data-id="${esc(a.id)}">Not a fit</button>` : ""}
         ${["new", "shortlisted", "not_selected"].includes(a.status) ? `<button class="btn btn-primary btn-sm" data-st="offered" data-id="${esc(a.id)}">Offer the job</button>` : ""}
       </div>
-    </footer>
+    </footer>`}
   </article>`;
 }
 
@@ -1849,10 +1864,15 @@ async function viewApplicants(jobId) {
   if (!user) return goSignIn("Sign in to see applicants");
   app.innerHTML = SK.page();
   const job = await store.getJob(jobId);
-  if (!job || job.ownerUid !== user.uid) { app.innerHTML = `<div class="empty"><h1>Not found</h1><p class="muted">This post isn't yours or no longer exists.</p></div>`; return; }
+  const adminView = !!job && job.ownerUid !== user.uid && getAuthState().isAdmin; // admins can look, not act
+  if (!job || (job.ownerUid !== user.uid && !adminView)) { app.innerHTML = `<div class="empty"><h1>Not found</h1><p class="muted">This post isn't yours or no longer exists.</p></div>`; return; }
   let tab = "all";
+  let sort = (() => { try { return localStorage.getItem("jsph-ap-sort") || "fit"; } catch { return "fit"; } })();
   const draw = async () => {
-    const apps = (await store.applicationsForJob(jobId)).sort((a, b) => b.createdAt - a.createdAt);
+    const raw = await (adminView ? store.applicationsForJobAdmin(jobId) : store.applicationsForJob(jobId));
+    const ranked = rankApplicants(job, raw);
+    const bestId = ranked.find((a) => !DECLINED.includes(a.status))?.id;
+    const apps = sort === "fit" ? ranked : [...ranked].sort((a, b) => b.createdAt - a.createdAt);
     const group = (s) => (s === "offer_declined" ? "not_selected" : s);
     const counts = { all: apps.length, new: 0, shortlisted: 0, offered: 0, hired: 0, not_selected: 0 };
     apps.forEach((a) => counts[group(a.status)]++);
@@ -1860,13 +1880,17 @@ async function viewApplicants(jobId) {
     const openings = Number(job.openings) || 1;
     const filled = job.status === "approved" && counts.hired >= openings;
     app.innerHTML = `
-      <p><a href="#/my" class="back">← My posts</a></p>
+      <p><a href="${adminView ? `#/job/${encodeURIComponent(job.id)}` : "#/my"}" class="back">← ${adminView ? "Back to the post" : "My posts"}</a></p>
       <div class="page-head"><div><h1>Applicants</h1><p class="muted">${esc(job.title)} · ${esc(job.city)} ${statusBadge(job)}</p></div></div>
-      ${filled ? `<div class="notice filled"><div><strong>All ${openings} opening${openings === 1 ? " is" : "s are"} filled.</strong> Close the post so it leaves search and the other applicants know.</div><button class="btn btn-primary btn-sm" id="close-filled">Close the post</button></div>` : ""}
+      ${adminView ? `<p class="notice small">Admin view: you can see who applied, but only the employer can shortlist, offer or message.</p>` : ""}
+      ${filled && !adminView ? `<div class="notice filled"><div><strong>All ${openings} opening${openings === 1 ? " is" : "s are"} filled.</strong> Close the post so it leaves search and the other applicants know.</div><button class="btn btn-primary btn-sm" id="close-filled">Close the post</button></div>` : ""}
       <div class="tabs" role="tablist">${[["all", "All"], ["new", "New"], ["shortlisted", "Shortlisted"], ["offered", "Offered"], ["hired", "Hired"], ["not_selected", "Not a fit"]]
         .map(([k, v]) => `<button class="tab ${tab === k ? "active" : ""}" data-tab="${k}">${v} <span class="count">${counts[k]}</span></button>`).join("")}</div>
-      <div class="applicants">${shown.length ? shown.map(applicantCard).join("") : `<div class="empty"><p>${apps.length ? "No applicants in this group." : "No applicants yet. Share your post to get more."}</p></div>`}</div>`;
+      ${apps.length > 1 ? `<div class="ap-sort"><span class="small muted">Sort:</span><div class="pills tight" role="radiogroup">${[["fit", "Best fit first"], ["new", "Newest first"]].map(([v, l]) => `<label class="pill"><input type="radio" name="ap-sort" value="${v}" ${sort === v ? "checked" : ""}><span>${l}</span></label>`).join("")}</div>
+        <span class="small muted fit-note">Fit score compares their profile with your post. It's a guide; you decide.</span></div>` : ""}
+      <div class="applicants">${shown.length ? shown.map((a) => applicantCard(a, { top: a.id === bestId && apps.length > 1 && a.fit.score >= 40, readOnly: adminView })).join("") : `<div class="empty"><p>${apps.length ? "No applicants in this group." : "No applicants yet. Share your post to get more."}</p></div>`}</div>`;
     app.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { tab = b.dataset.tab; draw(); }));
+    app.querySelectorAll("[name=ap-sort]").forEach((r) => r.addEventListener("change", () => { sort = r.value; try { localStorage.setItem("jsph-ap-sort", sort); } catch {} draw(); }));
     app.querySelectorAll("[data-emp]").forEach((b) => b.addEventListener("click", () => {
       const a = apps.find((x) => x.id === b.dataset.id); if (a) handleEmployment(b, a, draw);
     }));
@@ -2295,21 +2319,21 @@ async function viewAdminUser(id) {
           <div><span class="label">Jobs they want</span>${wantList(u).length ? `<ul class="meta">${wantList(u).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : `<p><span class="none">Not added</span></p>`}</div>
           <div><span class="label">Skills</span><p>${u.skills ? esc(u.skills) : `<span class="none">Not added</span>`}</p></div>
           <div><span class="label">Work history</span><p>${u.workHistory ? nl2br(u.workHistory) : `<span class="none">Not added</span>`}</p></div></div>` : ""}
-        ${!isSeeker ? `<h2>Job posts (${d.posts.length})</h2>${d.posts.length ? `<ul class="au-list">${d.posts.sort((a, b) => b.createdAt - a.createdAt).map((j) => `<li><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.city)} · ${salaryText(j)} · ${ago(j.createdAt)} · ${d.received.filter((a) => a.jobId === j.id).length} applicants</span>${statusBadge(j)}</li>`).join("")}</ul>` : `<p class="muted">No posts.</p>`}` : ""}
+        ${!isSeeker ? `<h2>Job posts (${d.posts.length})</h2>${d.posts.length ? `<ul class="au-list">${d.posts.sort((a, b) => b.createdAt - a.createdAt).map((j) => `<li><a href="#/job/${encodeURIComponent(j.id)}">${esc(j.title)}</a><span class="muted small">${esc(j.city)} · ${salaryText(j)} · ${ago(j.createdAt)} · ${(() => { const n = d.received.filter((a) => a.jobId === j.id).length; return n ? `<a href="#/applicants/${encodeURIComponent(j.id)}">${n} applicant${n === 1 ? "" : "s"}</a>` : "0 applicants"; })()}</span>${statusBadge(j)}</li>`).join("")}</ul>` : `<p class="muted">No posts.</p>`}` : ""}
         ${isSeeker ? `<h2>Applications (${d.applied.length})</h2>${d.applied.length ? `<ul class="au-list">${d.applied.sort((a, b) => b.createdAt - a.createdAt).map((a) => appRow(a, esc(a.employerName || ""))).join("")}</ul>` : `<p class="muted">No applications.</p>`}` : ""}
       </section>
       <aside class="au-side">
-        <div class="an-card au-ban">
+        ${!isSeeker ? `<div class="an-card au-verify">${VERIFIED[id] ? `<h3>${SHIELD} Verified employer</h3><p class="small muted">${esc(VERIFIED[id].method)}${VERIFIED[id].at ? ` · ${ago(VERIFIED[id].at)}` : ""}</p><button class="btn btn-ghost btn-block" id="au-unverify">Remove Verified badge</button>`
+          : `<h3>Verify this employer</h3><p class="small muted">Call their number or check their Facebook first. Verified employers get a badge on every post.</p><button class="btn btn-ghost btn-block" id="au-verify">Verify employer</button>`}</div>` : ""}
+        <div class="an-card au-ban ${ban ? "" : "quiet"}">
           ${ban ? `<h3>Banned</h3><p class="small"><strong>Reason:</strong> ${esc(ban.reason)}</p>${ban.note ? `<p class="small muted">${esc(ban.note)}</p>` : ""}<p class="small muted">Since ${ban.bannedAt ? ago(ban.bannedAt) : "–"}</p>
             <button class="btn btn-ghost btn-block" id="au-unban">Lift ban</button>`
-          : `<h3>Ban this user</h3><p class="small muted">They'll still be able to sign in, but can't post, apply, message, report or edit their profile. They'll see a "suspended" screen with a link to support.</p>
+          : `<details class="au-more"><summary>More actions</summary><h3>Ban this user</h3><p class="small muted">They'll still be able to sign in, but can't post, apply, message, report or edit their profile. They'll see a "suspended" screen with a link to support.</p>
             <label class="small">Reason<select id="au-reason">${BAN_REASONS.map((r) => `<option>${esc(r)}</option>`).join("")}</select></label>
             <label class="small">Note (optional, shown only to admins)<textarea id="au-note" rows="2" maxlength="500" placeholder="What happened?"></textarea></label>
             ${!isSeeker && live.length ? `<label class="check small"><input type="checkbox" id="au-close" checked><span>Also close their ${live.length} live post${live.length === 1 ? "" : "s"}</span></label>` : ""}
-            <button class="btn btn-danger btn-block" id="au-ban">Ban user</button>`}
+            <button class="btn btn-danger btn-block" id="au-ban">Ban user</button></details>`}
         </div>
-        ${!isSeeker ? `<div class="an-card au-verify">${VERIFIED[id] ? `<h3>${SHIELD} Verified employer</h3><p class="small muted">${esc(VERIFIED[id].method)}${VERIFIED[id].at ? ` · ${ago(VERIFIED[id].at)}` : ""}</p><button class="btn btn-ghost btn-block" id="au-unverify">Remove Verified badge</button>`
-          : `<h3>Verify this employer</h3><p class="small muted">Call their number or check their Facebook first. Verified employers get a badge on every post.</p><button class="btn btn-ghost btn-block" id="au-verify">Verify employer</button>`}</div>` : ""}
         ${user.uid === id ? `<p class="small muted">This is your own account.</p>` : ""}
       </aside>
     </div>`;

@@ -279,7 +279,7 @@ export const store = {
     const applicant = {
       fullName: p.fullName, phone: p.phone, city: p.city, messenger: p.messenger || "",
       email: auth.currentUser.email || "", age: ageFrom(p.birthDate), gender: p.gender || "",
-      jobCategories: p.jobCategories || [], jobCategoryOther: p.jobCategoryOther || "", experienceYears: p.experienceYears ?? null,
+      jobCategories: p.jobCategories || [], jobCategoryOther: p.jobCategoryOther || "", jobTypes: p.jobTypes || [], experienceYears: p.experienceYears ?? null,
       skills: p.skills || "", workHistory: p.workHistory || "", education: p.education || "",
       availability: p.availability || "", resumeUrl: p.resumeUrl || "",
       resumeFileUrl: p.resumeFileUrl || "", resumeFileName: p.resumeFileName || "", photo: p.photo || "",
@@ -297,6 +297,8 @@ export const store = {
   },
   async myApplications() { return appsQ(F.where("applicantUid", "==", uid())); },
   async applicationsForJob(jobId) { return appsQ(F.where("jobId", "==", jobId), F.where("employerUid", "==", uid())); },
+  // Admin: everyone who applied to any post (read-only view).
+  async applicationsForJobAdmin(jobId) { return appsQ(F.where("jobId", "==", jobId)); },
   async applicationsForEmployer() { return appsQ(F.where("employerUid", "==", uid())); },
   async setApplicationStatus(a, status, { silent = false, note } = {}) {
     await F.updateDoc(F.doc(db, "applications", a.id), { status, updatedAt: F.serverTimestamp(), declinedAt: status === "not_selected" ? F.serverTimestamp() : null });
