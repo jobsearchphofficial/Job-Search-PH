@@ -8,7 +8,7 @@ A free job listing board for household, service and local jobs in Negros Occiden
 
 Job Search PH only publishes listings. It does not recruit, screen, match or place workers.
 
-Plain HTML/CSS/JS on GitHub Pages, with Firebase Auth (Google and email/password) and Firestore on the free plan. No build step for the app.
+Plain HTML/CSS/JS on GitHub Pages, with Firebase Auth (Google, Facebook and email/password) and Firestore on the free plan. No build step for the app.
 
 ## Run it locally
 
@@ -54,6 +54,12 @@ Add `?src=<name>` to any link, e.g. `https://jobsearchph.com/?src=fb-bacolod-gro
 | `assets/styles.css` | Styles (light and dark) |
 | `firestore.rules` | Database security rules |
 | `scripts/build-job-pages.mjs` | Static job pages for search engines |
+
+## Facebook login
+
+Needs a Meta app (developers.facebook.com → My Apps → Create app → "Authenticate and request data from users with Facebook Login"). In Firebase → Authentication → Sign-in method → Facebook, paste the Meta **App ID** and **App secret**, then copy the **OAuth redirect URI** Firebase shows into Meta → Facebook Login → Settings → Valid OAuth Redirect URIs. Do this for both Firebase projects (live and test). Meta also needs the Privacy Policy URL and a data-deletion URL before the app can go Live; until then only people listed as app testers can use it.
+
+Inside the Facebook/Messenger app, "Continue with Facebook" uses a full-page redirect instead of a popup. People who already have an account with the same email sign in their usual way first, then connect Facebook in My profile.
 
 ## Checking employers
 

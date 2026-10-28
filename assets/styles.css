@@ -1012,3 +1012,7 @@ input[type="date"]::-webkit-date-and-time-value { text-align: left; }
 /* Pick dialog */
 .dlg-pick .pills { margin: 4px 0 10px; }
 .pk-other { display: grid; gap: 4px; }
+
+/* Profile: connect Facebook */
+.fb-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.fb-link span { display: inline-flex; align-items: center; gap: 8px; }
