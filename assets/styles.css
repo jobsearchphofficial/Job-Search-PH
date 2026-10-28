@@ -1065,3 +1065,22 @@ input[type="date"]::-webkit-date-and-time-value { text-align: left; }
 .lightbox { position: fixed; inset: 0; z-index: 200; background: rgba(10, 14, 30, .88); display: flex; align-items: center; justify-content: center; padding: 16px; cursor: zoom-out; }
 .lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
 .lightbox button { position: absolute; top: 12px; right: 16px; width: 40px; height: 40px; border-radius: 50%; border: 0; background: rgba(255,255,255,.15); color: #fff; font-size: 1.5rem; cursor: pointer; }
+
+/* Get Verified (employer profile) */
+.verify-card { border: 1px solid var(--soft-line); background: var(--indigo-soft); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 18px; display: grid; gap: 10px; }
+.verify-card svg { width: 22px; height: 22px; color: var(--green); flex: none; }
+.vc-head, .vc-done { display: flex; gap: 10px; align-items: flex-start; }
+.vc-head p { margin: 2px 0 0; }
+.vc-form { display: grid; gap: 12px; margin-top: 4px; }
+.vc-pics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.vc-pick { display: grid; gap: 6px; }
+.vc-pick img { width: 100%; max-height: 180px; object-fit: cover; border-radius: var(--radius-sm); border: 1px solid var(--line); }
+@media (max-width: 520px) { .vc-pics { grid-template-columns: 1fr; } }
+/* Admin: ID checks */
+.vr-item { border: 1px solid var(--line); background: var(--card); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 14px; display: grid; gap: 10px; }
+.vr-item header { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.vr-item header a { margin-left: auto; }
+.vr-pics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.vr-pics figure { margin: 0; }
+.vr-pics img { width: 100%; max-height: 300px; object-fit: contain; background: var(--bg); border-radius: var(--radius-sm); cursor: zoom-in; }
+.vr-pics figcaption { font-size: .78rem; color: var(--slate); margin-top: 4px; }

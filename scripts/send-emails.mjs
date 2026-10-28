@@ -132,6 +132,29 @@ async function postUpdates(since) {
   return pendingForAdmin;
 }
 
+/* ---------- Get Verified: decisions for the employer; new requests for the admin ---------- */
+async function verifyUpdates(since) {
+  const reqs = await query("verifyRequests", [["updatedAt", "GREATER_THAN", new Date(since)]]).catch(() => []);
+  const pending = [];
+  for (const r of reqs) {
+    if (r.status === "pending") { pending.push(r); continue; }
+    if (!["approved", "rejected"].includes(r.status)) continue;
+    const key = `verify_${r.id}_${r.status}_${r.decidedAt || r.updatedAt}`;
+    if (await seen(key)) continue;
+    const emp = await getUser(r.id);
+    if (!emp?.email) { await mark(key, "skipped"); continue; }
+    const ok = r.status === "approved";
+    const body = ok
+      ? `<p style="margin:0 0 12px 0;font-size:15px;line-height:22px;color:#444444;">Hi ${esc(first(emp.fullName))}, we checked your ID and you're now a <strong>Verified employer</strong>. The green Verified badge shows on all your job posts, so jobseekers know you're real.</p>
+         <p style="margin:0;font-size:13px;color:#666666;">As promised, we deleted your ID photo and selfie. We only keep that you were verified and the type of ID.</p>${button(link("#/my", "email-verify"), "See my posts")}`
+      : `<p style="margin:0 0 12px 0;font-size:15px;line-height:22px;color:#444444;">Hi ${esc(first(emp.fullName))}, we couldn't verify your ID this time${r.reason ? `: <strong>${esc(r.reason)}</strong>` : "."}</p>
+         <p style="margin:0;font-size:13px;color:#666666;">We deleted the photos you sent. You can send new ones from your profile, and your posts can still go live after our usual review.</p>${button(link("#/profile", "email-verify"), "Try again")}`;
+    await deliver(key, emp.email, { subject: ok ? "You're a Verified employer on Job Search PH" : "We couldn't verify your ID yet", html: layout({ title: ok ? "You're verified" : "We couldn't verify your ID yet", preheader: ok ? "The Verified badge is on your posts now." : "You can send new photos.", body, safety: false }), text: `${ok ? "You're verified." : "We couldn't verify your ID yet."} ${link(ok ? "#/my" : "#/profile", "email-verify")}` });
+    if (capped) break;
+  }
+  return pending;
+}
+
 /* ---------- Chat safety: flag messages that look like a scam (for the admin's Chat flags tab) ---------- */
 async function scanChats(since) {
   const found = [];
@@ -157,7 +180,7 @@ async function scanChats(since) {
 }
 
 /* ---------- 3. Admin summary ---------- */
-async function adminSummary(since, pendingJobs, flagged = []) {
+async function adminSummary(since, pendingJobs, flagged = [], verifyReqs = []) {
   const [support, reports] = await Promise.all([
     query("support", [["createdAt", "GREATER_THAN", new Date(since)]]).catch(() => []),
     query("reports", [["createdAt", "GREATER_THAN", new Date(since)]]).catch(() => []),
@@ -166,12 +189,13 @@ async function adminSummary(since, pendingJobs, flagged = []) {
     ...pendingJobs.filter((j) => (j.editedAt || j.createdAt) > since).map((j) => ({ key: `admin_job_${j.id}_${j.editedAt || j.createdAt}`, kind: j.editedAt ? "Edited post to re-check" : "New post to review", text: `${j.title} · ${j.employerName} · ${j.city}`, href: link("#/admin/pending", "email-admin") })),
     ...support.map((s) => ({ key: `admin_support_${s.id}`, kind: `Support: ${s.topic || "message"}`, text: `${s.name || ""}: ${String(s.message || "").slice(0, 140)}`, href: link("#/admin/support", "email-admin") })),
     ...reports.map((r) => ({ key: `admin_report_${r.id}`, kind: `Report: ${r.reason}`, text: `Job ${r.jobId}${r.details ? ` · ${String(r.details).slice(0, 120)}` : ""}`, href: link(`#/job/${r.jobId}`, "email-admin") })),
+    ...verifyReqs.map((r) => ({ key: `admin_verify_${r.id}_${r.createdAt}`, kind: "ID check to review", text: `${r.idType || "ID"} · sent ${new Date(r.createdAt).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`, href: link("#/admin/verify", "email-admin") })),
     ...flagged.map((f) => ({ key: `admin_flag_${f.id}`, kind: `Chat flag: ${f.types.join(", ")}`, text: `${f.fromName} (${f.fromRole}) · ${f.jobTitle}: “${f.text.slice(0, 120)}”`, href: link("#/admin/flags", "email-admin") })),
   ];
   const todo = [];
   for (const it of items) if (!(await seen(it.key))) todo.push(it);
   if (!todo.length) return;
-  const NOUN = { "New post to review": ["new post to review", "new posts to review"], "Edited post to re-check": ["edited post to re-check", "edited posts to re-check"], Support: ["support message", "support messages"], Report: ["report", "reports"], "Chat flag": ["flagged chat message", "flagged chat messages"] };
+  const NOUN = { "New post to review": ["new post to review", "new posts to review"], "Edited post to re-check": ["edited post to re-check", "edited posts to re-check"], Support: ["support message", "support messages"], Report: ["report", "reports"], "Chat flag": ["flagged chat message", "flagged chat messages"], "ID check to review": ["ID check to review", "ID checks to review"] };
   const counts = {};
   todo.forEach((t) => { const k = t.kind.split(":")[0]; counts[k] = (counts[k] || 0) + 1; });
   const summary = Object.entries(counts).map(([k, n]) => `${n} ${(NOUN[k] || [k.toLowerCase(), `${k.toLowerCase()}s`])[n === 1 ? 0 : 1]}`).join(", ");
@@ -230,7 +254,8 @@ async function main() {
     await newApplicants(since);
     const pending = capped ? [] : await postUpdates(since);
     const flagged = await scanChats(since).catch((e) => { console.error(`Chat scan failed: ${e.message}`); return []; });
-    if (!capped) await adminSummary(since, pending, flagged);
+    const verifyReqs = capped ? [] : await verifyUpdates(since);
+    if (!capped) await adminSummary(since, pending, flagged, verifyReqs);
     if (!capped) await employerReminders();
   } catch (e) {
     if (e.status === 429 || e.status === 403) { console.error(`Stopping: Resend limit or key problem. ${e.message}`); process.exitCode = 1; return; }

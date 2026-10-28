@@ -31,7 +31,7 @@ const toMs = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : v ??
 const norm = (snap) => {
   const d = snap.data();
   const out = { id: snap.id, ...d };
-  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt", "endRequestedAt", "endedAt", "acceptedAt", "bannedAt", "doneAt", "infoAt", "editedAt", "at"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
+  ["createdAt", "approvedAt", "expiresAt", "updatedAt", "declinedAt", "lastMessageAt", "applicantSeenAt", "employerSeenAt", "endRequestedAt", "endedAt", "acceptedAt", "bannedAt", "doneAt", "infoAt", "editedAt", "decidedAt", "at"].forEach((k) => { if (k in d) out[k] = toMs(d[k]); });
   return out;
 };
 const jobsQ = async (...c) => (await F.getDocs(F.query(F.collection(db, "jobs"), ...c))).docs.map(norm);
@@ -446,6 +446,23 @@ export const store = {
     try { const snap = await F.getDocs(F.collection(db, "verified")); verifiedCache = Object.fromEntries(snap.docs.map((d) => [d.id, norm(d)])); }
     catch { verifiedCache = verifiedCache || {}; }
     return verifiedCache;
+  },
+  /* ---- Get Verified: employer sends an ID photo + selfie; an admin approves or rejects ---- */
+  async myVerifyRequest() {
+    try { const s = await F.getDoc(F.doc(db, "verifyRequests", uid())); return s.exists() ? norm(s) : null; } catch { return null; }
+  },
+  async submitVerify({ idType, idPhoto, selfie, fbUrl }) {
+    await F.setDoc(F.doc(db, "verifyRequests", uid()), { idType, idPhoto, selfie, fbUrl: fbUrl || "", consent: true, status: "pending", createdAt: F.serverTimestamp(), updatedAt: F.serverTimestamp() });
+  },
+  async withdrawVerify() { await F.deleteDoc(F.doc(db, "verifyRequests", uid())); },
+  async listVerifyRequests() { return (await F.getDocs(F.query(F.collection(db, "verifyRequests"), F.where("status", "==", "pending")))).docs.map(norm); },
+  // Approve or reject. Either way the ID photo and selfie are deleted right away; only the decision is kept.
+  async decideVerify(id, { approve, reason = "", idType = "" }) {
+    const b = F.writeBatch(db);
+    b.update(F.doc(db, "verifyRequests", id), { status: approve ? "approved" : "rejected", reason: reason.slice(0, 200), decidedAt: F.serverTimestamp(), updatedAt: F.serverTimestamp(), idPhoto: F.deleteField(), selfie: F.deleteField() });
+    if (approve) b.set(F.doc(db, "verified", id), { method: `ID + selfie${idType ? ` (${idType})` : ""}`.slice(0, 60), at: F.serverTimestamp(), by: uid() });
+    await b.commit();
+    return this.verifiedList(true);
   },
   async verify(id, method) {
     await F.setDoc(F.doc(db, "verified", id), { method, at: F.serverTimestamp(), by: uid() });

@@ -372,6 +372,24 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
+    /* ---------- Get Verified: an employer's ID photo + selfie, for an admin to check ----------
+       Only that employer and admins can read it. When an admin decides, the photos are deleted
+       and only the decision stays (status, ID type, reason). */
+    function idImage(p) { return p is string && p.size() <= 300000 && p.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+'); }
+    function validVerify(d) {
+      return d.keys().hasOnly(['idType', 'idPhoto', 'selfie', 'fbUrl', 'consent', 'status', 'createdAt', 'updatedAt'])
+        && str(d.idType, 2, 40) && idImage(d.idPhoto) && idImage(d.selfie)
+        && optStr(d.get('fbUrl', null), 200) && d.consent == true && d.status == 'pending'
+        && d.createdAt == request.time && d.updatedAt == request.time;
+    }
+    match /verifyRequests/{uid} {
+      allow read: if (signedIn() && me() == uid) || isAdmin();
+      allow create: if signedIn() && me() == uid && notBanned() && validVerify(request.resource.data);
+      // Send again after a rejection (not after approval).
+      allow update: if isAdmin() || (signedIn() && me() == uid && notBanned() && resource.data.status != 'approved' && validVerify(request.resource.data));
+      allow delete: if (signedIn() && me() == uid) || isAdmin();
+    }
+
     // Employers an admin has checked (phone call, Facebook, business permit…). Public so the badge shows.
     match /verified/{uid} {
       allow read: if true;

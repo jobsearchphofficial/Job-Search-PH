@@ -192,6 +192,7 @@ function verifiedBadge(uid, { short = false } = {}) {
   if (!uid || !VERIFIED[uid]) return "";
   return `<span class="vbadge ${short ? "short" : ""}" title="Job Search PH checked this employer's identity">${SHIELD}Verified</span>`;
 }
+const ID_TYPES = ["PhilSys National ID", "Driver's license", "Passport", "UMID", "SSS ID", "PRC ID", "Postal ID", "Voter's ID", "PhilHealth ID", "Senior citizen ID", "Other government ID"];
 const VERIFY_METHODS = ["Talked on the phone", "Checked their Facebook", "Saw business permit / DTI", "Met in person", "Known to us"];
 const INFO_ASKS = ["Your Facebook profile or page link", "Your business permit or DTI number", "The exact work location", "More details about the job", "Check the pay (it looks off)"];
 
@@ -306,21 +307,22 @@ function shrinkPhoto(file) {
     img.src = url;
   });
 }
-// Shrink a photo for chat: longest side up to 1280px, JPEG under ~100 KB (the database stores it inline).
-function shrinkChatPhoto(file) {
+// Shrink a photo to a JPEG data URL: longest side up to maxSide, under maxChars (the database stores it inline).
+const shrinkChatPhoto = (file) => shrinkImage(file, 1280, 140000);
+function shrinkImage(file, maxSide, maxChars) {
   return new Promise((resolve, reject) => {
     if (!/^image\//.test(file.type)) return reject(new Error("Choose a photo (JPG or PNG)."));
     const img = new Image(); const url = URL.createObjectURL(file);
     img.onload = () => {
       URL.revokeObjectURL(url);
-      let max = 1280, out = "";
+      let max = maxSide, out = "";
       for (let tries = 0; tries < 6; tries++) {
         const k = Math.min(1, max / Math.max(img.width, img.height));
         const c = document.createElement("canvas"); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
         const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height);
         let q = 0.8; out = c.toDataURL("image/jpeg", q);
-        while (out.length > 140000 && q > 0.45) { q -= 0.1; out = c.toDataURL("image/jpeg", q); }
-        if (out.length <= 140000) return resolve(out);
+        while (out.length > maxChars && q > 0.45) { q -= 0.1; out = c.toDataURL("image/jpeg", q); }
+        if (out.length <= maxChars) return resolve(out);
         max = Math.round(max * 0.75);
       }
       reject(new Error("That photo is too big. Try a smaller one."));
@@ -1381,6 +1383,56 @@ function viewProfile() {
       ${isNew ? `<ul>${ROLES[k].points.map((t) => `<li>${t}</li>`).join("")}</ul>` : ""}
     </button>`;
 
+  // "Get the Verified badge" card for employers: ID photo + selfie, checked by an admin.
+  const paintVerify = async () => {
+    const box = $("#verify-card"); if (!box) return;
+    if (VERIFIED[user.uid]) { box.innerHTML = `<div class="vc-done">${SHIELD}<div><strong>You're a Verified employer.</strong><span class="small muted"> The badge shows on all your posts.</span></div></div>`; return; }
+    const req = await store.myVerifyRequest();
+    if (!$("#verify-card")) return;
+    if (req?.status === "pending") {
+      box.innerHTML = `<div class="vc-head">${SHIELD}<div><strong>We're checking your ID.</strong><p class="small muted">Usually within a day. We'll email you when it's done. Your ID photo and selfie are deleted as soon as we decide.</p></div></div>
+        <button class="btn btn-ghost btn-sm" type="button" id="vc-withdraw">Cancel my request</button>`;
+      $("#vc-withdraw").addEventListener("click", async (e) => { if (!confirmInline(e.target, "Click again to cancel")) return; await store.withdrawVerify().catch(() => {}); paintVerify(); });
+      return;
+    }
+    const again = req?.status === "rejected";
+    box.innerHTML = `<div class="vc-head">${SHIELD}<div><strong>${again ? "We couldn't verify you yet" : "Get the Verified badge"}</strong>
+        <p class="small muted">${again ? `${req.reason ? `Reason: ${esc(req.reason)}. ` : ""}You can send new photos.` : "Jobseekers trust Verified employers more, and your posts get approved faster. It takes 2 minutes."}</p></div></div>
+      <button class="btn btn-primary btn-sm" type="button" id="vc-open">${again ? "Try again" : "Get verified"}</button>
+      <form id="vc-form" class="form vc-form" hidden novalidate>
+        <label>Type of ID<select name="idType" required><option value="">Choose…</option>${opts(ID_TYPES, "")}</select></label>
+        <div class="vc-pics">
+          <label class="vc-pick"><span class="label">Photo of your ID</span><input type="file" name="idPhoto" accept="image/*"><img alt="" hidden><span class="hint">The front, with your name and photo easy to read.</span></label>
+          <label class="vc-pick"><span class="label">Selfie holding your ID</span><input type="file" name="selfie" accept="image/*" capture="user"><img alt="" hidden><span class="hint">Your face and the ID together in one photo.</span></label>
+        </div>
+        <label>Facebook profile or page (optional)<input name="fbUrl" type="url" maxlength="200" placeholder="https://facebook.com/yourname" value="${esc(p.fbUrl || "")}"></label>
+        <label class="check small"><input type="checkbox" name="consent"><span>I agree that Job Search PH may look at my ID and selfie only to confirm I'm a real employer. They're deleted as soon as a decision is made. We only keep that you were verified and the type of ID.</span></label>
+        <p class="error" id="vc-error" hidden></p>
+        <button class="btn btn-primary" type="submit">Send for checking</button>
+      </form>`;
+    const f = $("#vc-form"); const pics = {};
+    $("#vc-open").addEventListener("click", () => { f.hidden = false; $("#vc-open").hidden = true; f.idType.focus(); });
+    f.querySelectorAll("input[type=file]").forEach((inp) => inp.addEventListener("change", async () => {
+      const file = inp.files?.[0]; if (!file) return;
+      try { pics[inp.name] = await shrinkImage(file, 1600, 290000); const im = inp.parentElement.querySelector("img"); im.src = pics[inp.name]; im.hidden = false; }
+      catch (err) { toast(err.message); inp.value = ""; }
+    }));
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const err = $("#vc-error"); const fail = (m) => { err.textContent = m; err.hidden = false; };
+      err.hidden = true;
+      if (!f.idType.value) return fail("Choose the type of ID.");
+      if (!pics.idPhoto) return fail("Add a photo of your ID.");
+      if (!pics.selfie) return fail("Add a selfie holding your ID.");
+      let fb = f.fbUrl.value.trim(); if (fb && !/^https?:\/\//i.test(fb)) fb = `https://${fb}`;
+      if (fb && !fbHref(fb)) return fail("The Facebook link should look like https://facebook.com/yourname");
+      if (!f.consent.checked) return fail("Tick the box to agree before sending.");
+      const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Sending…";
+      try { await store.submitVerify({ idType: f.idType.value, idPhoto: pics.idPhoto, selfie: pics.selfie, fbUrl: fb }); toast("Sent. We'll email you when it's checked."); paintVerify(); }
+      catch (ex) { console.error(ex); btn.disabled = false; btn.textContent = "Send for checking"; fail(ex.code === "permission-denied" ? "That didn't go through. Try smaller photos, or contact support." : `Couldn't send (${ex.code || ex.message}).`); }
+    });
+  };
+
   const draw = () => {
     if (isNew && role) { try { const k = draftKey("role"); if (k) localStorage.setItem(k, role); } catch {} }
     const name = p.fullName || user.displayName || "";
@@ -1388,6 +1440,7 @@ function viewProfile() {
     app.innerHTML = `
       <div class="profile-wrap">
         ${getAuthState().mustConfirmEmail ? confirmEmailBox(role === "employer" ? "You'll need this before you can post a job." : "It keeps your account safe and lets us send job alerts.") : ""}
+        ${role === "employer" && !isNew ? `<section class="verify-card" id="verify-card"></section>` : ""}
         <header class="profile-head">
           <div class="photo-col"><label class="photo-pick" title="Change photo">${avatar(name || user.email, p.photo, "lg")}<span class="photo-edit">${p.photo ? "Change" : "Add photo"}</span><input type="file" id="photo-in" accept="image/*" hidden></label>${p.photo ? `<button type="button" class="linkbtn small" id="photo-remove">Remove</button>` : ""}</div>
           <div>
@@ -1427,6 +1480,7 @@ function viewProfile() {
     }));
     if (role) bindForm();
     bindConfirmEmail(() => viewProfile());
+    if (role === "employer" && !isNew) paintVerify();
     $("#photo-in")?.addEventListener("change", async (e) => {
       const file = e.target.files?.[0]; if (!file) return;
       e.target.value = "";
@@ -2698,7 +2752,7 @@ async function viewAdmin() {
   const { user, isAdmin } = getAuthState();
   if (!user) return goSignIn("Admin sign in");
   if (!isAdmin) { app.innerHTML = `<div class="empty"><h1>Not authorized</h1><p class="muted">This account is not an admin.</p></div>`; return; }
-  const tabs = { analytics: "Analytics", users: "Users", pending: "Pending", approved: "Live", reports: "Reports", flags: "Chat flags", support: "Support", rejected: "Rejected", closed: "Closed" };
+  const tabs = { analytics: "Analytics", users: "Users", pending: "Pending", approved: "Live", reports: "Reports", flags: "Chat flags", verify: "ID checks", support: "Support", rejected: "Rejected", closed: "Closed" };
   app.innerHTML = `
     <div class="page-head"><h1>Admin</h1></div>
     <div class="tabs" role="tablist">${Object.entries(tabs).map(([k, v]) => `<button role="tab" class="tab ${adminTab === k ? "active" : ""}" data-tab="${k}">${v}${k === "pending" && pendingForAdmin ? ` <span class="count">${pendingForAdmin}</span>` : ""}</button>`).join("")}</div>
@@ -2725,6 +2779,32 @@ async function viewAdmin() {
         </article>`).join("")}</div>`
       : `<div class="empty"><p>${supportView === "done" ? "Nothing marked done yet." : supportView === "all" ? "No support messages yet." : "No open support messages. 🎉"}</p></div>`}`;
     body.querySelectorAll("[data-sview]").forEach((b) => b.addEventListener("click", () => { supportView = b.dataset.sview; viewAdmin(); }));
+  } else if (adminTab === "verify") {
+    // Employers asking for the Verified badge: compare the ID with the selfie, then decide.
+    const [reqs, ctx] = await Promise.all([store.listVerifyRequests().catch(() => []), store.adminAll().catch(() => null)]);
+    const users = ctx ? Object.fromEntries(ctx.users.map((u) => [u.id, u])) : {};
+    reqs.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    body.innerHTML = `<p class="small muted">Check that the ID looks real, the name matches their profile, and the face in the selfie matches the ID. The photos are deleted as soon as you approve or reject.</p>
+      ${reqs.length ? reqs.map((r) => { const u = users[r.id] || {}; const fb = fbHref(r.fbUrl || u.fbUrl); return `
+      <article class="vr-item" data-vr="${esc(r.id)}">
+        <header><strong>${esc(u.fullName || "Employer")}</strong>${u.companyName ? ` · ${esc(u.companyName)}` : ""} <span class="muted small">· ${esc(r.idType)} · sent ${r.createdAt ? ago(r.createdAt) : ""}</span>
+          <a class="small" href="#/admin/user/${encodeURIComponent(r.id)}">Profile →</a></header>
+        <div class="vr-pics">${[["idPhoto", "ID"], ["selfie", "Selfie with ID"]].map(([k, l]) => safePhoto(r[k]) ? `<figure><img class="vr-img" src="${safePhoto(r[k])}" alt="${l}"><figcaption>${l}</figcaption></figure>` : `<p class="muted small">${l}: missing</p>`).join("")}</div>
+        <p class="small">${u.phone ? `Phone: <a href="tel:${esc(digits(u.phone))}">${esc(u.phone)}</a> · ` : ""}${fb ? `<a href="${esc(fb)}" target="_blank" rel="noopener nofollow">Facebook</a>` : "No Facebook link"}</p>
+        <div class="actions"><button class="btn btn-primary btn-sm" data-vr-ok="${esc(r.id)}">Approve</button><button class="btn btn-ghost btn-sm" data-vr-no="${esc(r.id)}">Reject</button></div>
+      </article>`; }).join("") : `<div class="empty"><p>No ID checks waiting. 🎉</p></div>`}`;
+    body.addEventListener("click", async (e) => {
+      const im = e.target.closest(".vr-img"); if (im) return showPhoto(im.src);
+      const ok = e.target.closest("[data-vr-ok]"), no = e.target.closest("[data-vr-no]"); if (!ok && !no) return;
+      const id = (ok || no).dataset[ok ? "vrOk" : "vrNo"]; const r = reqs.find((x) => x.id === id);
+      let reason = "";
+      if (no) { const picked = await pickDialog({ title: "Why can't you verify them?", body: "They'll see this and can send new photos.", options: ["The photos are blurry or cut off", "The name doesn't match their profile", "The face doesn't match the ID", "The ID looks edited or expired"], multi: false, other: "Other reason" }); if (!picked) return; reason = picked.join("; "); }
+      try {
+        VERIFIED = await store.decideVerify(id, { approve: !!ok, reason, idType: r?.idType });
+        store.notify(id, ok ? { type: "verified", title: "You're a Verified employer", body: "Your ID was checked. The Verified badge now shows on all your posts.", link: "#/profile" } : { type: "verify_rejected", title: "We couldn't verify your ID", body: `${reason}. You can send new photos from your profile.`.slice(0, 300), link: "#/profile" }).catch(() => {});
+        toast(ok ? "Verified. Photos deleted." : "Rejected. Photos deleted."); viewAdmin();
+      } catch (ex) { console.error(ex); toast("Couldn't save the decision"); }
+    });
   } else if (adminTab === "flags") {
     // Chat messages the email robot flagged (money, fees, codes, ID numbers, odd links).
     const flags = await store.listFlags().catch(() => []);
@@ -2986,7 +3066,7 @@ function viewStatic(page) {
     privacy: {
       title: "Privacy policy",
       html: legalPage("Privacy policy", "How Job Search PH collects, uses and protects your personal data, in line with the Data Privacy Act of 2012 (RA 10173) and the rules of the National Privacy Commission.", [
-        ["Data we collect", `<ul><li><strong>Account:</strong> your email and sign-in method (Google, Facebook, or email and password). If you use Facebook, we only receive your name, email and profile picture, and we never post to your Facebook.</li><li><strong>Jobseeker profile:</strong> name, photo (optional), birthdate (we show employers your age, not your birthdate), gender, mobile number, city, Messenger, jobs wanted, experience, skills, work history, education and resume link.</li><li><strong>Employer profile:</strong> name, photo (optional), household or business name, mobile number, city and Messenger.</li><li><strong>Activity on the site:</strong> job posts, applications, chat messages, interview and hiring status, notifications, reports and support messages.</li><li><strong>Anti-spam counters:</strong> how many applications, posts, messages and reports you sent today.</li><li><strong>On your device only:</strong> your light or dark mode choice.</li></ul><p>We don't use advertising trackers, and we don't sell your data.</p>`],
+        ["Data we collect", `<ul><li><strong>Account:</strong> your email and sign-in method (Google, Facebook, or email and password). If you use Facebook, we only receive your name, email and profile picture, and we never post to your Facebook.</li><li><strong>Jobseeker profile:</strong> name, photo (optional), birthdate (we show employers your age, not your birthdate), gender, mobile number, city, Messenger, jobs wanted, experience, skills, work history, education and resume link.</li><li><strong>Employer profile:</strong> name, photo (optional), household or business name, mobile number, city and Messenger.</li><li><strong>Activity on the site:</strong> job posts, applications, chat messages, interview and hiring status, notifications, reports and support messages.</li><li><strong>Get Verified (employers, optional):</strong> a photo of your ID and a selfie holding it. Only Job Search PH admins see them, only to confirm you're a real employer, and they're deleted as soon as we approve or reject. We keep only that you were verified and the type of ID.</li><li><strong>Anti-spam counters:</strong> how many applications, posts, messages and reports you sent today.</li><li><strong>On your device only:</strong> your light or dark mode choice.</li></ul><p>We don't use advertising trackers, and we don't sell your data.</p>`],
         ["Why we use it", `<ul><li>To run your account and show your posts, applications and messages;</li><li>To share your profile with employers you apply to, and employer contact details with the worker they hire;</li><li>To review job posts, prevent spam, fraud and abuse, and handle reports and appeals;</li><li>To reply to support requests and improve the site;</li><li>If you turn on job alerts, to email you new jobs that match the jobs and city on your profile. Emails are sent through our email provider, Resend. Unsubscribe with the link in any email or in My profile.</li></ul>`],
         ["Who can see it", `<ul><li><strong>Everyone:</strong> live job posts (title, employer or household name, area, pay and details). Employer contact details are not public.</li><li><strong>Employers you apply to:</strong> your profile, photo, age, contact details, message, experience and resume.</li><li><strong>The worker you hire:</strong> the employer contact you entered on the post, once they accept your job offer.</li><li><strong>The person you're chatting with:</strong> your messages.</li><li><strong>Job Search PH admins:</strong> all data, only to run and keep the site safe.</li><li><strong>Service provider:</strong> the site runs on Google Firebase, which stores data for us under its own security and privacy terms.</li></ul><p>We may also disclose data when the law requires it, such as a lawful order from the authorities.</p>`],
         ["How long we keep it", `<ul><li>Your profile stays until you delete it.</li><li>Job posts expire after 30 days and stay in your account until removed.</li><li>Applications and chats stay so both sides can refer back to them. Chats with declined applicants close after 48 hours but remain readable.</li><li>Reports and safety records are kept as long as needed to protect users, then deleted.</li></ul>`],
@@ -3044,7 +3124,7 @@ async function route() {
   if (page === "support") return viewSupport();
   if (page === "chat" && arg) return viewChat(decodeURIComponent(arg));
   if (page === "admin" && arg === "user" && arg2) return viewAdminUser(decodeURIComponent(arg2));
-  if (page === "admin") { if (["analytics", "users", "pending", "approved", "reports", "flags", "support", "rejected", "closed"].includes(arg)) adminTab = arg; return viewAdmin(); }
+  if (page === "admin") { if (["analytics", "users", "pending", "approved", "reports", "flags", "verify", "support", "rejected", "closed"].includes(arg)) adminTab = arg; return viewAdmin(); }
   if (["safety", "terms", "privacy"].includes(page)) return viewStatic(page);
   location.hash = "#/";
 }
