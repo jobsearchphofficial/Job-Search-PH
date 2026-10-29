@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, IS_STAGING, LISTING_DAYS, RESUME_UPLOADS, SMS_URL } from "./firebase-config.js?v=1793200579";
+import { firebaseConfig, IS_STAGING, LISTING_DAYS, RESUME_UPLOADS, HELPER_URL, SMS_ON } from "./firebase-config.js?v=1793271000";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -15,8 +15,20 @@ const emit = () => listeners.forEach((cb) => cb({ ...state }));
 export const onAuth = (cb) => { listeners.add(cb); if (state.ready) cb({ ...state }); return () => listeners.delete(cb); };
 export const getAuthState = () => ({ ...state });
 export const uploadsEnabled = RESUME_UPLOADS;
-const SMS = USE_EMULATORS ? "http://127.0.0.1:8787" : SMS_URL;
-export const smsEnabled = !!SMS;
+const HELPER = USE_EMULATORS ? "http://127.0.0.1:8787" : HELPER_URL;
+export const smsEnabled = !!HELPER && (SMS_ON || USE_EMULATORS);
+// A real name: at least two words with letters (first and last name).
+export const isFullName = (n) => String(n || "").trim().split(/\s+/).filter((w) => /\p{L}{2,}/u.test(w)).length >= 2;
+async function callHelper(path, body = {}, signedIn = true) {
+  const headers = { "content-type": "application/json" };
+  if (signedIn) headers.authorization = `Bearer ${await auth.currentUser.getIdToken()}`;
+  let res;
+  try { res = await fetch(`${HELPER}/${path}`, { method: "POST", headers, body: JSON.stringify(body) }); }
+  catch { throw Object.assign(new Error("We couldn't connect. Check your internet and try again."), { code: "network" }); }
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(out.message || (out.error === "wait" ? `Wait ${out.wait}s before asking again.` : "Something went wrong. Try again.")), { code: out.error || "error", wait: out.wait, status: res.status });
+  return out;
+}
 // Same rule as the SMS helper: 09XXXXXXXXX / 639XXXXXXXXX / +639XXXXXXXXX → +639XXXXXXXXX
 export const normPhone = (v) => { const m = String(v || "").replace(/\D/g, "").match(/^(?:0|63)?(9\d{9})$/); return m ? `+63${m[1]}` : null; };
 
@@ -67,17 +79,29 @@ async function loadProfile(user) {
   return { profile: p?.exists() ? norm(p) : null, isAdmin: !!a?.exists(), banned: b?.exists() ? norm(b) : null };
 }
 
-/* ---- Where visitors came from (?src=fb-bacolod-group). First touch, kept 60 days, no personal data. ---- */
+/* ---- Where visitors came from (?src=fb-ad-yaya-nov). First touch, kept 60 days, no personal data. ----
+   Also understands Facebook/Google ad tags: utm_campaign (or utm_source) becomes the source name. */
+const slug = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+let landedFrom = ""; // a tracked link brought this visit (counted once per link per day in visits/)
 (() => {
   try {
     const q = new URLSearchParams(location.search);
-    const raw = q.get("src") || q.get("utm_source") || q.get("ref") || (q.has("fbclid") ? "facebook" : "");
-    const clean = String(raw).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    const raw = q.get("src") || q.get("utm_campaign") || q.get("utm_source") || q.get("ref") || (q.has("fbclid") ? "facebook" : "");
+    const clean = slug(raw);
+    landedFrom = clean;
     const cur = JSON.parse(localStorage.getItem("jsph-src") || "null");
     if (clean && (!cur || Date.now() - cur.at > 60 * 86400000)) localStorage.setItem("jsph-src", JSON.stringify({ src: clean, at: Date.now() }));
-    if (raw || q.has("fbclid")) { ["src", "utm_source", "utm_medium", "utm_campaign", "ref", "fbclid"].forEach((k) => q.delete(k)); const qs = q.toString(); history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash); }
+    if (raw || q.has("fbclid")) { ["src", "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "utm_id", "ref", "fbclid"].forEach((k) => q.delete(k)); const qs = q.toString(); history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash); }
   } catch {}
 })();
+const phDate = (t = Date.now()) => new Date(t + 8 * 3600000).toISOString().slice(0, 10);
+// One count per browser, per link, per day. Admin → Analytics adds these up as "visits".
+async function recordVisit() {
+  if (!landedFrom) return;
+  const day = phDate(), key = `jsph-v-${landedFrom}-${day}`;
+  try { if (localStorage.getItem(key)) return; localStorage.setItem(key, "1"); } catch {}
+  await F.setDoc(F.doc(db, "visits", `${landedFrom}__${day}`), { src: landedFrom, day, n: F.increment(1) }, { merge: true }).catch(() => {});
+}
 export const visitSource = () => { try { const c = JSON.parse(localStorage.getItem("jsph-src") || "null"); return c && Date.now() - c.at < 60 * 86400000 ? c.src : ""; } catch { return ""; } };
 
 // applies, messages, reports, support: per day. posts: per calendar month (Pro may raise this later; also update the 5 in firestore.rules mcnt).
@@ -121,6 +145,7 @@ export const store = {
       A.connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
       F.connectFirestoreEmulator(db, "127.0.0.1", 8085);
     }
+    recordVisit();
     A.onAuthStateChanged(auth, async (user) => {
       const [extra, mustConfirmEmail] = await Promise.all([loadProfile(user), needsConfirm(user)]);
       state = { user: user ? { uid: user.uid, displayName: user.displayName, email: user.email } : null, ...extra, mustConfirmEmail, ready: true };
@@ -154,8 +179,8 @@ export const store = {
   async signInEmail(email, pw) { await A.signInWithEmailAndPassword(auth, email, pw); },
   async signUpEmail(email, pw, name) {
     const cred = await A.createUserWithEmailAndPassword(auth, email, pw);
-    if (name) await A.updateProfile(cred.user, { displayName: name }).catch(() => {});
-    A.sendEmailVerification(cred.user, { url: `${location.origin}/#/profile` }).catch(() => {});
+    if (name) { await A.updateProfile(cred.user, { displayName: name }).catch(() => {}); await cred.user.getIdToken(true).catch(() => {}); } // fresh token carries the name, so the email says "Hi Mark"
+    this.sendVerification().catch(() => {});
   },
   // Email confirmation for email + password accounts.
   // Mobile number confirmation (text message code). phoneVerified/{uid} is written only by the SMS helper.
@@ -166,16 +191,14 @@ export const store = {
   },
   async phoneStatusFor(id) { const d = await F.getDoc(F.doc(db, "phoneVerified", id)).catch(() => null); return d?.exists() ? norm(d) : null; },
   async sms(path, body = {}) {
-    if (!SMS) throw Object.assign(new Error("off"), { code: "off" });
-    const token = await auth.currentUser.getIdToken();
-    let res;
-    try { res = await fetch(`${SMS}/${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body) }); }
-    catch { throw Object.assign(new Error("We couldn't reach the texting service. Check your internet and try again."), { code: "network" }); }
-    const out = await res.json().catch(() => ({}));
-    if (!res.ok) throw Object.assign(new Error(out.message || (out.error === "wait" ? `Wait ${out.wait}s before asking again.` : "Something went wrong. Try again.")), { code: out.error || "error", wait: out.wait, status: res.status });
-    return out;
+    if (!HELPER) throw Object.assign(new Error("off"), { code: "off" });
+    return callHelper(path, body);
   },
-  async sendVerification() { await A.sendEmailVerification(auth.currentUser, { url: `${location.origin}/#/profile` }); },
+  // Branded "confirm your email" email from noreply@jobsearchph.com (helper); Firebase's plain one if the helper is off or down.
+  async sendVerification() {
+    if (HELPER) { try { return await callHelper("email/verify"); } catch (e) { if (e.code === "wait" || e.code === "limit") throw e; console.warn("helper email failed, using Firebase", e); } }
+    await A.sendEmailVerification(auth.currentUser, { url: `${location.origin}/#/profile` });
+  },
   // After they click the link: refresh the account (and its token, which the database rules read).
   async refreshVerified() {
     const u = auth.currentUser; if (!u) return false;
@@ -186,7 +209,18 @@ export const store = {
     else emit();
     return !must;
   },
-  async resetPassword(email) { await A.sendPasswordResetEmail(auth, email); },
+  async resetPassword(email) {
+    if (HELPER) { try { return await callHelper("email/reset", { email, project: USE_EMULATORS ? "demo-jsph" : firebaseConfig.projectId }, false); } catch (e) { if (e.code === "wait") throw e; console.warn("helper email failed, using Firebase", e); } }
+    await A.sendPasswordResetEmail(auth, email);
+  },
+  // Links in account emails open jobsearchph.com/?mode=…&oobCode=… and are finished here.
+  async applyEmailCode(code) {
+    await A.applyActionCode(auth, code);
+    if (auth.currentUser) return this.refreshVerified();
+    return true;
+  },
+  async checkResetCode(code) { return A.verifyPasswordResetCode(auth, code); }, // → the account's email
+  async confirmReset(code, pw) { await A.confirmPasswordReset(auth, code, pw); },
   async signOut() { await A.signOut(auth); },
 
   /* ---- Profile ---- */
@@ -201,7 +235,7 @@ export const store = {
     try { await F.setDoc(ref, payload, { merge: true }); }
     catch (e) { // older published rules don't know the newest optional fields yet: save without them
       if (e.code !== "permission-denied") throw e;
-      ["src", "jobCategoryOther", "fbUrl", "bizReg", "signIn", "emailVerified", "alerts", "alertsScope", "alertsToken", "emailNotify"].forEach((k) => delete payload[k]);
+      ["src", "jobCategoryOther", "fbUrl", "bizReg", "signIn", "emailVerified", "alerts", "alertsScope", "alertsToken", "emailNotify", "firstName", "middleName", "lastName"].forEach((k) => delete payload[k]);
       await F.setDoc(ref, payload, { merge: true });
     }
     const extra = await loadProfile(auth.currentUser);
@@ -346,7 +380,7 @@ export const store = {
     if (silent) return;
     if (note) return this.notify(a.applicantUid, { ...note, appId: a.id, jobId: a.jobId }).catch(() => {});
     const msg = {
-      shortlisted: ["You're shortlisted", `The employer shortlisted you for ${a.jobTitle}. Expect a call or message soon.`],
+      shortlisted: ["You're shortlisted", `The employer shortlisted you for ${a.jobTitle}. You can now message them in Messages.`],
       offered: ["You got a job offer!", `${a.employerName || "The employer"} offered you the ${a.jobTitle} job. Accept or decline it.`],
       not_selected: ["Application update", `The employer chose other applicants for ${a.jobTitle}. Your chat with them stays open for 48 hours.`],
     }[status];
@@ -381,6 +415,42 @@ export const store = {
   },
   async withdraw(id) { await F.deleteDoc(F.doc(db, "applications", id)); },
 
+  /* ---- Delete my account ---- */
+  // Firebase only deletes a sign-in account that signed in within the last few minutes, so ask first.
+  async reauth(password) {
+    const u = auth.currentUser, p = this.providers();
+    if (p.includes("password")) {
+      if (!password) throw Object.assign(new Error("Enter your password."), { code: "need-password" });
+      return A.reauthenticateWithCredential(u, A.EmailAuthProvider.credential(u.email, password));
+    }
+    if (p.includes("google.com")) return A.reauthenticateWithPopup(u, new A.GoogleAuthProvider());
+    if (p.includes("facebook.com")) return A.reauthenticateWithPopup(u, new A.FacebookAuthProvider());
+  },
+  // Deletes everything about this person that the site can: posts, applications, notifications, ID check,
+  // phone check, profile, then the sign-in account. step(text) reports progress.
+  async deleteAccount(step = () => {}) {
+    const me = uid(), now = F.serverTimestamp();
+    const commitAll = async (ops) => { for (let i = 0; i < ops.length; i += 400) { const b = F.writeBatch(db); ops.slice(i, i + 400).forEach((op) => op(b)); await b.commit(); } };
+    step("Removing your applications…");
+    const mine = await F.getDocs(F.query(F.collection(db, "applications"), F.where("applicantUid", "==", me)));
+    await commitAll(mine.docs.map((d) => (b) => d.data().lastMessageAt
+      ? b.update(d.ref, { applicant: { fullName: "Deleted user" }, applicantDeleted: true, deletedAt: now, updatedAt: now })
+      : b.delete(d.ref)));
+    step("Removing your job posts…");
+    const received = await F.getDocs(F.query(F.collection(db, "applications"), F.where("employerUid", "==", me)));
+    await commitAll(received.docs.map((d) => (b) => b.update(d.ref, { employerName: "Deleted user", employerDeleted: true, deletedAt: now, updatedAt: now })));
+    const jobs = await F.getDocs(F.query(F.collection(db, "jobs"), F.where("ownerUid", "==", me)));
+    for (const j of jobs.docs) { await F.deleteDoc(F.doc(db, "jobs", j.id, "private", "contact")).catch(() => {}); await F.deleteDoc(j.ref); }
+    step("Removing your notifications…");
+    const notes = await F.getDocs(F.query(F.collection(db, "notifications"), F.where("toUid", "==", me)));
+    await commitAll(notes.docs.map((d) => (b) => b.delete(d.ref)));
+    step("Removing your profile…");
+    await Promise.all(["verifyRequests", "phoneVerified", "verified"].map((c) => F.deleteDoc(F.doc(db, c, me)).catch(() => {})));
+    await F.deleteDoc(F.doc(db, "users", me));
+    step("Deleting your sign-in…");
+    await auth.currentUser.delete();
+  },
+
   /* ---- Messages ---- */
   watchApplications(role, cb) {
     const field = role === "employer" ? "employerUid" : "applicantUid";
@@ -409,6 +479,7 @@ export const store = {
     await F.updateDoc(F.doc(db, "applications", a.id), {
       lastMessageAt: F.serverTimestamp(), lastMessageFrom: me, lastMessageText: preview.slice(0, 140),
       [iAmEmployer ? "employerSeenAt" : "applicantSeenAt"]: F.serverTimestamp(),
+      ...(iAmEmployer && !a.employerWrote ? { employerWrote: true } : {}), // lets the jobseeker reply
     });
     if (otherCaughtUp) {
       const fromName = iAmEmployer ? (a.employerName || "The employer") : (a.applicant?.fullName || "An applicant");
@@ -446,9 +517,12 @@ export const store = {
   // Admin analytics: everything in one go (fine at early scale; capped per collection).
   async adminAll() {
     const q = async (c) => (await F.getDocs(F.query(F.collection(db, c), F.limit(5000)))).docs.map(norm);
-    const [users, jobs, apps, reports, support, bans, verified] = await Promise.all([q("users"), q("jobs"), q("applications"), q("reports").catch(() => []), q("support").catch(() => []), q("bans").catch(() => []), q("verified").catch(() => [])]);
-    return { users, jobs, apps, reports, support, bans, verified };
+    const [users, jobs, apps, reports, support, bans, verified, visits, campaigns] = await Promise.all([q("users"), q("jobs"), q("applications"), q("reports").catch(() => []), q("support").catch(() => []), q("bans").catch(() => []), q("verified").catch(() => []), q("visits").catch(() => []), q("campaigns").catch(() => [])]);
+    return { users, jobs, apps, reports, support, bans, verified, visits, campaigns };
   },
+  // Tracked links / ad campaigns (admin only): name = the ?src= value.
+  async saveCampaign(src, data) { await F.setDoc(F.doc(db, "campaigns", src), { ...data, updatedAt: F.serverTimestamp() }, { merge: true }); },
+  async deleteCampaign(src) { await F.deleteDoc(F.doc(db, "campaigns", src)); },
   async adminUser(id) {
     const [u, b, posts, applied] = await Promise.all([
       F.getDoc(F.doc(db, "users", id)), F.getDoc(F.doc(db, "bans", id)).catch(() => null),
@@ -514,6 +588,16 @@ export const store = {
   async listFlags() {
     const s = await F.getDocs(F.query(F.collection(db, "flags"), F.orderBy("createdAt", "desc"), F.limit(200)));
     return s.docs.map(norm);
+  },
+  // How many things are waiting in each admin queue. Count queries cost about one read each.
+  async adminCounts() {
+    const n = async (q) => { try { return (await F.getCountFromServer(q)).data().count; } catch { return null; } };
+    const C = (c) => F.collection(db, c);
+    const [pending, reports, flags, verify, supportAll, supportDone] = await Promise.all([
+      n(F.query(C("jobs"), F.where("status", "==", "pending"))), n(C("reports")), n(C("flags")),
+      n(F.query(C("verifyRequests"), F.where("status", "==", "pending"))), n(C("support")), n(F.query(C("support"), F.where("status", "==", "done"))),
+    ]);
+    return { pending, reports, flags, verify, support: supportAll == null ? null : Math.max(0, supportAll - (supportDone || 0)) };
   },
   async dismissFlag(id) { await F.deleteDoc(F.doc(db, "flags", id)); },
   async dismissReport(id) { await F.deleteDoc(F.doc(db, "reports", id)); },

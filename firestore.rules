@@ -41,14 +41,20 @@ service cloud.firestore {
     function validPhoto(p) { return p == null || p == '' || (p is string && p.size() <= 60000 && p.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+')); }
 
     /* ---------- Profiles ---------- */
+    // First and last name: at least two words of 2+ characters.
+    function fullName(n) { return n.matches('[ ]*[^ ]{2,}( +[^ ]+)* +[^ ]{2,}[ ]*'); }
     function validProfile(d) {
       return d.keys().hasOnly([
           'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
           'birthDate','gender','jobCategories','jobTypes','experienceYears','skills','workHistory',
           'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email','src','jobCategoryOther',
-          'fbUrl','bizReg','signIn','emailVerified','alerts','alertsScope','alertsToken','emailNotify'])
+          'fbUrl','bizReg','signIn','emailVerified','alerts','alertsScope','alertsToken','emailNotify',
+          'firstName','middleName','lastName'])
         && d.role in ['jobseeker', 'employer']
         && str(d.fullName, 2, 80)
+        && optStr(d.get('firstName', null), 40)
+        && optStr(d.get('middleName', null), 40)
+        && optStr(d.get('lastName', null), 40)
         && str(d.phone, 7, 20)
         && str(d.city, 1, 60)
         && d.consent == true
@@ -84,7 +90,10 @@ service cloud.firestore {
 
     match /users/{uid} {
       allow read: if (signedIn() && me() == uid) || isAdmin();
-      allow create, update: if signedIn() && me() == uid && notBanned() && validProfile(request.resource.data);
+      // A new or changed name must be a full name (two words). Older one-word names can stay until edited.
+      allow create: if signedIn() && me() == uid && notBanned() && validProfile(request.resource.data) && fullName(request.resource.data.fullName);
+      allow update: if signedIn() && me() == uid && notBanned() && validProfile(request.resource.data)
+                    && (request.resource.data.fullName == resource.data.fullName || fullName(request.resource.data.fullName));
       allow delete: if (signedIn() && me() == uid) || isAdmin();
     }
 
@@ -159,7 +168,8 @@ service cloud.firestore {
                          'openings','startDate','benefits','reqExperience','reqEducation','reqList','requirements','description',
                          'status','updatedAt','editedAt'])
                     && validJob(request.resource.data);
-      allow delete: if isAdmin();
+      // Owners may delete their posts when they delete their account.
+      allow delete: if isAdmin() || (signedIn() && notBanned() && resource.data.ownerUid == me());
 
       // Employer contact details: visible to the owner, admins, and the worker they hired.
       match /private/{docId} {
@@ -175,7 +185,7 @@ service cloud.firestore {
                     && optStr(request.resource.data.get('address', null), 200)
                     && request.resource.data.contactMethod in ['messenger', 'phone', 'email']
                     && str(request.resource.data.contactValue, 3, 200);
-        allow delete: if isAdmin();
+        allow delete: if isAdmin() || (signedIn() && notBanned() && jobDoc(jobId).data.ownerUid == me());
       }
     }
 
@@ -221,10 +231,24 @@ service cloud.firestore {
                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessageAt', 'lastMessageFrom', 'lastMessageText', 'applicantSeenAt'])
                     && request.resource.data.get('lastMessageFrom', '') in [me(), resource.data.get('lastMessageFrom', '')];
       allow update: if signedIn() && resource.data.employerUid == me()
-                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessageAt', 'lastMessageFrom', 'lastMessageText', 'employerSeenAt'])
-                    && request.resource.data.get('lastMessageFrom', '') in [me(), resource.data.get('lastMessageFrom', '')];
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessageAt', 'lastMessageFrom', 'lastMessageText', 'employerSeenAt', 'employerWrote'])
+                    && request.resource.data.get('lastMessageFrom', '') in [me(), resource.data.get('lastMessageFrom', '')]
+                    && request.resource.data.get('employerWrote', false) in [true, resource.data.get('employerWrote', false)];
 
-      // Messages between the applicant and the employer. Closes 48 hours after the applicant is declined.
+      // Deleting an account: that person's details are wiped from their applications and the chat closes.
+      // (The email robot deletes these chats completely 30 days later.)
+      allow update: if signedIn() && notBanned() && resource.data.applicantUid == me()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['applicant', 'applicantDeleted', 'deletedAt', 'updatedAt'])
+                    && request.resource.data.applicant == {'fullName': 'Deleted user'}
+                    && request.resource.data.applicantDeleted == true
+                    && request.resource.data.deletedAt == request.time;
+      allow update: if signedIn() && notBanned() && resource.data.employerUid == me()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['employerName', 'employerDeleted', 'deletedAt', 'updatedAt'])
+                    && request.resource.data.employerName == 'Deleted user'
+                    && request.resource.data.employerDeleted == true
+                    && request.resource.data.deletedAt == request.time;
+
+      // Messages between the applicant and the employer. The employer starts; closes 48 hours after the applicant is declined.
       match /messages/{mid} {
         function app() { return get(/databases/$(database)/documents/applications/$(appId)).data; }
         function party() { return signedIn() && (app().applicantUid == me() || app().employerUid == me()); }
@@ -233,8 +257,16 @@ service cloud.firestore {
               || (app().get('declinedAt', null) != null && request.time < app().declinedAt + duration.value(48, 'h'));
         }
         allow read: if party() || isAdmin();
+        // Jobseekers write once shortlisted (or further), or after the employer has messaged them.
+        function seekerMayWrite() {
+          return app().status in ['shortlisted', 'offered', 'hired', 'offer_declined']
+              || app().get('employerWrote', false) == true
+              || app().get('lastMessageFrom', '') == app().employerUid;
+        }
         allow create: if party() && notBanned()
                       && chatOpen()
+                      && (app().employerUid == me() || seekerMayWrite())
+                      && app().get('applicantDeleted', false) != true && app().get('employerDeleted', false) != true
                       && request.resource.data.keys().hasOnly(['fromUid', 'text', 'createdAt', 'photo'])
                       && request.resource.data.fromUid == me()
                       // A message is text, or a small JPEG photo (stored inline) with optional text.
@@ -390,11 +422,27 @@ service cloud.firestore {
       allow delete: if (signedIn() && me() == uid) || isAdmin();
     }
 
+    // Visits from tracked links (?src=…): one counter per link per day. Anyone can add 1; only admins read.
+    match /visits/{id} {
+      allow read, delete: if isAdmin();
+      allow create: if id == request.resource.data.src + '__' + request.resource.data.day
+                    && request.resource.data.keys().hasOnly(['src', 'day', 'n'])
+                    && request.resource.data.src is string && request.resource.data.src.matches('[a-z0-9._-]{1,40}')
+                    && request.resource.data.day is string && request.resource.data.day.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}')
+                    && request.resource.data.n == 1;
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['n'])
+                    && request.resource.data.n == resource.data.n + 1;
+    }
+    // Tracked links and ad campaigns (name, who it's for, where it's posted, spend). Admins only.
+    match /campaigns/{src} {
+      allow read, write: if isAdmin();
+    }
+
     // Mobile numbers confirmed by a texted code. Written only by the SMS helper (service account).
     // smsCodes, smsPhones and meta/sms (codes and daily limits) have no client access at all.
     match /phoneVerified/{uid} {
       allow read: if (signedIn() && me() == uid) || isAdmin();
-      allow delete: if isAdmin();
+      allow delete: if (signedIn() && me() == uid) || isAdmin();
     }
 
     // Employers an admin has checked (phone call, Facebook, business permit…). Public so the badge shows.
@@ -403,7 +451,7 @@ service cloud.firestore {
       allow create, update: if isAdmin()
                     && request.resource.data.keys().hasOnly(['at', 'by', 'method'])
                     && str(request.resource.data.method, 1, 60);
-      allow delete: if isAdmin();
+      allow delete: if (signedIn() && me() == uid) || isAdmin();
     }
 
     /* ---------- Job alert emails ----------

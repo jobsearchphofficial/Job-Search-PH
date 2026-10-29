@@ -24,8 +24,11 @@ const LIVE_CONFIG = {
 
 export const firebaseConfig = IS_STAGING ? STAGING_CONFIG : LIVE_CONFIG;
 
-// SMS helper (Cloudflare Worker in sms-helper/). Empty = phone confirmation is switched off and hidden.
-export const SMS_URL = "";
+// Helper (Cloudflare Worker in helper/): texts phone codes and sends the branded account emails.
+// Empty = phone confirmation is hidden, and account emails fall back to Firebase's own plain emails.
+export const HELPER_URL = "https://jsph-helper.markchristianpjalandoon.workers.dev";
+// Text-message (SMS) codes through the helper. Off until UniSMS is set up (the emails work without it).
+export const SMS_ON = false;
 
 // How long an approved post stays live.
 export const LISTING_DAYS = 30;
@@ -33,3 +36,6 @@ export const LISTING_DAYS = 30;
 // Resume file uploads need Firebase Storage, which requires the Blaze plan.
 // Turn this on after creating the Storage bucket and publishing storage.rules.
 export const RESUME_UPLOADS = false;
+// "Continue with Facebook". Turn on only after the Facebook app is set up and the Facebook
+// provider is enabled in this site's Firebase project (Authentication → Sign-in method).
+export const FB_LOGIN = { staging: true, live: false }[IS_STAGING ? "staging" : "live"];
