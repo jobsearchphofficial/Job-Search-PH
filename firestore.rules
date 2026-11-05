@@ -42,21 +42,25 @@ service cloud.firestore {
 
     /* ---------- Profiles ---------- */
     // First and last name: at least two words of 2+ characters.
-    function fullName(n) { return n.matches('[ ]*[^ ]{2,}( +[^ ]+)* +[^ ]{2,}[ ]*'); }
+    function fullName(n) { return n.matches('[ ]*[^ ]{2,}( +[^ ]+)* +[^ ]{2,}[ ]*') && n.matches('(?s).*\\p{L}\\p{L}.* .*\\p{L}\\p{L}.*'); }
     function validProfile(d) {
       return d.keys().hasOnly([
           'role','fullName','phone','city','messenger','consent','createdAt','updatedAt',
           'birthDate','gender','jobCategories','jobTypes','experienceYears','skills','workHistory',
           'education','availability','resumeUrl','resumeFileUrl','resumeFileName','companyName','photo','email','src','jobCategoryOther',
           'fbUrl','bizReg','signIn','emailVerified','alerts','alertsScope','alertsToken','emailNotify',
-          'firstName','middleName','lastName'])
+          'firstName','middleName','lastName','employerKind','needs','heardFrom','barangay'])
         && d.role in ['jobseeker', 'employer']
         && str(d.fullName, 2, 80)
         && optStr(d.get('firstName', null), 40)
         && optStr(d.get('middleName', null), 40)
         && optStr(d.get('lastName', null), 40)
+        && (d.get('employerKind', null) == null || d.employerKind in ['household', 'business'])
+        && (d.get('needs', null) == null || (d.needs is list && d.needs.size() <= 12))
+        && optStr(d.get('heardFrom', null), 40)
         && str(d.phone, 7, 20)
         && str(d.city, 1, 60)
+        && optStr(d.get('barangay', null), 60)
         && d.consent == true
         && optStr(d.get('messenger', null), 100)
         && optStr(d.get('birthDate', null), 10)
@@ -376,7 +380,7 @@ service cloud.firestore {
                     && request.resource.data.keys().hasOnly(['day', 'month', 'applies', 'posts', 'messages', 'reports', 'support', 'postsM', 'msgAt'])
                     && request.resource.data.day == today()
                     && request.resource.data.get('month', thisMonth()) == thisMonth()
-                    && cnt('applies', 10) && cnt('posts', 5) && mcnt('postsM', 5) && cnt('messages', 200) && cnt('reports', 5) && cnt('support', 3)
+                    && cnt('applies', 3) && cnt('posts', 5) && mcnt('postsM', 5) && cnt('messages', 200) && cnt('reports', 5) && cnt('support', 3)
                     && (request.resource.data.get('msgAt', null) == (resource == null ? null : resource.data.get('msgAt', null))
                         || request.resource.data.msgAt == request.time);
     }
@@ -482,6 +486,14 @@ service cloud.firestore {
                     && request.resource.data.keys().hasOnly(['reason', 'note', 'bannedAt', 'bannedBy', 'name'])
                     && str(request.resource.data.reason, 1, 80) && str(request.resource.data.get('note', ''), 0, 500);
       allow delete: if isAdmin();
+    }
+
+    // Watchlist: accounts an admin flagged as suspicious. Admins only; the user never sees it.
+    match /watch/{uid} {
+      allow read, delete: if isAdmin();
+      allow create, update: if isAdmin()
+                    && request.resource.data.keys().hasOnly(['reason', 'note', 'at', 'by'])
+                    && str(request.resource.data.reason, 1, 80) && str(request.resource.data.get('note', ''), 0, 500);
     }
 
     match /admins/{uid} {

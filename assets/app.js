@@ -1,7 +1,8 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS, smsEnabled, normPhone, isFullName } from "./store.js?v=1793271000";
-import { IS_STAGING, FB_LOGIN } from "./firebase-config.js?v=1793271000";
-import { fitScore, rankApplicants } from "./match.js?v=1793271000";
-import { scamFlags, SERIOUS } from "./safety.js?v=1793271000";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS, smsEnabled, normPhone, isFullName } from "./store.js?v=1793867629";
+import { IS_STAGING, FB_LOGIN } from "./firebase-config.js?v=1793867629";
+import { fitScore, rankApplicants } from "./match.js?v=1793867629";
+import { scamFlags, SERIOUS } from "./safety.js?v=1793867629";
+import { initPixel, track } from "./pixel.js?v=1793867629";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -9,7 +10,7 @@ const CATEGORIES = [
   "Gardener / Maintenance", "Food service", "Sales / Retail", "Delivery / Rider",
   "Construction / Skilled trade", "Security", "Office / Admin", "Other",
 ];
-const TYPES = ["Live-in", "Stay-out", "Full-time", "Part-time", "Project-based"];
+const TYPES = ["Live-in", "Stay-out", "Full-time", "Part-time", "Flexible schedule", "Project-based"];
 // Negros Occidental only for now: 13 cities and 19 municipalities.
 const CITIES = [
   "Bacolod City", "Talisay City", "Silay City", "Bago City", "Victorias City", "Cadiz City",
@@ -28,6 +29,7 @@ const BARANGAYS = {
   "Bago City": ["Abuanan", "Alianza", "Atipuluan", "Bacong-Montilla", "Bagroy", "Balingasag", "Binubuhan", "Busay", "Calumangan", "Caridad",
     "Don Jorge L. Araneta", "Dulao", "Ilijan", "Lag-Asan", "Ma-ao", "Mailum", "Malingin", "Napoles", "Pacol", "Poblacion", "Sagasa", "Sampinit", "Tabunan", "Taloc"],
 };
+const livesIn = (x) => [x?.barangay, x?.city].filter(Boolean).join(", "); // "Mandalagan, Bacolod City"
 const AREAS = Object.entries(BARANGAYS).flatMap(([city, list]) => list.map((b) => [b, city]));
 // Job titles people search for most, used for "What" suggestions.
 const POPULAR_TITLES = [
@@ -208,6 +210,8 @@ function riskFlags(j, owner, ctx) {
   if (ageH != null && ageH < 24) f.push(["warn", `Brand-new account (made ${ago(owner.createdAt)})`]);
   if (owner.signIn === "password" && !owner.emailVerified) f.push(["warn", "Email not confirmed (signed up with email & password)"]);
   if (!owner.fbUrl) f.push(["warn", "No Facebook link on their profile"]);
+  const mw = j.workplace && j.salaryMin ? minimumPay(j.city, j.workplace, j.salaryPeriod) : null;
+  if (mw && j.salaryMin < mw.amount) f.push(["bad", `Pay below legal minimum: ₱${Number(j.salaryMin).toLocaleString("en-PH")} vs ₱${mw.amount.toLocaleString("en-PH")} per ${j.salaryPeriod || "month"} (${mw.region})`]);
   const txt = `${j.title} ${j.description} ${j.requirements || ""}`;
   const sw = txt.match(SCAM_WORDS); if (sw) f.push(["bad", `Post mentions “${sw[0]}” — common in scam posts`]);
   if (/(\+?63|0)9\d{2}[\s-]?\d{3}[\s-]?\d{4}/.test(txt) || /https?:\/\/|www\.|\.com\b/i.test(txt)) f.push(["warn", "Phone number or link inside the job text"]);
@@ -244,6 +248,20 @@ function payWarning(d) {
     return { msg: `${shown} per ${per} is much higher than usual for ${d.workplace === "household" ? "household work" : "this kind of job"} in Negros Occidental.${guess}`, field: hi > ceil ? "salaryMax" : "salaryMin" };
   }
   return null;
+}
+
+/* ---------------- Low pay: a friendly suggestion, with a hard stop at very low pay ---------------- */
+// Below the legal minimum is only a suggestion (admins still see a risk flag). Pay of ₱300 a day or less
+// can't be posted. Monthly and hourly pay are converted to a day's pay first, so the rule can't be dodged.
+const PAY_BLOCK_DAILY = 300;
+function payFloor(d) {
+  const per = d.salaryPeriod || "month", pay = Number(d.salaryMin) || 0;
+  const min = d.city && d.workplace ? minimumPay(d.city, d.workplace, per) : null;
+  if (!min || !pay || pay >= min.amount) return null;
+  const perDay = per === "month" ? pay / WORK_DAYS : per === "day" ? pay : pay * 8;
+  const minText = `₱${min.amount.toLocaleString("en-PH")} per ${per}`;
+  const dayNote = per === "day" ? "" : ` ₱${pay.toLocaleString("en-PH")} per ${per} is about ₱${Math.round(perDay).toLocaleString("en-PH")} a day.`;
+  return { min, minText, blocked: perDay <= PAY_BLOCK_DAILY, blockMsg: `Jobs paying ₱${PAY_BLOCK_DAILY} a day or less can't be posted.${dayNote} The legal minimum for this job is ${minText}.` };
 }
 
 /* ---------------- Drafts: keep unsaved form input across refreshes ---------------- */
@@ -766,7 +784,7 @@ function renderNav() {
   const role = profile?.role;
   $("#nav").innerHTML = [
     link("#/", "Find jobs"),
-    !user || role === "employer" ? link("#/post", "Post a job") : "",
+    !user || role === "employer" ? link("#/post", "Post a job").replace('class="', 'class="nav-post ') : "",
     role === "employer" ? link("#/my", "My posts") : "",
     role === "jobseeker" ? link("#/applications", "My applications") : "",
     user && profile ? link("#/messages", `Messages${unreadMessages() ? ` <span class="dot">${unreadMessages()}</span>` : ""}`) : "",
@@ -837,7 +855,16 @@ document.addEventListener("click", async (e) => {
 
 /* ---------------- Search helpers ---------------- */
 const PAY_MIN = 6500, PAY_MAX = 30000;
-const payLabel = (v) => (Number(v) > PAY_MIN ? `₱${Number(v).toLocaleString("en-PH")}+ / month` : "Any (₱6,500+)");
+const payLabel = (v) => (Number(v) > PAY_MIN ? `₱${Number(v).toLocaleString("en-PH")}+ / month` : "Any pay");
+const PAY_STEPS = [["", "Any pay"], ...[8000, 10000, 12000, 15000, 20000].map((n) => [String(n), `₱${n.toLocaleString("en-PH")}+ / month`])];
+// Small pick-list button (filters on the job list), instead of the browser's own dropdown.
+const msel = (name, title, list, value) => {
+  const cur = list.find(([v]) => String(v) === String(value ?? "")) || list[0];
+  return `<div class="msel" data-msel="${name}">
+    <button type="button" class="msel-btn ${cur[0] !== "" && cur[0] !== "new" ? "set" : ""}" aria-haspopup="listbox" aria-expanded="false"><span class="msel-k">${title}</span><span class="msel-v">${esc(cur[1])}</span><svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><path d="m5 8 5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    <div class="msel-list" role="listbox" aria-label="${title}" hidden>${list.map(([v, l]) => `<button type="button" role="option" class="msel-opt" data-v="${esc(String(v))}" aria-selected="${String(v) === String(cur[0])}">${esc(l)}</button>`).join("")}</div>
+  </div>`;
+};
 const clock = (h) => { h = ((h % 24) + 24) % 24; return `${h % 12 || 12}:00 ${h < 12 ? "AM" : "PM"}`; };
 const hl = (text, t) => { const i = text.toLowerCase().indexOf(t); return i < 0 ? esc(text) : `${esc(text.slice(0, i))}<mark>${esc(text.slice(i, i + t.length))}</mark>${esc(text.slice(i + t.length))}`; };
 // Lightweight combobox: shows suggestions as you type; arrows + Enter to pick, Esc to close.
@@ -880,14 +907,15 @@ async function viewList() {
   document.title = "Job Search PH — Jobs in Negros Occidental";
   const { user } = getAuthState();
   const cityList = CITIES.filter((c) => c !== "Other");
+  const { profile: pf0 } = getAuthState();
+  const role0 = pf0?.role || "";
   app.innerHTML = `
-    <section class="hero">
-      <span class="eyebrow">Free for jobseekers · No fees, ever</span>
-      <h1>Find work near you in <em>Negros Occidental</em></h1>
-      <p>Household, service and local jobs from employers in Bacolod and nearby towns. Every post is checked and must pay at least the legal minimum wage.</p>
+    <section class="board-head">
+      <h1>Jobs in Negros Occidental</h1>
+      <p class="board-sub">Household, service and local work from employers in Bacolod and nearby towns. Free to apply, with no agency fees.</p>
       <form class="search2" id="search" role="search">
         <div class="field ac"><span class="ico">${ICON.search}</span><label class="sr" for="q">What</label>
-          <input type="search" id="q" name="q" placeholder="Job title or keyword" value="${esc(filters.q)}" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="q-list" aria-autocomplete="list">
+          <input type="search" id="q" name="q" placeholder="Job, like yaya or driver" value="${esc(filters.q)}" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="q-list" aria-autocomplete="list">
           <ul class="ac-list" id="q-list" role="listbox" hidden></ul></div>
         <div class="field ac"><span class="ico">${ICON.pin}</span><label class="sr" for="where">Where</label>
           <input type="search" id="where" name="where" placeholder="City, town or barangay" value="${esc(filters.where)}" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="where-list" aria-autocomplete="list">
@@ -896,30 +924,42 @@ async function viewList() {
       </form>
       <div class="hero-row">
         <button class="btn btn-ghost btn-sm near" id="near" type="button">${ICON.locate}<span>${filters.near ? `Near ${esc(filters.nearCity)}` : "Use my location"}</span></button>
-        <div class="hero-stats"><span><strong id="stat-jobs">–</strong> open jobs</span><span><strong id="stat-cities">–</strong> locations</span></div>
+        <div class="hero-stats"><span id="stat-jobs-wrap"><strong id="stat-jobs">–</strong> open jobs</span><span id="stat-cities-wrap"><strong id="stat-cities">–</strong> locations</span></div>
       </div>
-      ${user ? "" : `<div class="hero-actions"><a class="btn btn-ghost btn-sm" href="#/signin" data-action="gosignin" data-intent="jobseeker" data-purpose="Create your free profile">Create a free profile</a><a class="btn btn-ghost btn-sm" href="#/signin" data-action="gosignin" data-intent="employer" data-purpose="Sign in to post a job">I'm hiring</a></div>`}
     </section>
-    <nav class="cat-chips" aria-label="Categories">
-      <button class="cat ${!filters.category ? "on" : ""}" data-cat="">All jobs</button>
-      ${CATEGORIES.map((c) => `<button class="cat ${filters.category === c ? "on" : ""}" data-cat="${esc(c)}">${esc(c)}</button>`).join("")}
-    </nav>
-    <div class="toolbar">
-      <span id="count" class="muted"></span>
-      <div class="toolbar-filters">
-        <select id="f-type" name="type" aria-label="Job type"><option value="">Any type</option>${opts(TYPES, filters.type)}</select>
-        <label class="pay-slider"><span class="ps-label">Pay <strong id="pay-out">${payLabel(filters.minPay)}</strong></span>
-          <input type="range" id="f-pay" min="${PAY_MIN}" max="${PAY_MAX}" step="500" value="${filters.minPay || PAY_MIN}" aria-label="Minimum monthly pay"></label>
-        <select id="f-sort" name="sort" aria-label="Sort">
-          <option value="new" ${filters.sort === "new" ? "selected" : ""}>Newest</option>
-          <option value="pay" ${filters.sort === "pay" ? "selected" : ""}>Highest pay</option>
-          <option value="near" ${filters.sort === "near" ? "selected" : ""}>Nearest</option>
-        </select>
+    <div class="board">
+      <div class="board-main">
+        <div class="toolbar">
+          <span id="count"></span>
+          <div class="toolbar-filters">
+            ${msel("category", "Job", [["", "All jobs"], ...CATEGORIES.map((c) => [c, c])], filters.category)}
+            ${msel("type", "Type", [["", "Any type"], ...TYPES.map((t) => [t, t])], filters.type)}
+            ${msel("minPay", "Pay", PAY_STEPS, filters.minPay)}
+            ${msel("sort", "Sort", [["new", "Newest"], ["pay", "Highest pay"], ["near", "Nearest"]], filters.sort)}
+          </div>
+        </div>
+        <div id="active-filters" class="active-filters"></div>
+        <section id="results" class="cards jlist">${SK.cards(4)}</section>
       </div>
-    </div>
-    <div id="active-filters" class="active-filters"></div>
-    <section id="results" class="cards">${SK.cards(6)}</section>
-    <aside class="notice"><strong>Stay safe:</strong> legitimate employers never ask you to pay to apply, train or get hired. <a href="#/safety">Read safety tips</a></aside>`;
+      <aside class="board-side">
+        ${role0 !== "jobseeker" ? `<section class="side-hire">
+          <h2>Hiring?</h2>
+          <p>Post a job for free. Jobseekers apply with their full profile, and you message them here.</p>
+          <ol><li>Describe the job and the pay</li><li>We check it, usually within a day</li><li>Applicants come to you</li></ol>
+          <a class="btn btn-ink btn-block" href="#/post" ${user ? "" : `data-action="gosignin" data-intent="employer" data-purpose="Sign in to post a job"`}>Post a job</a>
+        </section>` : ""}
+        ${!user ? `<section class="side-seek">
+          <h2>Looking for work?</h2>
+          <p>Make one profile, then apply to any job here in one tap.</p>
+          <a class="btn btn-ghost btn-block" href="#/signin" data-action="gosignin" data-intent="jobseeker" data-purpose="Create your free profile">Create a free profile</a>
+        </section>` : ""}
+        <section class="side-safe">
+          <h2>Stay safe</h2>
+          <p>Real employers never ask you to pay to apply, train or get hired.</p>
+          <a href="#/safety">Read the safety tips</a>
+        </section>
+      </aside>
+    </div>`;
 
   let applied = new Set();
   const distanceOf = (j) => (filters.near && CITY_COORDS[j.city] ? kmBetween(filters.near, CITY_COORDS[j.city]) : null);
@@ -966,10 +1006,37 @@ async function viewList() {
     $("#empty-clear")?.addEventListener("click", () => { Object.assign(filters, { q: "", where: "", category: "", type: "", minPay: "" }); viewList(); });
   };
   const sync = () => { const f = $("#search"); filters.q = f.q.value; filters.where = f.where.value; draw(); };
-  const payIn = $("#f-pay");
-  const paintPay = () => { const pct = ((payIn.value - PAY_MIN) / (PAY_MAX - PAY_MIN)) * 100; payIn.style.setProperty("--fill", `${pct}%`); $("#pay-out").textContent = payLabel(payIn.value); };
-  payIn.addEventListener("input", () => { filters.minPay = Number(payIn.value) > PAY_MIN ? payIn.value : ""; paintPay(); draw(); });
-  paintPay();
+  // Filter pick-lists (Type, Pay, Sort).
+  const setMsel = (name, v) => {
+    const box = app.querySelector(`[data-msel="${name}"]`); if (!box) return;
+    const opt = box.querySelector(`.msel-opt[data-v="${CSS.escape(String(v))}"]`) || box.querySelector(".msel-opt");
+    box.querySelectorAll(".msel-opt").forEach((o) => o.setAttribute("aria-selected", o === opt));
+    box.querySelector(".msel-v").textContent = opt.textContent;
+    box.querySelector(".msel-btn").classList.toggle("set", opt.dataset.v !== "" && opt.dataset.v !== "new");
+  };
+  const closeMsels = (except) => app.querySelectorAll(".msel").forEach((b) => { if (b === except) return; b.querySelector(".msel-list").hidden = true; b.querySelector(".msel-btn").setAttribute("aria-expanded", "false"); });
+  app.querySelectorAll(".msel").forEach((box) => {
+    const btn = box.querySelector(".msel-btn"), list = box.querySelector(".msel-list");
+    btn.addEventListener("click", () => {
+      const open = list.hidden; closeMsels(box); list.hidden = !open; btn.setAttribute("aria-expanded", open);
+      if (open) (list.querySelector('[aria-selected="true"]') || list.firstElementChild).focus();
+    });
+    list.addEventListener("click", (e) => {
+      const o = e.target.closest(".msel-opt"); if (!o) return;
+      const name = box.dataset.msel; filters[name] = o.dataset.v; setMsel(name, o.dataset.v); closeMsels(); btn.focus();
+      if (name === "sort" && o.dataset.v === "near" && !filters.near) locate(); else draw();
+    });
+    list.addEventListener("keydown", (e) => {
+      const opts = [...list.querySelectorAll(".msel-opt")]; const i = opts.indexOf(document.activeElement);
+      if (e.key === "ArrowDown") { e.preventDefault(); opts[Math.min(i + 1, opts.length - 1)].focus(); }
+      if (e.key === "ArrowUp") { e.preventDefault(); opts[Math.max(i - 1, 0)].focus(); }
+      if (e.key === "Escape") { closeMsels(); btn.focus(); }
+    });
+  });
+  if (!window.__mselOutside) { // one listener for the whole app: tapping elsewhere closes any open pick-list
+    window.__mselOutside = true;
+    document.addEventListener("click", (e) => { if (!e.target.closest(".msel")) document.querySelectorAll(".msel-list").forEach((l) => { l.hidden = true; l.previousElementSibling?.setAttribute("aria-expanded", "false"); }); });
+  }
   // Suggestions under the two search boxes.
   const live = () => (jobsCache || []).filter(isLive);
   autocomplete($("#q"), $("#q-list"), (term) => {
@@ -997,10 +1064,6 @@ async function viewList() {
   $("#search").addEventListener("submit", (e) => { e.preventDefault(); sync(); $("#results").scrollIntoView({ behavior: "smooth", block: "start" }); });
   $("#q").addEventListener("input", sync);
   $("#where").addEventListener("input", sync);
-  app.querySelectorAll(".toolbar select").forEach((s) => s.addEventListener("change", () => {
-    filters[s.name] = s.value;
-    if (s.name === "sort" && s.value === "near" && !filters.near) locate(); else draw();
-  }));
   app.querySelectorAll("[data-cat]").forEach((b) => b.addEventListener("click", () => {
     filters.category = b.dataset.cat;
     app.querySelectorAll("[data-cat]").forEach((x) => x.classList.toggle("on", x === b)); draw();
@@ -1021,7 +1084,7 @@ async function viewList() {
       if (bestKm > 60) { label.textContent = "Use my location"; toast("You seem to be outside Negros Occidental. Type a city instead."); return; }
       filters.near = here; filters.nearCity = best; filters.sort = "near"; filters.where = best;
       const w = $("#where"); if (w) w.value = best;
-      label.textContent = `Near ${best}`; $("#f-sort").value = "near"; draw();
+      label.textContent = `Near ${best}`; setMsel("sort", "near"); draw();
     }, () => { label.textContent = "Use my location"; toast("Couldn't get your location. Type your city instead."); }, { timeout: 10000, maximumAge: 600000 });
   };
   $("#near").addEventListener("click", locate);
@@ -1032,24 +1095,36 @@ async function viewList() {
     if (!$("#results")) return;
     draw();
     const live = jobsCache.filter(isLive);
-    $("#stat-jobs").textContent = live.length;
-    $("#stat-cities").textContent = new Set(live.map((j) => j.city)).size;
+    const nJobs = live.length, nCities = new Set(live.map((j) => j.city)).size;
+    $("#stat-jobs-wrap").innerHTML = `<strong>${nJobs}</strong> open job${nJobs === 1 ? "" : "s"}`;
+    $("#stat-cities-wrap").innerHTML = `<strong>${nCities}</strong> ${nCities === 1 ? "town" : "towns"}`;
   } catch (err) { console.error(err); if ($("#results")) $("#results").innerHTML = `<p class="error">Could not load jobs. Please refresh.</p>`; }
 }
 
+// Pay split into the amount and the period, so the list can show the amount big.
+function payParts(j) {
+  if (!j.salaryMin && !j.salaryMax) return { amt: "Pay to discuss", per: "" };
+  const per = { month: "a month", day: "a day", hour: "an hour" }[j.salaryPeriod] || "";
+  const amt = j.salaryMin && j.salaryMax && j.salaryMax !== j.salaryMin ? `${peso(j.salaryMin)}–${peso(j.salaryMax).replace("₱", "")}` : peso(j.salaryMin || j.salaryMax);
+  return { amt, per };
+}
+const NEW_MS = 3 * 864e5;
 function card(j, applied, km) {
   const perks = Array.isArray(j.benefits) ? j.benefits : [];
+  const tags = [j.employmentType, j.workplace === "household" && j.schedule && j.schedule !== j.employmentType ? j.schedule : ""].filter(Boolean);
+  const shown = perks.slice(0, 3), more = perks.length - shown.length;
+  const when = j.approvedAt || j.createdAt;
+  const isNew = when && Date.now() - when < NEW_MS;
+  const pay = payParts(j);
   return `
-  <a class="card ${j.featured ? "card-featured" : ""}" href="#/job/${encodeURIComponent(j.id)}">
-    <div class="card-top">
-      <span class="cat-tag">${esc(j.category === "Other" && j.categoryOther ? j.categoryOther : j.category)}</span>
-      ${j.featured ? `<span class="badge badge-featured">Featured</span>` : applied ? `<span class="badge badge-app-new">Applied</span>` : ""}
+  <a class="card jrow ${j.featured ? "card-featured" : ""}" href="#/job/${encodeURIComponent(j.id)}">
+    <div class="jrow-main">
+      <div class="jrow-title"><h3>${esc(j.title)}</h3>${applied ? `<span class="jtag-applied">Applied</span>` : isNew ? `<span class="jtag-new">New</span>` : ""}${j.featured ? `<span class="jtag-feat">Featured</span>` : ""}</div>
+      <p class="jrow-emp">${esc(j.employerName)} ${verifiedBadge(j.ownerUid, { short: true })}${founderBadge(j.ownerUid, "employer", { short: true })}</p>
+      <p class="jrow-loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}</span>${km != null ? `<span class="jrow-km">${km < 1 ? "under 1" : Math.round(km)} km away</span>` : ""}</p>
+      <ul class="jrow-tags">${tags.map((t) => `<li class="t-kind">${esc(t)}</li>`).join("")}${shown.map((b) => `<li>${esc(b)}</li>`).join("")}${more > 0 ? `<li class="t-more">+${more} more</li>` : ""}</ul>
     </div>
-    <h3>${esc(j.title)}</h3>
-    <p class="employer">${esc(j.employerName)} ${verifiedBadge(j.ownerUid, { short: true })}${founderBadge(j.ownerUid, "employer", { short: true })}</p>
-    <p class="loc">${ICON.pin}<span>${j.area ? `${esc(j.area)}, ` : ""}${esc(j.city)}${km != null ? ` · ${km < 1 ? "<1" : Math.round(km)} km` : ""}</span></p>
-    <ul class="meta"><li>${esc(j.employmentType)}</li>${j.workplace === "household" && j.schedule ? `<li>${esc(j.schedule)}</li>` : ""}${perks.map((b) => `<li class="perk">${esc(b)}</li>`).join("")}</ul>
-    <div class="card-foot"><span class="salary">${salaryText(j)}</span><span class="muted">${ago(j.approvedAt || j.createdAt)}</span></div>
+    <div class="jrow-pay"><strong>${esc(pay.amt)}</strong>${pay.per ? `<span>${pay.per}</span>` : ""}<time>${ago(when)}</time></div>
   </a>`;
 }
 
@@ -1201,7 +1276,7 @@ async function renderApplyPanel(j, isOwner) {
   panel.innerHTML = `
     <h2>Apply for this job</h2>
     <p class="usage">${usage.applies || 0} of ${LIMITS.applies} applications used today</p>
-    <p class="muted small">The employer will see your profile: <strong>${esc(profile.fullName)}</strong>${age ? `, ${age}` : ""}, ${esc(profile.city)}, ${esc(profile.phone)}, plus your experience${profile.resumeUrl || profile.resumeFileUrl ? " and resume" : ""}. <a href="#/profile">Edit profile</a></p>
+    <p class="muted small">The employer will see your profile: <strong>${esc(profile.fullName)}</strong>${age ? `, ${age}` : ""}, ${esc(livesIn(profile))}, ${esc(profile.phone)}, plus your experience${profile.resumeUrl || profile.resumeFileUrl ? " and resume" : ""}. <a href="#/profile">${profile.barangay ? "Edit profile" : "Add your barangay"}</a></p>
     ${(() => { const st = profileStrength(profile); return st.score < 90 ? `<a class="s-nudge ${st.cls}" href="#/profile"><span><strong>${st.level} profile · ${st.score}/100.</strong> ${esc(st.todo[0]?.todo || "")} to get noticed.</span><em>Improve</em></a>` : ""; })()}
     <form id="apply-form">
       <label for="a-msg" class="small"><strong>Message to the employer</strong> (optional)</label>
@@ -1212,7 +1287,7 @@ async function renderApplyPanel(j, isOwner) {
   $("#apply-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Sending…";
-    try { await store.apply(j, e.target.message.value.trim()); clearDraft(`apply:${j.id}`); myAppsCache = null; toast("Application sent"); renderApplyPanel(j, false); }
+    try { await store.apply(j, e.target.message.value.trim()); clearDraft(`apply:${j.id}`); myAppsCache = null; toast("Application sent"); track("SubmitApplication", { content_category: j.category }); renderApplyPanel(j, false); }
     catch (err) {
       console.error(err); btn.disabled = false; btn.textContent = "Apply now";
       if (err.code === "limit-reached") { renderApplyPanel(j, false); return toast(limitMsg.applies); }
@@ -1261,8 +1336,6 @@ function viewSignIn() {
           </button>` : ""}
           <div class="divider"><span>or use email</span></div>
           <form id="email-form" class="auth-form" novalidate>
-            ${up ? nameFields(su, { labels: false }) : ""}
-            ${up && seeker ? `<label for="s-birth">Birthdate</label><span class="date-age"><input id="s-birth" name="birthDate" type="date" max="${maxBirthDate()}" value="${esc(su.birthDate)}"><output id="su-age" class="age-pill ${a != null && a < 18 ? "bad" : ""}">${a != null ? `${a} years old` : "Age"}</output></span><p class="hint">You must be at least 18. Employers see your age, not your birthdate.</p>` : ""}
             <label for="s-email">Email</label><input id="s-email" name="email" type="email" autocomplete="email" required value="${esc(su.email)}">
             <label for="s-pw">Password</label><input id="s-pw" name="pw" type="password" autocomplete="${up ? "new-password" : "current-password"}" required minlength="6">
             ${up ? `<p class="hint">At least 6 characters.</p>
@@ -1316,14 +1389,6 @@ function viewSignIn() {
       const email = f.email.value.trim(), pw = f.pw.value;
       if (up) {
         if (!su.role) return bad("Choose \u201cI'm looking for work\u201d or \u201cI'm hiring\u201d at the top.");
-        const ne = nameError(su.firstName, su.middleName, su.lastName);
-        if (ne) return bad(ne, hasName(su.firstName) ? f.lastName : f.firstName);
-        if (su.role === "jobseeker") {
-          const n = ageFrom(su.birthDate);
-          if (!su.birthDate || n === null) return bad("Enter your birthdate.", f.birthDate);
-          if (n < 18) return bad("You must be at least 18 years old to use Job Search PH as a jobseeker.", f.birthDate);
-          if (n > 90) return bad("Check your birthdate.", f.birthDate);
-        }
       }
       if (!email) return bad("Enter your email.", f.email);
       if (pw.length < 6) return bad("Use a password with at least 6 characters.", f.pw);
@@ -1331,11 +1396,10 @@ function viewSignIn() {
       btn.disabled = true;
       try {
         if (up) {
-          const parts = { firstName: tidyName(su.firstName), middleName: tidyName(su.middleName), lastName: tidyName(su.lastName) };
-          pendingName = joinName(parts.firstName, parts.middleName, parts.lastName);
-          signupIntent = su.role;
-          saveSignupInfo({ email: email.toLowerCase(), role: su.role, ...parts, birthDate: su.role === "jobseeker" ? su.birthDate : "" });
-          await store.signUpEmail(email, pw, pendingName);
+          // Short sign-up: name (and a jobseeker's birthdate) are asked in the setup that follows.
+          pendingName = ""; signupIntent = su.role;
+          saveSignupInfo({ email: email.toLowerCase(), role: su.role, firstName: "", middleName: "", lastName: "", birthDate: "" });
+          await store.signUpEmail(email, pw, "");
         } else await store.signInEmail(email, pw);
       } catch (ex) { err(authError(ex)); btn.disabled = false; }
     });
@@ -1345,6 +1409,130 @@ function viewSignIn() {
 
 /* ---------------- Profile ---------------- */
 let profileFocus = ""; // "emails" → scroll to the email settings (links in emails go to #/profile/emails)
+/* ---------------- Employer setup: one question per screen ---------------- */
+// Suggestions for the "Other" job box (plus the site's popular titles).
+const OTHER_JOBS = ["Electrician", "Plumber", "Carpenter", "Welder", "Mason", "Painter", "Aircon technician", "Mechanic", "Construction worker", "Helper",
+  "Tutor", "Massage therapist", "Barista", "Cashier", "Sales clerk", "Waiter / Waitress", "Kitchen helper", "Baker", "Dishwasher", "Bartender",
+  "Delivery rider", "Truck driver", "Tricycle driver", "Warehouse helper", "Messenger", "Encoder", "Receptionist", "Bookkeeper", "Office clerk",
+  "Security guard", "Janitor", "Utility worker", "Farm helper", "Pet sitter", "Elderly caregiver", "Nurse aide", "Hair stylist", "Manicurist",
+  "Call center agent", "Virtual assistant", "Social media assistant", "Graphic designer", "Pool cleaner", "Laundry staff", "Dressmaker / Tailor"];
+let holdRoute = false;
+const HEARD = ["Facebook", "A friend or family", "Flyer or poster", "Google", "TikTok", "Other"];
+function viewEmployerSetup({ user, p, su, knownName }) {
+  document.title = "Set up your employer account | Job Search PH";
+  const a = { kind: "", firstName: p.firstName || "", middleName: p.middleName || "", lastName: p.lastName || "", companyName: "", city: "", phone: "", needs: [], needsOther: "", heard: "", consent: false };
+  try { Object.assign(a, JSON.parse(sessionStorage.getItem("jsph:emp-setup") || "{}")); } catch {}
+  const keep = () => { try { sessionStorage.setItem("jsph:emp-setup", JSON.stringify(a)); } catch {} };
+  const steps = ["kind", ...(knownName ? [] : ["name"]), "company", "city", "phone", "needs", "heard"];
+  let i = 0;
+  const choice = (name, v, label, { icon = "", multi = false, on = false, sub = "" } = {}) => `
+    <label class="ob-opt ${on ? "on" : ""}"><input type="${multi ? "checkbox" : "radio"}" name="${name}" value="${esc(v)}" ${on ? "checked" : ""}>
+      ${icon ? `<span class="ob-ico">${icon}</span>` : ""}<span class="ob-txt"><strong>${esc(label)}</strong>${sub ? `<small>${esc(sub)}</small>` : ""}</span><span class="ob-mark" aria-hidden="true"></span></label>`;
+  const needList = () => (a.kind === "business" ? CATEGORIES.filter((c) => !HOUSEHOLD_ONLY.includes(c) && c !== "Other") : HOUSEHOLD_CATS);
+  const screens = {
+    kind: () => ({ q: "Who's hiring?", hint: "This sets the right job options and pay rules.", body: `<div class="ob-grid">
+      ${choice("kind", "household", "A household", { icon: ICON.home, sub: "Kasambahay, yaya, family driver, cook…", on: a.kind === "household" })}
+      ${choice("kind", "business", "A business", { icon: ICON.people, sub: "Store, restaurant, office, site…", on: a.kind === "business" })}</div>`, ok: () => !!a.kind }),
+    name: () => ({ q: "What's your name?", hint: "Applicants see this when you message them.", body: nameFields(a), ok: () => !nameError(a.firstName, a.middleName, a.lastName) }),
+    company: () => ({ q: a.kind === "business" ? "What's the business called?" : "What should we call your household?", hint: a.kind === "business" ? "As your customers know it, for example Inasal Express." : "For example Reyes Family. It shows on your job posts.",
+      body: `<input class="ob-input" name="companyName" maxlength="100" autocomplete="organization" placeholder="${a.kind === "business" ? "Business name" : "e.g. Reyes Family"}" value="${esc(a.companyName)}">`, ok: () => a.companyName.trim().length >= 2 }),
+    city: () => ({ q: "Where are you?", hint: "Jobseekers look for work near them.", body: cityPicker("city", a.city), ok: () => !!a.city }),
+    phone: () => ({ q: "What's your mobile number?", hint: "Only applicants you choose and our team can see it. We never post it publicly.", body: `<input class="ob-input" name="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="20" placeholder="0917 123 4567" value="${esc(a.phone)}">`, ok: () => !!normPhone(a.phone) }),
+    needs: () => ({ q: "What role are you hiring for?", hint: "Pick all that apply. Your first pick starts your first job post.", body: `<div class="ob-grid ob-grid-3">${needList().map((c) => choice("needs", c, c, { multi: true, on: a.needs.includes(c) })).join("")}${choice("needs", "Other", "Other", { multi: true, on: a.needs.includes("Other") })}</div>
+      <div class="ob-other" id="ob-other" ${a.needs.includes("Other") ? "" : "hidden"}><label for="ob-other-in">What role?</label>
+        <div class="ac"><input class="ob-input" id="ob-other-in" name="needsOther" maxlength="40" autocomplete="off" placeholder="Start typing, e.g. Electrician" value="${esc(a.needsOther)}" role="combobox" aria-expanded="false" aria-controls="ob-other-list" aria-autocomplete="list"><ul class="ac-list" id="ob-other-list" role="listbox" hidden></ul></div></div>`,
+      ok: () => a.needs.length > 0 && (!a.needs.includes("Other") || a.needsOther.trim().length >= 2), skip: "Not sure yet" }),
+    heard: () => ({ q: "How did you hear about us?", hint: "Optional. It helps us reach more employers like you.", body: `<div class="ob-grid ob-grid-3">${HEARD.map((h) => choice("heard", h, h, { on: a.heard === h })).join("")}</div>
+      <label class="check ob-consent"><input type="checkbox" name="consent" ${a.consent ? "checked" : ""}><span>I agree to only post real jobs and to use applicants' details only for hiring. I accept the <a href="#/terms" target="_blank">Terms</a> and <a href="#/privacy" target="_blank">Privacy notice</a>.</span></label>`,
+      ok: () => a.consent, last: true }),
+  };
+  const draw = () => {
+    const key = steps[i], sc = screens[key]();
+    app.innerHTML = `
+      <div class="ob">
+        <div class="ob-bar" role="progressbar" aria-valuemin="1" aria-valuemax="${steps.length}" aria-valuenow="${i + 1}" aria-label="Step ${i + 1} of ${steps.length}"><span style="width:${((i + 1) / steps.length) * 100}%"></span></div>
+        <div class="ob-top">${i > 0 ? `<button type="button" class="ob-back" id="ob-back" aria-label="Back"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 18l-6-6 6-6"/></svg><span>Back</span></button>` : `<span></span>`}<span class="ob-step">${i + 1} of ${steps.length}</span></div>
+        <form class="ob-card" id="ob-form" novalidate>
+          <h1>${sc.q}</h1>
+          <p class="ob-hint">${sc.hint}</p>
+          <div class="ob-body">${sc.body}</div>
+          <p class="error" id="ob-err" hidden></p>
+          <button class="btn btn-primary btn-block ob-next" type="submit" ${sc.ok() ? "" : "disabled"}>${sc.last ? "Finish setup" : "Continue"}</button>
+          ${sc.skip ? `<button type="button" class="linkbtn ob-skip" id="ob-skip">${sc.skip}</button>` : ""}
+          ${i === 0 ? `<p class="ob-switch">Looking for work instead? <button type="button" class="linkbtn" id="ob-seeker">Set up a jobseeker profile</button></p>` : ""}
+        </form>
+      </div>`;
+    const f = $("#ob-form"), next = f.querySelector(".ob-next");
+    const sync = () => {
+      const fd = new FormData(f);
+      if (key === "kind") a.kind = fd.get("kind") || "";
+      if (key === "name") { a.firstName = fd.get("firstName") || ""; a.middleName = fd.get("middleName") || ""; a.lastName = fd.get("lastName") || ""; }
+      if (key === "company") a.companyName = fd.get("companyName") || "";
+      if (key === "city") a.city = fd.get("city") || "";
+      if (key === "phone") a.phone = fd.get("phone") || "";
+      if (key === "needs") {
+        a.needs = fd.getAll("needs"); a.needsOther = fd.get("needsOther") || "";
+        const box = $("#ob-other"), was = box.hidden; box.hidden = !a.needs.includes("Other");
+        if (was && !box.hidden) setTimeout(() => $("#ob-other-in").focus(), 30);
+      }
+      if (key === "heard") { a.heard = fd.get("heard") || ""; a.consent = !!fd.get("consent"); }
+      f.querySelectorAll(".ob-opt").forEach((o) => o.classList.toggle("on", o.querySelector("input").checked));
+      next.disabled = !screens[key]().ok(); keep();
+    };
+    f.addEventListener("input", sync); f.addEventListener("change", sync);
+    bindPickers(f);
+    if (key === "needs") {
+      const inp = $("#ob-other-in");
+      autocomplete(inp, $("#ob-other-list"), (term) => {
+        const t = term.trim().toLowerCase(); if (!t) return [];
+        const all = [...new Set([...OTHER_JOBS, ...POPULAR_TITLES])];
+        const starts = (x) => x.toLowerCase().split(/[\s/-]+/).some((w) => w.startsWith(t));
+        return all.filter((x) => x.toLowerCase().startsWith(t) || starts(x)).sort((x, y) => (y.toLowerCase().startsWith(t) - x.toLowerCase().startsWith(t)) || x.localeCompare(y)).slice(0, 6)
+          .map((x) => ({ value: x, html: hl(x, t) }));
+      }, () => sync());
+    }
+    $("#ob-back")?.addEventListener("click", () => { i--; draw(); });
+    $("#ob-skip")?.addEventListener("click", () => { a.needs = []; keep(); i++; draw(); });
+    $("#ob-seeker")?.addEventListener("click", () => { signupIntent = "jobseeker"; if (su) saveSignupInfo({ ...su, role: "jobseeker" }); try { sessionStorage.removeItem("jsph:emp-setup"); } catch {} viewProfile(); });
+    setTimeout(() => f.querySelector(".ob-input, .name-row input")?.focus({ preventScroll: true }), 60);
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault(); sync();
+      if (!screens[key]().ok()) return;
+      if (!screens[key]().last) { i++; draw(); return; }
+      const err = $("#ob-err"); next.disabled = true; next.textContent = "Saving…";
+      const names = { firstName: tidyName(a.firstName), middleName: tidyName(a.middleName), lastName: tidyName(a.lastName) };
+      const data = {
+        role: "employer", fullName: joinName(names.firstName, names.middleName, names.lastName), ...names,
+        phone: a.phone.trim(), city: a.city, messenger: "", photo: p.photo || "", alerts: false, emailNotify: true,
+        companyName: a.companyName.trim(), fbUrl: "", bizReg: "", employerKind: a.kind, heardFrom: a.heard,
+        needs: [...a.needs.filter((n) => n !== "Other"), ...(a.needs.includes("Other") && a.needsOther.trim() ? [tidyName(a.needsOther.trim()).slice(0, 40)] : [])].slice(0, 12),
+      };
+      holdRoute = true; // saving updates the account, which would otherwise redraw this page as "My profile" for a moment
+      try {
+        await store.saveProfile(data);
+        track("CompleteRegistration", { content_name: "employer" });
+        const no = await store.claimFounder().catch(() => null);
+        if (no) FOUNDERS = await store.founders();
+        myAppsCache = null; pendingName = ""; signupIntent = ""; clearSignupInfo(); clearDraft("role");
+        try { sessionStorage.removeItem("jsph:emp-setup"); } catch {}
+        app.innerHTML = `<div class="ob"><div class="ob-card ob-done">
+          <span class="ob-done-ico">${ICON.check || "✓"}</span>
+          <h1>You're all set${a.firstName ? `, ${esc(tidyName(a.firstName))}` : ""}</h1>
+          <p class="ob-hint">${no ? `You're founding employer #${no} on Job Search PH. ` : ""}Post your first job now. It's free, and we usually check it within a day.</p>
+          <a class="btn btn-primary btn-block" href="#/post">Post a job</a>
+          <a class="btn btn-ghost btn-block" href="#/">Later</a>
+        </div></div>`;
+        holdRoute = false; renderNav();
+      } catch (ex) {
+        holdRoute = false;
+        console.error(ex); next.disabled = false; next.textContent = "Finish setup";
+        err.textContent = `Couldn't save (${ex.code || ex.message}). Try again.`; err.hidden = false;
+      }
+    });
+  };
+  draw();
+}
+
 function viewProfile(focus) {
   if (focus) profileFocus = focus;
   document.title = "My profile | Job Search PH";
@@ -1354,7 +1542,7 @@ function viewProfile(focus) {
   const isNew = !profile;
   const su = isNew ? signupInfo(user.email) : null; // what they typed on "Create account"
   if (!p.fullName) p.fullName = pendingName || user.displayName || "";
-  if (su) { Object.assign(p, { firstName: su.firstName, middleName: su.middleName, lastName: su.lastName }); if (su.birthDate && !p.birthDate) p.birthDate = su.birthDate; }
+  if (su?.firstName) { Object.assign(p, { firstName: su.firstName, middleName: su.middleName, lastName: su.lastName }); if (su.birthDate && !p.birthDate) p.birthDate = su.birthDate; }
   if (!p.firstName && !p.lastName) Object.assign(p, splitName(p.fullName));
   let role = p.role || (isNew ? signupIntent || su?.role : "") || "";
   if (isNew && !role) { try { const k = draftKey("role"); role = (k && localStorage.getItem(k)) || ""; } catch {} }
@@ -1371,7 +1559,7 @@ function viewProfile(focus) {
     <form id="profile-form" class="form" novalidate>
       <fieldset>
         <legend>About you</legend>
-        ${knownName ? `<div class="known-row" id="known-row"><div><span class="label">${su ? "From sign-up" : "Your name"}</span>
+        ${knownName ? `<div class="known-row" id="known-row"><div><span class="label">${su?.firstName ? "From sign-up" : "Your name"}</span>
             <span><strong>${esc(joinName(p.firstName, p.middleName, p.lastName))}</strong>${role === "jobseeker" && knownBirth ? `<span class="muted"> · ${ageFrom(p.birthDate)} years old</span>` : ""}</span>
             <span class="hint">You can change ${role === "jobseeker" && knownBirth ? "these" : "this"} anytime in your profile.</span></div>
           <button type="button" class="btn btn-ghost btn-sm" id="known-edit">Edit</button></div>` : ""}
@@ -1380,6 +1568,10 @@ function viewProfile(focus) {
           <label>Mobile number *<input name="phone" required inputmode="tel" autocomplete="tel" placeholder="0917 123 4567" value="${esc(p.phone)}"></label>
           <div class="fld-city"><span class="label">City / municipality *</span>${cityPicker("city", p.city)}</div>
         </div>
+        ${role === "jobseeker" ? `<div class="fld"><label for="p-brgy">Barangay *</label><div class="field ac boxed"><span class="ico">${ICON.pin}</span>
+          <input id="p-brgy" name="barangay" required maxlength="60" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="p-brgy-list" aria-autocomplete="list" placeholder="e.g. Mandalagan" value="${esc(p.barangay || "")}">
+          <ul class="ac-list" id="p-brgy-list" role="listbox" hidden></ul></div>
+          <span class="hint">Only employers you apply to can see this. Don't add your street or house number.</span></div>` : ""}
         <div class="row">
           ${role === "jobseeker" ? `<label ${knownBirth ? "data-known hidden" : ""}>Birthdate *<span class="date-age"><input name="birthDate" type="date" required max="${maxBirth}" value="${esc(p.birthDate)}"><output id="age-out" class="age-pill">${ageFrom(p.birthDate) != null ? `${ageFrom(p.birthDate)} years old` : "Age"}</output></span><span class="hint">You must be at least 18. Employers see your age, not your birthdate.</span></label>`
             : `<label>Household or business name<input name="companyName" maxlength="100" placeholder="e.g. Reyes Family or Inasal Express" value="${esc(p.companyName)}"></label>`}
@@ -1443,7 +1635,7 @@ function viewProfile(focus) {
 
   const collect = () => {
     const f = $("#profile-form"); if (!f) return;
-    ["firstName", "middleName", "lastName", "phone", "city", "messenger", "birthDate", "companyName", "fbUrl", "bizReg", "experienceYears", "availability", "skills", "workHistory", "resumeUrl"]
+    ["firstName", "middleName", "lastName", "phone", "city", "barangay", "messenger", "birthDate", "companyName", "fbUrl", "bizReg", "experienceYears", "availability", "skills", "workHistory", "resumeUrl"]
       .forEach((k) => { if (f[k]) p[k] = f[k].value; });
     if (f.firstName) p.fullName = joinName(p.firstName, p.middleName, p.lastName);
     if (f.eduLevel) p.education = [f.eduLevel.value, f.eduSchool.value.trim()].filter(Boolean).join(" · ");
@@ -1462,6 +1654,15 @@ function viewProfile(focus) {
     }));
     f.alerts?.addEventListener("change", () => { $("#alerts-scope").hidden = !f.alerts.checked; });
     bindOptionalPills(f); bindPickers(f);
+    if (f.barangay) {
+      autocomplete(f.barangay, $("#p-brgy-list"), (term) => {
+        const t = term.trim().toLowerCase(); const list = BARANGAYS[f.city.value] || [];
+        return list.filter((b) => !t || b.toLowerCase().startsWith(t) || b.toLowerCase().split(/[\s.-]+/).some((w) => w.startsWith(t)))
+          .map((b) => ({ value: b, html: hl(b, t), meta: "Barangay" }));
+      }, () => {}, true);
+      let lastCity = f.city.value; // a new city means the old barangay no longer applies
+      f.city.addEventListener("change", () => { if (f.city.value !== lastCity) { lastCity = f.city.value; f.barangay.value = ""; } });
+    }
     f.addEventListener("input", (e) => e.target.classList?.remove("invalid"));
     const pd = loadDraft(`profile:${role}`);
     if (pd) {
@@ -1509,9 +1710,11 @@ function viewProfile(focus) {
       const ph = digits(phone).replace(/^\+/, "");
       if (ph.length < 10 || ph.length > 13) return fail("Enter a complete mobile number, e.g. 0917 123 4567.", f.phone);
       if (!p.city) return fail("Choose your city or municipality.", f.querySelector(".picker-btn"));
+      if (f.barangay) { p.barangay = (p.barangay || "").trim().replace(/\s+/g, " "); if (!p.barangay) return fail("Add your barangay.", f.barangay); }
       if (p.messenger && !/^https?:\/\//i.test(p.messenger) && /facebook\.com|fb\.com|m\.me/i.test(p.messenger)) p.messenger = `https://${p.messenger.trim()}`;
       if (p.messenger && !messengerUrl(p.messenger)) return fail("That Facebook link doesn't look right. It should look like https://facebook.com/yourname", f.messenger);
       const data = { role, fullName, ...names, phone, city: p.city, messenger: (p.messenger || "").trim(), photo: p.photo || "" };
+      if (role === "jobseeker") data.barangay = p.barangay;
       if (role === "jobseeker") {
         const age = ageFrom(p.birthDate);
         if (!p.birthDate || age === null) return fail("Enter your birthdate.", f.birthDate);
@@ -1554,6 +1757,7 @@ function viewProfile(focus) {
         await store.saveProfile(data);
         clearDraft(`profile:${role}`); clearDraft("role");
         if (isNew) {
+          track("CompleteRegistration", { content_name: role });
           const no = await store.claimFounder();
           if (no) {
             FOUNDERS = await store.founders();
@@ -1608,6 +1812,7 @@ function viewProfile(focus) {
 
   const draw = () => {
     if (isNew && role) { try { const k = draftKey("role"); if (k) localStorage.setItem(k, role); } catch {} }
+    if (isNew && role === "employer") return viewEmployerSetup({ user, p, su, knownName });
     const name = p.fullName || user.displayName || "";
     const step = !role ? 1 : 2;
     app.innerHTML = `
@@ -1701,7 +1906,7 @@ const TITLE_FOR = {
   "Laundry": "Laundry helper", "Gardener / Maintenance": "Gardener", "Food service": "Food service crew", "Sales / Retail": "Sales staff",
   "Delivery / Rider": "Delivery rider", "Construction / Skilled trade": "Construction worker", "Security": "Security guard", "Office / Admin": "Office staff",
 };
-const SCHEDULES = { household: ["Full-time", "Part-time"], business: ["Full-time", "Part-time", "Project-based", "Shifts"] };
+const SCHEDULES = { household: ["Full-time", "Part-time", "Flexible schedule"], business: ["Full-time", "Part-time", "Flexible schedule", "Project-based", "Shifts"] };
 const RECOMMENDED = ["SSS", "PhilHealth", "Pag-IBIG", "13th month pay"];
 
 /* ---------------- Get Verified (its own page): ID photo + selfie, checked by an admin ---------------- */
@@ -2080,7 +2285,6 @@ async function viewPost(editId = null) {
       requirements: g("requirements"), description: g("description"),
     };
   };
-  const currentMin = () => (f.city.value && workplace() ? minimumPay(f.city.value, workplace(), val("salaryPeriod") || "month") : null);
   const counter = document.createElement("p"); counter.className = "hint"; f.description.after(counter);
   const ph = { messenger: "Messenger username or m.me link", phone: "e.g. 0917 123 4567", email: "you@example.com" };
 
@@ -2105,15 +2309,17 @@ async function viewPost(editId = null) {
       tag.textContent = len < 8 ? "Short day" : len === 8 ? "Recommended" : len === 9 ? "Long day" : "Discouraged: 10 hrs is the max"; }
     const n = f.description.value.trim().length; counter.textContent = n < 30 ? `${n}/30 characters minimum` : `${n} characters`;
     f.querySelectorAll(".crow").forEach((r) => { r.querySelector("[name=cValue]").placeholder = ph[r.querySelector("[name=cMethod]").value] || ""; });
-    const box = $("#wage-box"); const min = currentMin(); const pay = Number(f.salaryMin.value) || 0; const per = val("salaryPeriod") || "month";
-    // Only speak up when something is wrong: pay below the legal minimum, or pay that looks like a typo.
-    const low = min && pay && pay < min.amount;
+    const box = $("#wage-box"); const pay = Number(f.salaryMin.value) || 0; const per = val("salaryPeriod") || "month";
+    // Very low pay can't be posted; low pay gets a suggestion; pay that looks like a typo gets a double-check. (Admins see a flag for anything below the minimum.)
+    const floor = payFloor({ city: f.city.value.trim(), workplace: workplace(), salaryPeriod: per, salaryMin: pay });
     const pw = pay ? payWarning({ workplace: workplace(), salaryPeriod: per, salaryMin: f.salaryMin.value, salaryMax: per === "month" ? f.salaryMax.value : "" }) : null;
-    box.hidden = !low && !pw;
-    box.className = `wage-box ${low ? "low" : pw ? "odd" : ""}`;
-    box.innerHTML = low
-      ? `<strong>Below the legal minimum</strong><span class="small">The minimum for this job in ${esc(min.region)} is ₱${min.amount.toLocaleString("en-PH")} per ${per}. Please raise the pay.</span>`
-      : pw ? `<span class="verdict odd">⚠ Please double-check: ${esc(pw.msg)}</span>` : "";
+    box.hidden = !floor && !pw;
+    box.className = `wage-box ${floor?.blocked ? "low" : pw ? "odd" : ""}`;
+    box.innerHTML = [
+      floor?.blocked ? `<strong>This pay is too low to post</strong><span class="small">${esc(floor.blockMsg)}</span>` : "",
+      floor && !floor.blocked ? `<strong>Suggestion: make it ${esc(floor.minText)}</strong><span class="small">That's the legal minimum for this job in ${esc(floor.min.region)}. You can still post at this pay.</span>` : "",
+      pw ? `<span class="verdict odd">⚠ Please double-check: ${esc(pw.msg)}</span>` : "",
+    ].join("");
     const d = collect();
     $("#preview").innerHTML = card({ ...d, id: "preview", title: d.title || "Job title", employerName: d.employerName || "Employer name", city: d.city || "City", category: d.category || "Category", approvedAt: Date.now() }, false, null).replace(/href="[^"]*"/, 'href="#/post" tabindex="-1" aria-hidden="true"');
   };
@@ -2189,6 +2395,17 @@ async function viewPost(editId = null) {
     f.insertAdjacentHTML("afterbegin", draftNote());
     f.querySelector("[data-draft-clear]").addEventListener("click", () => { clearDraft("post"); viewPost(); });
   }
+  else if (!editJob && profile.employerKind) {
+    const wpIn = f.querySelector(`[name=workplace][value="${profile.employerKind}"]`);
+    if (wpIn) { wpIn.checked = true; wpIn.dispatchEvent(new Event("change", { bubbles: true })); renderOptions(); }
+    const need = (profile.needs || [])[0];
+    let catIn = need && f.querySelector(`[name=category][value="${CSS.escape(need)}"]`);
+    if (!catIn && need) { // their own job name from "Other"
+      catIn = f.querySelector('[name=category][value="Other"]');
+      if (catIn && f.categoryOther) f.categoryOther.value = need;
+    }
+    if (catIn) { catIn.checked = true; catIn.dispatchEvent(new Event("change", { bubbles: true })); }
+  }
   if (!editJob) autosave("post", f);
   refresh();
 
@@ -2202,7 +2419,7 @@ async function viewPost(editId = null) {
       const msgs = {
         workplace: "Choose who's hiring: a private household or a business.", employerName: "Add the employer or household name.",
         title: "Add a job title (at least 3 characters).", category: "Choose a category.", arrangement: "Choose live-in or stay-out.",
-        city: "Choose the city or municipality.", salaryMin: "Enter the pay. It must meet the legal minimum.",
+        city: "Choose the city or municipality.", salaryMin: "Enter the pay.",
         description: "Write a description of at least 30 characters: duties, schedule, household size.",
         agreeWage: "Confirm that you'll pay at least the legal minimum.", agreeFee: "Confirm that you won't charge applicants any fee.",
         agreeAge: "Confirm that you'll only hire workers aged 18 or older.", agreeTerms: "Confirm that you'll follow labor law and the Terms.",
@@ -2218,8 +2435,7 @@ async function viewPost(editId = null) {
     f.city.value = okCity;
     const data = collect();
     if (data.salaryMax && data.salaryMax < data.salaryMin) return fail("The 'To' amount should be higher than 'From'.", f.salaryMax);
-    const min = currentMin();
-    if (min && data.salaryMin < min.amount) return fail(`The pay is below the legal minimum of ₱${min.amount.toLocaleString("en-PH")} per ${data.salaryPeriod}. Please raise it.`, f.salaryMin);
+    { const floor = payFloor({ ...data, workplace: workplace() }); if (floor?.blocked) return fail(floor.blockMsg, f.salaryMin); }
     if (!(data.daysOff >= 2)) return fail("The minimum is 2 days off per month.", f.daysOff);
     const rows = [...f.querySelectorAll(".crow")].map((r) => ({ el: r.querySelector("[name=cValue]"), contactMethod: r.querySelector("[name=cMethod]").value, contactValue: r.querySelector("[name=cValue]").value.trim() })).filter((c) => c.contactValue);
     if (!rows.length) return fail("Add at least one way for the person you hire to reach you.", $("#add-contact"));
@@ -2247,6 +2463,7 @@ async function viewPost(editId = null) {
         return;
       }
       await store.createJob(data, contact);
+      track("Lead", { content_name: "job_post", content_category: data.category });
       clearDraft("post");
       jobsCache = null;
       app.innerHTML = `<div class="empty"><h1>Thanks! Your post is under review.</h1><p class="muted">We'll check it soon. Applicants will appear under My posts once it's live.</p><p><a class="btn btn-primary" href="#/my">Go to My posts</a> <a class="btn btn-ghost" href="#/post" id="again">Post another</a></p></div>`;
@@ -2316,7 +2533,7 @@ function applicantCard(a, { top = false, readOnly = false } = {}) {
     ["Phone", x.phone ? `<span class="copyable">${esc(x.phone)}</span>` : ""],
     ["Email", x.email ? `<a href="mailto:${esc(x.email)}">${esc(x.email)}</a>` : ""],
     ["Facebook", m ? `<a href="${esc(m)}" target="_blank" rel="noopener nofollow">Message on Messenger</a>` : ""],
-    ["Lives in", esc(x.city || "")],
+    ["Lives in", esc(livesIn(x))],
     ["Experience", exp],
     ["Can start", esc(x.availability || "")],
     ["Education", esc(x.education || "")],
@@ -2329,7 +2546,7 @@ function applicantCard(a, { top = false, readOnly = false } = {}) {
     <header class="ap-head">
       ${avatar(x.fullName, x.photo, "md")}
       <div class="ap-name"><h3>${esc(x.fullName)}${x.age ? `, ${esc(x.age)}` : ""}</h3>
-        <p class="muted small">${[x.gender && esc(x.gender), esc(x.city || ""), `applied ${ago(a.createdAt)}`].filter(Boolean).join(" · ")}</p></div>
+        <p class="muted small">${[x.gender && esc(x.gender), esc(livesIn(x)), `applied ${ago(a.createdAt)}`].filter(Boolean).join(" · ")}</p></div>
       <div class="ap-badges">${verifiedBadge(a.applicantUid)}${founderBadge(a.applicantUid, "jobseeker")}${strengthChip(x)}${appBadge(a.status, true)}</div>
     </header>
     ${fitHtml(a.fit, top)}
@@ -2638,7 +2855,7 @@ async function viewChat(appId) {
         <a href="#/messages" class="back" aria-label="Back to messages">←</a>
         ${avatar(name, iAmEmployer ? x.photo : "")}
         <div class="chat-who"><span class="chat-name"><strong>${esc(name)}</strong>${(iAmEmployer ? verifiedBadge(a.applicantUid, { short: true }) + founderBadge(a.applicantUid, "jobseeker", { short: true }) : verifiedBadge(a.employerUid, { short: true }) + founderBadge(a.employerUid, "employer", { short: true }))}</span>
-          <span class="muted small">${iAmEmployer ? `${x.age ? `${esc(x.age)} · ` : ""}${esc(x.city || "")} · ` : ""}<a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a></span></div>
+          <span class="muted small">${iAmEmployer ? `${x.age ? `${esc(x.age)} · ` : ""}${esc(livesIn(x))} · ` : ""}<a href="#/job/${encodeURIComponent(a.jobId)}">${esc(a.jobTitle)}</a></span></div>
         <span id="chat-badge"></span>
       </header>
       <div id="chat-banner"></div>
@@ -2938,6 +3155,7 @@ function viewSuspended(ban) {
 }
 
 /* ---------------- Admin: users ---------------- */
+const FLAG_REASONS = ["Fake or joke name", "Suspicious job post", "Possible scam", "Throwaway or fake email", "Duplicate account", "Other"];
 const BAN_REASONS = ["Scam or asking for money", "Fake or misleading job posts", "Harassment or abusive messages", "Fake profile or impersonation", "Spam", "Underage user", "Other"];
 let usersFilter = { q: "", role: "all", sort: "new" };
 async function renderUsers(body) {
@@ -2945,6 +3163,7 @@ async function renderUsers(body) {
   let data;
   try { data = await store.adminAll(); } catch (e) { console.error(e); body.innerHTML = `<div class="empty"><p>Couldn't load users (${esc(e.code || e.message)}).</p></div>`; return; }
   const bans = Object.fromEntries(data.bans.map((b) => [b.id, b]));
+  const watch = Object.fromEntries((data.watch || []).map((w) => [w.id, w]));
   const postsBy = {}, appsBy = {}, reportsBy = {};
   data.jobs.forEach((j) => (postsBy[j.ownerUid] = (postsBy[j.ownerUid] || 0) + 1));
   data.apps.forEach((a) => (appsBy[a.applicantUid] = (appsBy[a.applicantUid] || 0) + 1));
@@ -2954,13 +3173,14 @@ async function renderUsers(body) {
     const q = usersFilter.q.trim().toLowerCase();
     let list = data.users.filter((u) => {
       if (usersFilter.role === "banned") { if (!bans[u.id]) return false; }
+      else if (usersFilter.role === "flagged") { if (!watch[u.id]) return false; }
       else if (usersFilter.role === "reported") { if (!reportsBy[u.id]) return false; }
       else if (usersFilter.role !== "all" && u.role !== usersFilter.role) return false;
       return !q || [u.fullName, u.email, u.phone, u.city, u.companyName, u.id].some((v) => String(v || "").toLowerCase().includes(q));
     });
     list.sort(usersFilter.sort === "name" ? (a, b) => String(a.fullName).localeCompare(String(b.fullName)) : (a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     const n = (f) => data.users.filter(f).length;
-    const chips = [["all", "All", data.users.length], ["jobseeker", "Jobseekers", n((u) => u.role === "jobseeker")], ["employer", "Employers", n((u) => u.role === "employer")], ["reported", "Reported", n((u) => reportsBy[u.id])], ["banned", "Banned", n((u) => bans[u.id])]];
+    const chips = [["all", "All", data.users.length], ["jobseeker", "Jobseekers", n((u) => u.role === "jobseeker")], ["employer", "Employers", n((u) => u.role === "employer")], ["reported", "Reported", n((u) => reportsBy[u.id])], ["flagged", "Flagged", n((u) => watch[u.id])], ["banned", "Banned", n((u) => bans[u.id])]];
     body.innerHTML = `
       <div class="us-bar">
         <label class="us-search">${ICON.search}<input type="search" id="us-q" placeholder="Search name, email, phone or city" value="${esc(usersFilter.q)}" autocomplete="off"></label>
@@ -2979,6 +3199,7 @@ async function renderUsers(body) {
             ${u.role === "jobseeker" ? strengthChip(u) : ""}
             <span class="muted small">${u.role === "employer" ? `${postsBy[u.id] || 0} post${postsBy[u.id] === 1 ? "" : "s"}` : `${appsBy[u.id] || 0} application${appsBy[u.id] === 1 ? "" : "s"}`}</span>
             ${reportsBy[u.id] ? `<span class="badge badge-app-shortlisted">${reportsBy[u.id]} report${reportsBy[u.id] === 1 ? "" : "s"}</span>` : ""}
+            ${watch[u.id] ? `<span class="badge badge-flagged" title="${esc(watch[u.id].reason)}">Flagged</span>` : ""}
             ${bans[u.id] ? `<span class="badge badge-banned">Banned</span>` : ""}
           </span>
         </a>`).join("")}</div>${list.length > 300 ? `<p class="muted small">Showing the first 300. Search to narrow it down.</p>` : ""}` : `<div class="empty"><p>No users match.</p></div>`}`;
@@ -3034,7 +3255,7 @@ async function viewAdminUser(id) {
           ${avatar(u.fullName, u.photo, "lg")}
           <div><h1>${esc(u.fullName || "(no name)")}</h1>
             <p class="muted">${isSeeker ? "Jobseeker" : "Employer"}${u.companyName && !isSeeker ? ` · ${esc(u.companyName)}` : ""}${u.city ? ` · ${esc(u.city)}` : ""}</p>
-            <div class="au-tags">${verifiedBadge(u.id)}${founderBadge(u.id, u.role)}${isSeeker ? strengthChip(u) : ""}${ban ? `<span class="badge badge-banned">Banned</span>` : `<span class="badge badge-approved">Active</span>`}</div></div>
+            <div class="au-tags">${verifiedBadge(u.id)}${founderBadge(u.id, u.role)}${isSeeker ? strengthChip(u) : ""}${d.watch ? `<span class="badge badge-flagged">Flagged</span>` : ""}${ban ? `<span class="badge badge-banned">Banned</span>` : `<span class="badge badge-approved">Active</span>`}</div></div>
         </header>
         <dl class="ap-facts au-facts">${facts.join("")}</dl>
         ${isSeeker ? `<div class="ap-long au-long">
@@ -3047,14 +3268,22 @@ async function viewAdminUser(id) {
       <aside class="au-side">
         ${u.role ? `<div class="an-card au-verify">${VERIFIED[id] ? `<h3>${SHIELD} Verified ${isSeeker ? "jobseeker" : "employer"}</h3><p class="small muted">${esc(VERIFIED[id].method)}${VERIFIED[id].at ? ` · ${ago(VERIFIED[id].at)}` : ""}</p><button class="btn btn-ghost btn-block" id="au-unverify">Remove Verified badge</button>`
           : `<h3>Verify this ${isSeeker ? "jobseeker" : "employer"}</h3><p class="small muted">Call their number or check their Facebook first. ${isSeeker ? "Verified jobseekers get a badge employers see when they apply." : "Verified employers get a badge on every post."}</p><button class="btn btn-ghost btn-block" id="au-verify">Verify ${isSeeker ? "jobseeker" : "employer"}</button>`}</div>` : ""}
+        <div class="an-card au-ban au-flag ${d.watch ? "is-flagged" : ""}">
+          ${d.watch ? `<h3>${ADMIN_ICONS.flag} On your watchlist</h3><p class="small"><strong>Reason:</strong> ${esc(d.watch.reason)}</p>${d.watch.note ? `<p class="small muted">${esc(d.watch.note)}</p>` : ""}<p class="small muted">Flagged ${d.watch.at ? ago(d.watch.at) : ""}</p>
+            <button class="btn btn-ghost btn-block" id="au-unflag">Remove flag</button>`
+          : `<h3>Flag this account</h3><p class="small muted">Only admins see flags. Nothing changes for the user. Use it for accounts you want to keep an eye on.</p>
+            <label class="small">Reason<select id="au-freason">${FLAG_REASONS.map((r) => `<option>${esc(r)}</option>`).join("")}</select></label>
+            <label class="small">Note (optional)<textarea id="au-fnote" rows="2" maxlength="500" placeholder="What did you notice?"></textarea></label>
+            <button class="btn btn-ghost btn-block" id="au-flag">Flag account</button>`}
+        </div>
         <div class="an-card au-ban ${ban ? "" : "quiet"}">
           ${ban ? `<h3>Banned</h3><p class="small"><strong>Reason:</strong> ${esc(ban.reason)}</p>${ban.note ? `<p class="small muted">${esc(ban.note)}</p>` : ""}<p class="small muted">Since ${ban.bannedAt ? ago(ban.bannedAt) : "–"}</p>
             <button class="btn btn-ghost btn-block" id="au-unban">Lift ban</button>`
-          : `<details class="au-more"><summary>More actions</summary><h3>Ban this user</h3><p class="small muted">They'll still be able to sign in, but can't post, apply, message, report or edit their profile. They'll see a "suspended" screen with a link to support.</p>
+          : `<h3>Ban this user</h3><p class="small muted">They'll still be able to sign in, but can't post, apply, message, report or edit their profile. They'll see a "suspended" screen with a link to support.</p>
             <label class="small">Reason<select id="au-reason">${BAN_REASONS.map((r) => `<option>${esc(r)}</option>`).join("")}</select></label>
             <label class="small">Note (optional, shown only to admins)<textarea id="au-note" rows="2" maxlength="500" placeholder="What happened?"></textarea></label>
             ${!isSeeker && live.length ? `<label class="check small"><input type="checkbox" id="au-close" checked><span>Also close their ${live.length} live post${live.length === 1 ? "" : "s"}</span></label>` : ""}
-            <button class="btn btn-danger btn-block" id="au-ban">Ban user</button></details>`}
+            <button class="btn btn-danger btn-block" id="au-ban">Ban user</button>`}
         </div>
         ${user.uid === id ? `<p class="small muted">This is your own account.</p>` : ""}
       </aside>
@@ -3079,6 +3308,14 @@ async function viewAdminUser(id) {
   $("#au-unverify")?.addEventListener("click", async (e) => {
     if (!confirmInline(e.target, "Click again to remove")) return;
     try { VERIFIED = await store.unverify(id); toast("Badge removed"); viewAdminUser(id); } catch { toast("Couldn't remove. Try again."); }
+  });
+  $("#au-flag")?.addEventListener("click", async () => {
+    try { await store.flagUser(id, { reason: $("#au-freason").value, note: $("#au-fnote").value.trim() }); toast("Flagged"); viewAdminUser(id); }
+    catch (e) { console.error(e); toast(e.code === "permission-denied" ? "Couldn't flag. Publish the latest database rules first." : "Couldn't flag. Try again."); }
+  });
+  $("#au-unflag")?.addEventListener("click", async (e) => {
+    if (!confirmInline(e.target, "Click again to remove")) return;
+    try { await store.unflagUser(id); toast("Flag removed"); viewAdminUser(id); } catch { toast("Couldn't remove the flag."); }
   });
   $("#au-unban")?.addEventListener("click", async () => {
     const ok = await showDialog({ title: "Lift the ban?", body: "They'll be able to use Job Search PH normally again. Closed posts stay closed.", actions: [{ label: "Cancel", value: false }, { label: "Lift ban", value: true, primary: true }] });
@@ -3670,7 +3907,7 @@ function viewStatic(page) {
             <ul class="tips">
               <li><strong>Never pay to get a job.</strong> No real employer asks for a processing, training, medical, uniform or "reservation" fee. Under the Kasambahay Law, household workers can't be charged placement fees.</li>
               <li><strong>Keep your IDs and money safe.</strong> Don't send ID photos, bank, GCash or OTP codes before an interview, and never send money to an employer.</li>
-              <li><strong>Check the pay.</strong> Every job here must pay at least the legal minimum. In Negros Occidental, that's ₱6,500 a month for household workers.</li>
+              <li><strong>Check the pay.</strong> Make sure the job pays at least the legal minimum. In Negros Occidental, that's ₱6,500 a month for household workers.</li>
               <li><strong>Talk here first.</strong> Use the chat on Job Search PH until you trust the employer. It keeps a record if something goes wrong.</li>
               <li><strong>Meet safely.</strong> Go to the first interview in daytime, tell family the address, or bring someone you trust.</li>
               <li><strong>Get it in writing.</strong> Ask for a written contract with pay, hours, days off and benefits (SSS, PhilHealth, Pag-IBIG once covered).</li>
@@ -3696,10 +3933,10 @@ function viewStatic(page) {
         <h2 class="faq-h">Frequently asked questions</h2>
         ${faq("Is Job Search PH free?", "Yes. Creating a profile, searching and applying are free for jobseekers, always. Posting a job is free for employers.")}
         ${faq("Is Job Search PH a recruitment agency?", "No. We're an online job listing board. Employers post their own jobs and hire directly. We don't recruit, screen, place or employ anyone, and we never charge placement fees.")}
-        ${faq("How do I know a job is real?", "Every post is reviewed before it goes live and must meet the legal minimum wage. Still, trust your instincts: if an employer asks for money, pushes you to leave the site quickly, or the details keep changing, stop and report the post.")}
+        ${faq("How do I know a job is real?", "Every post is reviewed by our team before it goes live. Still, trust your instincts: if an employer asks for money, pushes you to leave the site quickly, or the details keep changing, stop and report the post.")}
         ${faq("Why can't I see the employer's phone number?", "To protect both sides from spam and scams, you talk to employers through Messages here on Job Search PH. The employer's own contact is shared with you once you accept their job offer.")}
         ${faq("Someone asked me for money. What do I do?", "Don't pay. Tap <strong>Report this post</strong> on the job, or contact support with the details. We'll review it and may remove the post or restrict the account.")}
-        ${faq("How many jobs can I apply to?", "Up to 10 a day. Employers can post up to 5 jobs a month. These limits stop spam and keep the site fair.")}
+        ${faq("How many jobs can I apply to?", "Up to 3 a day, so each application gets real attention. Employers can post up to 5 jobs a month. These limits stop spam and keep the site fair.")}
         ${faq("Why did my chat close?", "If an employer chooses other applicants, the chat stays open for 48 hours so you can say goodbye or ask questions, then it closes. You can still read old messages.")}
         ${faq("How does hiring work?", "When an employer picks you, they send a <strong>job offer</strong>. You'll get a notification and can <strong>Accept</strong> or <strong>Decline</strong> it from the job page, My applications, or the chat. You're only marked as hired once you accept. If you decline, the employer is told and the chat closes after 48 hours.")}
         ${faq("How do I leave a job I got here?", "Go to <strong>My applications</strong> and tap <strong>Leave this job</strong>. Your employer confirms, and then you can apply to full-time jobs again. Employers can also start this from the applicant card.")}
@@ -3734,7 +3971,7 @@ function viewStatic(page) {
     privacy: {
       title: "Privacy policy",
       html: legalPage("Privacy policy", "How Job Search PH collects, uses and protects your personal data, in line with the Data Privacy Act of 2012 (RA 10173) and the rules of the National Privacy Commission.", [
-        ["Data we collect", `<ul><li><strong>Account:</strong> your email and sign-in method (Google, Facebook, or email and password). If you use Facebook, we only receive your name, email and profile picture, and we never post to your Facebook.</li><li><strong>Jobseeker profile:</strong> name, photo (optional), birthdate (we show employers your age, not your birthdate), gender, mobile number, city, Messenger, jobs wanted, experience, skills, work history, education and resume link.</li><li><strong>Employer profile:</strong> name, photo (optional), household or business name, mobile number, city and Messenger.</li><li><strong>Activity on the site:</strong> job posts, applications, chat messages, interview and hiring status, notifications, reports and support messages.</li><li><strong>Get Verified (optional, for employers and jobseekers):</strong> a photo of your ID and a selfie holding it. They're stamped "Job Search PH · verification only" on your device before sending, and their location and camera details are removed. Only Job Search PH admins see them, only to confirm you're a real person. They're deleted as soon as we approve or reject, or after 14 days if we haven't. We keep only that you were verified, the type of ID and the date.</li><li><strong>Anti-spam counters:</strong> how many applications, posts, messages and reports you sent today.</li><li><strong>On your device only:</strong> your light or dark mode choice.</li></ul><p>We don't use advertising trackers, and we don't sell your data.</p>`],
+        ["Data we collect", `<ul><li><strong>Account:</strong> your email and sign-in method (Google, Facebook, or email and password). If you use Facebook, we only receive your name, email and profile picture, and we never post to your Facebook.</li><li><strong>Jobseeker profile:</strong> name, photo (optional), birthdate (we show employers your age, not your birthdate), gender, mobile number, city, Messenger, jobs wanted, experience, skills, work history, education and resume link.</li><li><strong>Employer profile:</strong> name, photo (optional), household or business name, mobile number, city and Messenger.</li><li><strong>Activity on the site:</strong> job posts, applications, chat messages, interview and hiring status, notifications, reports and support messages.</li><li><strong>Get Verified (optional, for employers and jobseekers):</strong> a photo of your ID and a selfie holding it. They're stamped "Job Search PH · verification only" on your device before sending, and their location and camera details are removed. Only Job Search PH admins see them, only to confirm you're a real person. They're deleted as soon as we approve or reject, or after 14 days if we haven't. We keep only that you were verified, the type of ID and the date.</li><li><strong>Anti-spam counters:</strong> how many applications, posts, messages and reports you sent today.</li><li><strong>On your device only:</strong> your light or dark mode choice, and whether you allowed cookies.</li></ul><p><strong>Cookies (only if you allow them):</strong> we may ask to use the Meta (Facebook) Pixel to see which of our ads bring people to Job Search PH. It only loads if you tap <strong>Allow</strong>, and you can change your choice anytime with <strong>Cookies</strong> at the bottom of the page. It tells Meta which public pages you visited and when you sign up, apply or post a job, together with information your browser normally sends (such as your device and IP address). We never send Meta your name, email, phone number, messages or ID photos, and we never report private pages like chats or your profile.</p><p>We don't sell your data.</p>`],
         ["Why we use it", `<ul><li>To run your account and show your posts, applications and messages;</li><li>To share your profile with employers you apply to, and employer contact details with the worker they hire;</li><li>To review job posts, prevent spam, fraud and abuse, and handle reports and appeals;</li><li>To reply to support requests and improve the site;</li><li>If you turn on job alerts, to email you new jobs that match the jobs and city on your profile. Emails are sent through our email provider, Resend. Unsubscribe with the link in any email or in My profile.</li></ul>`],
         ["Who can see it", `<ul><li><strong>Everyone:</strong> live job posts (title, employer or household name, area, pay and details). Employer contact details are not public.</li><li><strong>Employers you apply to:</strong> your profile, photo, age, contact details, message, experience and resume.</li><li><strong>The worker you hire:</strong> the employer contact you entered on the post, once they accept your job offer.</li><li><strong>The person you're chatting with:</strong> your messages.</li><li><strong>Job Search PH admins:</strong> all data, only to run and keep the site safe.</li><li><strong>Service provider:</strong> the site runs on Google Firebase, which stores data for us under its own security and privacy terms.</li></ul><p>We may also disclose data when the law requires it, such as a lawful order from the authorities.</p>`],
         ["How long we keep it", `<ul><li>Your profile stays until you delete it.</li><li>Job posts expire after 30 days and stay in your account until removed.</li><li>Applications and chats stay so both sides can refer back to them. Chats with declined applicants close after 48 hours but remain readable.</li><li>Reports and safety records are kept as long as needed to protect users, then deleted.</li></ul>`],
@@ -3818,6 +4055,7 @@ async function route() {
 }
 
 window.addEventListener("hashchange", route);
+initPixel();
 setTheme(getTheme());
 let foundersLoaded = false;
 onAuth(async (s) => {
@@ -3827,6 +4065,7 @@ onAuth(async (s) => {
   if (changed) { myAppsCache = null; startNotifications(); }
   startInbox();
   if (changed && uidNow && location.hash === "#/signin") return finishAuthFlow();
+  if (holdRoute) return; // a screen is saving and will draw what comes next itself
   route();
 });
 // Test site: loud banner, and keep it out of Google.

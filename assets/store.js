@@ -1,5 +1,5 @@
 // Data layer: Firebase Auth + Firestore (+ Storage for resume files when enabled).
-import { firebaseConfig, IS_STAGING, LISTING_DAYS, RESUME_UPLOADS, HELPER_URL, SMS_ON } from "./firebase-config.js?v=1793271000";
+import { firebaseConfig, IS_STAGING, LISTING_DAYS, RESUME_UPLOADS, HELPER_URL, SMS_ON } from "./firebase-config.js?v=1793867629";
 
 const CDN = "https://www.gstatic.com/firebasejs/10.12.2";
 const DAY = 86400000;
@@ -105,7 +105,7 @@ async function recordVisit() {
 export const visitSource = () => { try { const c = JSON.parse(localStorage.getItem("jsph-src") || "null"); return c && Date.now() - c.at < 60 * 86400000 ? c.src : ""; } catch { return ""; } };
 
 // applies, messages, reports, support: per day. posts: per calendar month (Pro may raise this later; also update the 5 in firestore.rules mcnt).
-export const LIMITS = { applies: 10, posts: 5, messages: 200, reports: 5, support: 3 };
+export const LIMITS = { applies: 3, posts: 5, messages: 200, reports: 5, support: 3 };
 const phDay = () => Math.floor((Date.now() + 8 * 3600000) / 86400000);
 // Philippine calendar month as one number (year * 12 + month 1–12). Job posts are limited per month.
 const phMonth = () => { const d = new Date(Date.now() + 8 * 3600000); return d.getUTCFullYear() * 12 + d.getUTCMonth() + 1; };
@@ -235,7 +235,7 @@ export const store = {
     try { await F.setDoc(ref, payload, { merge: true }); }
     catch (e) { // older published rules don't know the newest optional fields yet: save without them
       if (e.code !== "permission-denied") throw e;
-      ["src", "jobCategoryOther", "fbUrl", "bizReg", "signIn", "emailVerified", "alerts", "alertsScope", "alertsToken", "emailNotify", "firstName", "middleName", "lastName"].forEach((k) => delete payload[k]);
+      ["barangay", "src", "jobCategoryOther", "fbUrl", "bizReg", "signIn", "emailVerified", "alerts", "alertsScope", "alertsToken", "emailNotify", "firstName", "middleName", "lastName", "employerKind", "needs", "heardFrom"].forEach((k) => delete payload[k]);
       await F.setDoc(ref, payload, { merge: true });
     }
     const extra = await loadProfile(auth.currentUser);
@@ -352,7 +352,7 @@ export const store = {
   async apply(job, message) {
     const p = state.profile;
     const applicant = {
-      fullName: p.fullName, phone: p.phone, city: p.city, messenger: p.messenger || "",
+      fullName: p.fullName, phone: p.phone, city: p.city, barangay: p.barangay || "", messenger: p.messenger || "",
       email: auth.currentUser.email || "", age: ageFrom(p.birthDate), gender: p.gender || "",
       jobCategories: p.jobCategories || [], jobCategoryOther: p.jobCategoryOther || "", jobTypes: p.jobTypes || [], experienceYears: p.experienceYears ?? null,
       skills: p.skills || "", workHistory: p.workHistory || "", education: p.education || "",
@@ -517,24 +517,28 @@ export const store = {
   // Admin analytics: everything in one go (fine at early scale; capped per collection).
   async adminAll() {
     const q = async (c) => (await F.getDocs(F.query(F.collection(db, c), F.limit(5000)))).docs.map(norm);
-    const [users, jobs, apps, reports, support, bans, verified, visits, campaigns] = await Promise.all([q("users"), q("jobs"), q("applications"), q("reports").catch(() => []), q("support").catch(() => []), q("bans").catch(() => []), q("verified").catch(() => []), q("visits").catch(() => []), q("campaigns").catch(() => [])]);
-    return { users, jobs, apps, reports, support, bans, verified, visits, campaigns };
+    const [users, jobs, apps, reports, support, bans, verified, visits, campaigns, watch] = await Promise.all([q("users"), q("jobs"), q("applications"), q("reports").catch(() => []), q("support").catch(() => []), q("bans").catch(() => []), q("verified").catch(() => []), q("visits").catch(() => []), q("campaigns").catch(() => []), q("watch").catch(() => [])]);
+    return { users, jobs, apps, reports, support, bans, verified, visits, campaigns, watch };
   },
   // Tracked links / ad campaigns (admin only): name = the ?src= value.
   async saveCampaign(src, data) { await F.setDoc(F.doc(db, "campaigns", src), { ...data, updatedAt: F.serverTimestamp() }, { merge: true }); },
   async deleteCampaign(src) { await F.deleteDoc(F.doc(db, "campaigns", src)); },
   async adminUser(id) {
-    const [u, b, posts, applied] = await Promise.all([
+    const [u, b, posts, applied, w] = await Promise.all([
       F.getDoc(F.doc(db, "users", id)), F.getDoc(F.doc(db, "bans", id)).catch(() => null),
       jobsQ(F.where("ownerUid", "==", id)), appsQ(F.where("applicantUid", "==", id)),
+      F.getDoc(F.doc(db, "watch", id)).catch(() => null),
     ]);
     const received = (await appsQ(F.where("employerUid", "==", id)).catch(() => []));
-    return { user: u.exists() ? norm(u) : null, ban: b?.exists() ? norm(b) : null, posts, applied, received };
+    return { user: u.exists() ? norm(u) : null, ban: b?.exists() ? norm(b) : null, watch: w?.exists() ? norm(w) : null, posts, applied, received };
   },
   async ban(id, { reason, note, name }) {
     await F.setDoc(F.doc(db, "bans", id), { reason, note: note || "", name: name || "", bannedAt: F.serverTimestamp(), bannedBy: uid() });
   },
   async unban(id) { await F.deleteDoc(F.doc(db, "bans", id)); },
+  // Watchlist: admin-only flag on suspicious accounts. The user can't see it and nothing changes for them.
+  async flagUser(id, { reason, note }) { await F.setDoc(F.doc(db, "watch", id), { reason, note: note || "", at: F.serverTimestamp(), by: uid() }); },
+  async unflagUser(id) { await F.deleteDoc(F.doc(db, "watch", id)); },
   /* ---- Verified employers (checked by an admin) ---- */
   async verifiedList(force = false) {
     if (!force && verifiedCache) return verifiedCache;
