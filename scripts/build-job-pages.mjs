@@ -20,8 +20,13 @@ const JOBS_DIR = join(ROOT, "jobs");
 
 async function readConfig() {
   const src = await readFile(join(ROOT, "assets/firebase-config.js"), "utf8");
-  const pick = (k) => src.match(new RegExp(`${k}:\\s*"([^"]+)"`))?.[1];
-  return { apiKey: pick("apiKey"), projectId: pick("projectId") };
+  // Read the LIVE block only. The file also holds the test site's config, and that one comes first.
+  const live = src.match(/LIVE_CONFIG\s*=\s*\{([\s\S]*?)\}/)?.[1];
+  if (!live) throw new Error("LIVE_CONFIG not found in assets/firebase-config.js");
+  const pick = (k) => live.match(new RegExp(`${k}:\\s*"([^"]+)"`))?.[1];
+  const cfg = { apiKey: pick("apiKey"), projectId: pick("projectId") };
+  if (cfg.projectId !== "job-search-ph-website") throw new Error(`Refusing to build live job pages from project "${cfg.projectId}"`);
+  return cfg;
 }
 
 // Firestore REST values → plain JS.
