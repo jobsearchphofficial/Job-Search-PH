@@ -1,6 +1,7 @@
 // Automatic emails, run every ~15 minutes by .github/workflows/emails.yml:
-//   1. Employer: one email per new applicant, with the applicant's fit score, and (if there are others)
-//      how many applied and who fits best so far.
+//   1. Employer: at most ONE applicant email a day (from 6 PM Philippine time), leading with the best new
+//      applicant by fit score, then a short list of the others. Applicants who arrive after it's sent go in
+//      the next day's email. A day the robot missed is sent on its next run.
 //   2. Employer: "we got your post", "your post is live", "your changes are live", "your post wasn't approved".
 //   3. Admin: one summary email when there's something to do (posts to review, support messages, reports).
 //
@@ -71,35 +72,73 @@ function applicantBlock(a, { highlight = false } = {}) {
     highlight ? "#15803d" : "#3d4fd6", highlight ? "#f0fdf4" : "#f6f7fe");
 }
 
-/* ---------- 1. New applicants ---------- */
-async function newApplicants(since) {
-  const fresh = (await query("applications", [["createdAt", "GREATER_THAN", new Date(since)]])).sort((a, b) => a.createdAt - b.createdAt);
-  for (const app of fresh) {
-    const key = `app_${app.id}`;
-    if (await seen(key)) continue;
-    const [job, emp] = await Promise.all([getJob(app.jobId), getUser(app.employerUid), verifiedIds()]);
-    if (!job || !emp?.email || emp.emailNotify === false || app.applicantDeleted) { await mark(key, "skipped"); continue; }
-    const ranked = rankApplicants(job, await appsFor(app.jobId)).filter((a) => a.createdAt <= app.createdAt || a.id === app.id);
-    const me = ranked.find((a) => a.id === app.id) || { ...app, fit: rankApplicants(job, [app])[0].fit };
-    const active = ranked.filter((a) => !DECLINED.includes(a.status));
-    const best = active[0];
-    const total = ranked.length;
-    const name = first(app.applicant?.fullName);
-    const others = total - 1;
+/* ---------- 1. Daily applicant email ---------- */
+const DIGEST_HOUR = Number(process.env.DIGEST_HOUR ?? 18); // 6 PM in the Philippines
+const phDay = (t) => new Date(t + 8 * 3600000).toISOString().slice(0, 10);
+const phHour = (t) => new Date(t + 8 * 3600000).getUTCHours();
+
+async function applicantDigests() {
+  // Applicants not yet emailed about (each one's mailLog key is app_<id>). Three days back covers missed runs.
+  const recent = await query("applications", [["createdAt", "GREATER_THAN", new Date(now - 3 * 86400000)]]);
+  const waiting = [];
+  for (const app of recent) if (!(await seen(`app_${app.id}`))) waiting.push(app);
+  const byEmployer = new Map();
+  for (const app of waiting) {
+    if (!byEmployer.has(app.employerUid)) byEmployer.set(app.employerUid, []);
+    byEmployer.get(app.employerUid).push(app);
+  }
+  const today = phDay(now), evening = phHour(now) >= DIGEST_HOUR;
+  for (const [uid, apps] of byEmployer) {
+    const emp = await getUser(uid);
+    if (!emp?.email || emp.emailNotify === false) { for (const a of apps) await mark(`app_${a.id}`, "skipped"); continue; }
+    // Before the evening, send only if an earlier day's email never went out (the robot missed that evening).
+    let missedDay = false;
+    for (const d of new Set(apps.map((a) => phDay(a.createdAt)).filter((d) => d < today))) if (!(await seen(`digest_${uid}_${d}`))) missedDay = true;
+    if (!evening && !missedDay) continue; // wait for this evening's email
+    const dayKey = `digest_${uid}_${today}`;
+    if (await seen(dayKey)) continue; // already emailed today; these go out tomorrow
+    await verifiedIds();
+    // Rank each job's applicants with the same fit score as the website, then keep only the new ones.
+    const jobs = [];
+    for (const jobId of [...new Set(apps.map((a) => a.jobId))]) {
+      const job = await getJob(jobId);
+      const mine = apps.filter((a) => a.jobId === jobId && !a.applicantDeleted);
+      if (!job || !mine.length) continue;
+      const ranked = rankApplicants(job, await appsFor(jobId));
+      const ids = new Set(mine.map((a) => a.id));
+      const fresh = ranked.filter((a) => ids.has(a.id) && !DECLINED.includes(a.status));
+      if (fresh.length) jobs.push({ job, fresh, total: ranked.length });
+    }
+    if (!jobs.length) { for (const a of apps) await mark(`app_${a.id}`, "skipped"); continue; }
+    const all = jobs.flatMap((j) => j.fresh.map((a) => ({ ...a, job: j.job })));
+    all.sort((x, y) => y.fit.score - x.fit.score);
+    const best = all[0], n = all.length, bestName = first(best.applicant?.fullName);
+    const others = jobs.map(({ job, fresh, total }) => {
+      const rest = fresh.filter((a) => a.id !== best.id);
+      if (!rest.length && job.id !== best.job.id) return "";
+      return `<tr><td style="padding:8px 0;border-top:1px solid #eeeeee;font-size:14px;line-height:21px;color:#2b2f3a;">
+        <strong>${esc(job.title)}</strong> · ${fresh.length} new, ${total} in all
+        ${rest.length ? `<br><span style="color:#6b7186;">${rest.slice(0, 6).map((a) => `${esc(first(a.applicant?.fullName))} ${a.fit.score}`).join(" · ")}${rest.length > 6 ? ` · +${rest.length - 6} more` : ""}</span>` : ""}
+        <br><a href="${link(`#/applicants/${job.id}`, "email-digest")}" style="color:#3d4fd6;">See applicants</a></td></tr>`;
+    }).join("");
+    const many = jobs.length > 1;
+    const subject = n === 1
+      ? `New applicant for ${best.job.title}: ${bestName} (${best.fit.score}/100 fit)`
+      : `${n} new applicants today. Best fit: ${bestName} (${best.fit.score}/100)${many ? "" : ` for ${best.job.title}`}`;
     const body = `
-      <p style="margin:0 0 14px 0;font-size:16px;line-height:26px;color:#2b2f3a;">Hi ${esc(first(emp.fullName))}, <strong>${esc(app.applicant?.fullName || "someone")}</strong> applied to your post <strong>${esc(job.title)}</strong>.</p>
-      ${applicantBlock(me, { highlight: best && best.id === me.id && total > 1 })}
-      ${total > 1 ? (best && best.id !== me.id
-        ? `<p style="margin:14px 0 8px 0;font-size:14px;line-height:22px;color:#2b2f3a;">You now have <strong>${total} applicants</strong>. Your best fit so far:</p>${applicantBlock(best, { highlight: true })}`
-        : `<p style="margin:14px 0 8px 0;font-size:14px;line-height:22px;color:#2b2f3a;">You now have <strong>${total} applicants</strong>, and ${esc(name)} is your best fit so far.</p>`) : ""}
-      ${button(link(`#/applicants/${app.jobId}`, "email-applicant"), total > 1 ? `See all ${total} applicants` : `See ${name}'s profile`)}
-      <p style="margin:6px 0 0 0;font-size:12px;line-height:18px;color:#8a8fa3;">The fit score compares their profile with your post. It's a guide; you decide. Reply to applicants in Messages on Job Search PH.</p>`;
-    await deliver(key, emp.email, {
-      subject: `New applicant for ${job.title}: ${name} (${me.fit.score}/100 fit)`,
-      html: layout({ title: `New applicant: ${app.applicant?.fullName || name}`, preheader: `${me.fit.label} · ${total} applicant${total === 1 ? "" : "s"} so far`, body, footerNote: settingsNote, safety: false }),
-      text: `${app.applicant?.fullName || name} applied to ${job.title}. Fit: ${me.fit.score}/100 (${me.fit.label}).${total > 1 ? ` You now have ${total} applicants${best ? `; best fit so far: ${best.applicant?.fullName} (${best.fit.score}/100)` : ""}.` : ""}\nSee applicants: ${link(`#/applicants/${app.jobId}`, "email-applicant")}`,
+      <p style="margin:0 0 14px 0;font-size:16px;line-height:26px;color:#2b2f3a;">Hi ${esc(first(emp.fullName))}, ${n === 1 ? `someone new applied to <strong>${esc(best.job.title)}</strong>.` : `<strong>${n} people</strong> applied to your post${many ? "s" : ` <strong>${esc(best.job.title)}</strong>`}. Here's your best fit:`}</p>
+      ${n > 1 && many ? `<p style="margin:0 0 6px 0;font-size:13px;color:#6b7186;">For ${esc(best.job.title)}</p>` : ""}
+      ${applicantBlock(best, { highlight: n > 1 })}
+      ${button(link(`#/applicants/${best.job.id}`, "email-digest"), n === 1 ? `See ${bestName}'s profile` : "See all applicants")}
+      ${n > 1 ? `<p style="margin:16px 0 4px 0;font-size:14px;font-weight:bold;color:#2b2f3a;">Everyone who applied</p><table role="presentation" width="100%" cellpadding="0" cellspacing="0">${others}</table>` : ""}
+      <p style="margin:12px 0 0 0;font-size:12px;line-height:18px;color:#8a8fa3;">We send one applicant email a day, in the evening. The fit score compares each profile with your post. It's a guide; you decide. Reply to applicants in Messages on Job Search PH.</p>`;
+    const ok = await deliver(dayKey, emp.email, {
+      subject,
+      html: layout({ title: n === 1 ? "New applicant" : "Today's applicants", preheader: `${best.fit.label}${n > 1 ? ` · ${n} new applicants` : ""}`, body, footerNote: settingsNote, safety: false }),
+      text: `${n} new applicant${n === 1 ? "" : "s"}. Best fit: ${best.applicant?.fullName || bestName} for ${best.job.title}, ${best.fit.score}/100 (${best.fit.label}). See them on Job Search PH.`,
     });
-    if (capped) return;
+    if (!ok) return; // hit the per-run limit; try again next run
+    for (const a of apps) await mark(`app_${a.id}`, dayKey);
   }
 }
 
@@ -129,7 +168,7 @@ async function postUpdates(since) {
       body = `<p style="margin:0 0 14px 0;font-size:16px;line-height:26px;color:#2b2f3a;">Hi ${esc(first(emp?.fullName))}, we approved the changes to your post and it's visible to jobseekers again.</p>${postCard}${button(link(`#/job/${j.id}`, "email-post"), "View my post")}`;
     } else if (j.status === "rejected") {
       key = `job_${j.id}_rejected_${j.editedAt || j.createdAt}`; subject = `Your job post wasn't approved: ${j.title}`; title = "Your job post wasn't approved";
-      body = `<p style="margin:0 0 14px 0;font-size:16px;line-height:26px;color:#2b2f3a;">Hi ${esc(first(emp?.fullName))}, we couldn't approve this post yet. Usually it's one of these: pay below the legal minimum, missing details about the work, or a contact that doesn't work.</p>${postCard}
+      body = `<p style="margin:0 0 14px 0;font-size:16px;line-height:26px;color:#2b2f3a;">Hi ${esc(first(emp?.fullName))}, we couldn't approve this post yet.${j.rejectReason ? ` <strong>The reason:</strong> ${esc(j.rejectReason)}.` : " Usually it's one of these: pay below the legal minimum, missing details about the work, or a contact that doesn't work."}</p>${postCard}
         <p style="margin:12px 0 0 0;font-size:13px;line-height:20px;color:#6b7186;">Fix it and we'll check it again. Questions? Just reply to this email.</p>${button(link(`#/post/edit/${j.id}`, "email-post"), "Edit my post")}`;
     }
     if (!key || await seen(key)) continue;
@@ -215,7 +254,57 @@ async function scanChats(since) {
 }
 
 /* ---------- 3. Admin summary ---------- */
-async function adminSummary(since, pendingJobs, flagged = [], verifyReqs = []) {
+/* ---------- Work history ----------
+   When a job ends, each side gives a reason (applications.endReasonEmployer / endReasonWorker), may add
+   their side (replyWorker / replyEmployer) and may ask for a review (disputeWorker / disputeEmployer).
+   1. A worker's "Jobs on Job Search PH" (what employers said, with the worker's side) is copied onto every
+      application they've sent, as jsphHistory. Employers already read their applications, so only
+      employers they apply to see it.
+   2. An employer's record (what workers said, with the employer's side) goes to employerRecord/{uid},
+      which signed-in jobseekers see on that employer's job pages.
+   A reason an admin removed after a review (hideEmployerReason / hideWorkerReason) is left out. */
+const canon = (v) => JSON.stringify(v, (k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((y) => [y, x[y]])) : x));
+async function employerLabel(a) {
+  const job = await getJob(a.jobId).catch(() => null);
+  const household = job ? job.workplace === "household" : a.employerName === "Private household";
+  return household ? `Private household, ${a.jobCity || job?.city || "Negros Occidental"}` : a.employerName || "Employer";
+}
+async function workHistory(since) {
+  const [changed, created] = await Promise.all([
+    query("applications", [["updatedAt", "GREATER_THAN", new Date(since)]]),
+    query("applications", [["createdAt", "GREATER_THAN", new Date(since)]]),
+  ]);
+  const workers = new Set([...changed, ...created].map((a) => a.applicantUid).filter(Boolean));
+  const employers = new Set(changed.filter((a) => a.employmentEnded).map((a) => a.employerUid).filter(Boolean));
+  for (const w of workers) {
+    const apps = await query("applications", [["applicantUid", "EQUAL", w]]);
+    const ended = apps.filter((a) => a.status === "hired" && a.employmentEnded).sort((x, y) => (y.endedAt || 0) - (x.endedAt || 0)).slice(0, 10);
+    const hist = [];
+    for (const a of ended) hist.push({
+      appId: a.id, title: a.jobTitle || "Job", employer: await employerLabel(a), from: a.acceptedAt || a.createdAt || 0, to: a.endedAt || 0,
+      reason: a.hideEmployerReason ? "" : a.endReasonEmployer || "",
+      unanswered: !a.hideEmployerReason && !!a.endUnanswered && a.endRequestedBy === a.employerUid,
+      reply: a.replyWorker || "", underReview: !!a.disputeWorker && !a.disputeWorkerDone,
+    });
+    for (const a of apps) {
+      if (a.applicantDeleted || canon(a.jsphHistory ?? null) === canon(hist)) continue;
+      await patch(`applications/${a.id}`, { jsphHistory: hist });
+    }
+  }
+  for (const e of employers) {
+    const ended = (await query("applications", [["employerUid", "EQUAL", e]])).filter((a) => a.status === "hired" && a.employmentEnded);
+    const items = ended.filter((a) => a.endReasonWorker && !a.hideWorkerReason).sort((x, y) => (y.endedAt || 0) - (x.endedAt || 0)).slice(0, 20)
+      .map((a) => ({ reason: a.endReasonWorker, unanswered: !!a.endUnanswered && a.endRequestedBy === a.applicantUid, reply: a.replyEmployer || "", to: a.endedAt || 0 }));
+    await patch(`employerRecord/${e}`, { hires: ended.length, items, updatedAt: new Date(now) });
+  }
+  // New review requests, for the admin summary email.
+  return changed.flatMap((a) => [
+    a.disputeWorker && !a.disputeWorkerDone && a.disputeWorkerAt > since ? { id: `${a.id}_w`, a, by: "worker" } : null,
+    a.disputeEmployer && !a.disputeEmployerDone && a.disputeEmployerAt > since ? { id: `${a.id}_e`, a, by: "employer" } : null,
+  ].filter(Boolean));
+}
+
+async function adminSummary(since, pendingJobs, flagged = [], verifyReqs = [], disputes = []) {
   const [support, reports] = await Promise.all([
     query("support", [["createdAt", "GREATER_THAN", new Date(since)]]).catch(() => []),
     query("reports", [["createdAt", "GREATER_THAN", new Date(since)]]).catch(() => []),
@@ -224,6 +313,7 @@ async function adminSummary(since, pendingJobs, flagged = [], verifyReqs = []) {
     ...pendingJobs.filter((j) => (j.editedAt || j.createdAt) > since).map((j) => ({ key: `admin_job_${j.id}_${j.editedAt || j.createdAt}`, kind: j.editedAt ? "Edited post to re-check" : "New post to review", text: `${j.title} · ${j.employerName} · ${j.city}`, href: link("#/admin/pending", "email-admin") })),
     ...support.map((s) => ({ key: `admin_support_${s.id}`, kind: `Support: ${s.topic || "message"}`, text: `${s.name || ""}: ${String(s.message || "").slice(0, 140)}`, href: link("#/admin/support", "email-admin") })),
     ...reports.map((r) => ({ key: `admin_report_${r.id}`, kind: `Report: ${r.reason}`, text: `Job ${r.jobId}${r.details ? ` · ${String(r.details).slice(0, 120)}` : ""}`, href: link(`#/job/${r.jobId}`, "email-admin") })),
+    ...disputes.map((d) => ({ key: `admin_dispute_${d.id}`, kind: "Work history review", text: `${d.by === "worker" ? d.a.applicant?.fullName || "A worker" : d.a.employerName || "An employer"} asked you to review how the ${d.a.jobTitle || ""} job ended.` })),
     ...verifyReqs.map((r) => ({ key: `admin_verify_${r.id}_${r.createdAt}`, kind: "ID check to review", text: `${r.idType || "ID"} · sent ${new Date(r.createdAt).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`, href: link("#/admin/verify", "email-admin") })),
     ...flagged.map((f) => ({ key: `admin_flag_${f.id}`, kind: `Chat flag: ${f.types.join(", ")}`, text: `${f.fromName} (${f.fromRole}) · ${f.jobTitle}: “${f.text.slice(0, 120)}”`, href: link("#/admin/flags", "email-admin") })),
   ];
@@ -286,13 +376,14 @@ async function main() {
   // Overlap 10 minutes with the last run; mailLog makes sure nothing is sent twice. First run: last 30 minutes only.
   const since = state?.lastRun ? state.lastRun - 10 * 60000 : now - 30 * 60000;
   try {
-    await newApplicants(since);
+    await applicantDigests();
     const pending = capped ? [] : await postUpdates(since);
     const flagged = await scanChats(since).catch((e) => { console.error(`Chat scan failed: ${e.message}`); return []; });
     await expireVerify().catch((e) => console.error(`ID check cleanup failed: ${e.message}`));
     await purgeDeletedChats().catch((e) => console.error(`Deleted-account cleanup failed: ${e.message}`));
     const verifyReqs = capped ? [] : await verifyUpdates(since);
-    if (!capped) await adminSummary(since, pending, flagged, verifyReqs);
+    const disputes = await workHistory(since).catch((e) => { console.error(`Work history failed: ${e.message}`); return []; });
+    if (!capped) await adminSummary(since, pending, flagged, verifyReqs, disputes);
     if (!capped) await employerReminders();
   } catch (e) {
     if (e.status === 429 || e.status === 403) { console.error(`Stopping: Resend limit or key problem. ${e.message}`); process.exitCode = 1; return; }
