@@ -44,4 +44,17 @@ const msgs = (targets, slot) => { const db = ctx("m1"); const b = writeBatch(db)
   b.set(doc(db, "limits/m1"), lim({ messages: 1, msgAt: serverTimestamp(), slot })); return b.commit(); };
 await t("messages to two chats paid by one bump refused", assertFails(msgs([["j1_m1", "x1"], ["j2_m1", "x2"]], "j1_m1/x1")));
 await t("one message with its slot", assertSucceeds(msgs([["j1_m1", "x1"]], "j1_m1/x1")));
+// "Pro, already paid" links
+await admin((db) => setDoc(doc(db, "admins/boss2"), { name: "Mark" }));
+await admin((db) => Promise.all([
+  setDoc(doc(db, "jobs/pj"), { title: "Clinic assistant", ownerUid: "e9", status: "pending", plan: "unpaid", createdAt: Timestamp.now() }),
+  setDoc(doc(db, "jobs/pj2"), { title: "Clinic assistant", ownerUid: "e9", status: "pending", plan: "unpaid", createdAt: Timestamp.now() }),
+  setDoc(doc(db, "invites/PROTOK"), { pro: true, status: "used", usedBy: "e9", jobId: "pj" }),
+  setDoc(doc(db, "invites/PLAINTOK"), { pro: false, status: "used", usedBy: "e9", jobId: "pj2" }),
+]));
+const up = (u, job, tokn) => updateDoc(doc(ctx(u), "jobs", job), { plan: "pro", paidAt: serverTimestamp(), inviteId: tokn });
+await t("post from a Pro link becomes Pro", assertSucceeds(up("e9", "pj", "PROTOK")));
+await t("post from a normal link can't become Pro", assertFails(up("e9", "pj2", "PLAINTOK")));
+await t("can't use someone's Pro link for another post", assertFails(up("e9", "pj2", "PROTOK")));
+await t("admin records a payment made outside the site", assertSucceeds(setDoc(doc(env.authenticatedContext("boss2", tok("boss2@test.ph", true)).firestore(), "payments/manual1"), { uid: "e9", amount: 199, status: "approved" }).catch(async (e) => { throw e; })));
 console.log(bad ? `${bad} FAILED` : "all passed"); await env.cleanup(); process.exit(bad ? 1 : 0);
