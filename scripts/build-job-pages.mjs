@@ -13,7 +13,7 @@
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { IDENTITY, employersHtml } from "../assets/pages.js";
+import { IDENTITY, employersHtml, pricingHtml, PRICING_TITLE, PRICING_DESCRIPTION } from "../assets/pages.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SITE = "https://jobsearchph.com";
@@ -50,7 +50,8 @@ async function fetchJobs() {
   const { apiKey, projectId } = await readConfig();
   const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery?key=${apiKey}`;
   const body = { structuredQuery: { from: [{ collectionId: "jobs" }], where: { fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: "approved" } } }, limit: 1000 } };
-  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  // The web API key is limited to our websites, so say where this request is for (Google checks the referer).
+  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", referer: "https://jobsearchph.com/" }, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(`Firestore query failed: ${res.status} ${await res.text()}`);
   const rows = await res.json();
   return rows.filter((r) => r.document).map((r) => ({
@@ -234,6 +235,9 @@ function indexPage(jobs) {
 function employersPage() {
   return shell({ title: IDENTITY.employersTitle, description: IDENTITY.employersDescription, canonical: `${SITE}/employers/`, body: `<div class="emp-page">${employersHtml()}</div>` });
 }
+function pricingPage() {
+  return shell({ title: PRICING_TITLE, description: PRICING_DESCRIPTION, canonical: `${SITE}/pricing/`, body: `<div class="emp-page">${pricingHtml()}</div>` });
+}
 function safetyPage() {
   const body = `    <article class="prose legal"><h1>Safety tips &amp; FAQs</h1>
       <p>${esc(IDENTITY.line)} Real employers never ask you to pay to apply, train or get hired. If anyone asks for a fee, a deposit or your ID before an interview, stop and report the post.</p></article>`;
@@ -245,6 +249,7 @@ function sitemap(jobs) {
     `  <url><loc>${SITE}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`,
     `  <url><loc>${SITE}/jobs/</loc><changefreq>daily</changefreq><priority>0.9</priority></url>`,
     `  <url><loc>${SITE}/employers/</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>`,
+    `  <url><loc>${SITE}/pricing/</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>`,
     `  <url><loc>${SITE}/safety/</loc><changefreq>monthly</changefreq><priority>0.5</priority></url>`,
     ...jobs.map((j) => `  <url><loc>${SITE}/jobs/${j.id}/</loc><lastmod>${iso(j.updatedAt || j.approvedAt || j.createdAt || Date.now()).slice(0, 10)}</lastmod></url>`),
   ];
@@ -255,11 +260,11 @@ function sitemap(jobs) {
 
 async function main() {
   TEMPLATE = await readFile(join(ROOT, "index.html"), "utf8");
-  for (const [dir, html] of [["employers", employersPage()], ["safety", safetyPage()]]) {
+  for (const [dir, html] of [["employers", employersPage()], ["pricing", pricingPage()], ["safety", safetyPage()]]) {
     await mkdir(join(ROOT, dir), { recursive: true });
     await writeFile(join(ROOT, dir, "index.html"), html);
   }
-  if (process.argv.includes("--static-only")) { console.log("Built /employers/ and /safety/."); return; }
+  if (process.argv.includes("--static-only")) { console.log("Built /employers/, /pricing/ and /safety/."); return; }
   const i = process.argv.indexOf("--fixture");
   const raw = i > 0 ? JSON.parse(await readFile(process.argv[i + 1], "utf8")) : await fetchJobs();
   const now = Date.now();

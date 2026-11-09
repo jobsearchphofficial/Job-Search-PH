@@ -1,9 +1,9 @@
-import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS, smsEnabled, normPhone, isFullName } from "./store.js?v=1794003737";
-import { IS_STAGING, FB_LOGIN } from "./firebase-config.js?v=1794003737";
-import { fitScore, rankApplicants } from "./match.js?v=1794003737";
-import { scamFlags, SERIOUS } from "./safety.js?v=1794003737";
-import { initPixel, track } from "./pixel.js?v=1794003737";
-import { IDENTITY, employersHtml } from "./pages.js?v=1794003737";
+import { store, onAuth, getAuthState, JOB_FIELDS, ageFrom, uploadsEnabled, LIMITS, PLANS, smsEnabled, normPhone, isFullName } from "./store.js?v=1794211703";
+import { IS_STAGING, FB_LOGIN } from "./firebase-config.js?v=1794211703";
+import { fitScore, rankApplicants } from "./match.js?v=1794211703";
+import { scamFlags, SERIOUS } from "./safety.js?v=1794211703";
+import { initPixel, track } from "./pixel.js?v=1794211703";
+import { IDENTITY, employersHtml, pricingHtml, PRICING_TITLE } from "./pages.js?v=1794211703";
 
 /* ---------------- Constants ---------------- */
 const CATEGORIES = [
@@ -287,8 +287,8 @@ function payFloor(d) {
 
 /* ---------------- Drafts: keep unsaved form input across refreshes ---------------- */
 const draftKey = (k) => { const u = getAuthState().user?.uid; return u ? `jsph-draft:${k}:${u}` : null; };
-function saveDraft(k, form) {
-  const key = draftKey(k); if (!key || !form) return;
+// Every field of a form as name → value (checkbox groups as lists). Also what an admin's prepared post is stored as.
+function formValues(form) {
   const d = {};
   form.querySelectorAll("input[name], textarea[name], select[name]").forEach((el) => {
     if (el.type === "file" || el.type === "password") return;
@@ -296,6 +296,11 @@ function saveDraft(k, form) {
     else if (el.type === "radio") { if (el.checked) d[el.name] = el.value; }
     else d[el.name] = el.value;
   });
+  return d;
+}
+function saveDraft(k, form) {
+  const key = draftKey(k); if (!key || !form) return;
+  const d = formValues(form);
   try { localStorage.setItem(key, JSON.stringify({ t: Date.now(), d })); } catch {}
 }
 function loadDraft(k) {
@@ -311,6 +316,11 @@ function applyDraft(form, d) {
 }
 function clearDraft(k) { try { const key = draftKey(k); if (key) localStorage.removeItem(key); } catch {} }
 function autosave(k, form) { let t; const go = () => { clearTimeout(t); t = setTimeout(() => saveDraft(k, form), 300); }; form.addEventListener("input", go); form.addEventListener("change", go); form.addEventListener("click", (e) => { if (e.target.closest("button[type=button]")) go(); }); }
+// "Post for an employer": the invite link being used in this tab (cleared once the post is submitted).
+const INVITE_KEY = "jsph-invite";
+const inviteToken = () => { try { return sessionStorage.getItem(INVITE_KEY) || ""; } catch { return ""; } };
+const setInviteToken = (t) => { try { t ? sessionStorage.setItem(INVITE_KEY, t) : sessionStorage.removeItem(INVITE_KEY); } catch {} };
+const INVITE_SKIP = ["agreeWage", "agreeFee", "agreeAge", "agreeTerms", "cMethod", "cValue", "inviteFor"];
 const draftNote = () => `<p class="draft-note">${ICON.check}<span>We restored what you typed before. </span><button type="button" class="linkbtn" data-draft-clear>Start over</button></p>`;
 
 /* ---------------- Helpers ---------------- */
@@ -602,6 +612,9 @@ function ago(ms) {
   return new Date(ms).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
 }
 const isLive = (j) => j.status === "approved" && (!j.expiresAt || j.expiresAt > Date.now());
+// A free post stops taking applications at 5 applicants (PLANS.free.maxApplicants).
+const planBadge = (j) => (j.plan === "pro" ? `<span class="badge plan-chip pro">Pro</span>` : j.plan === "free" ? `<span class="badge plan-chip">Free · ${j.appCount || 0}/${PLANS.free.maxApplicants}</span>` : j.plan === "unpaid" ? `<span class="badge plan-chip due">Not paid</span>` : "");
+const isFull = (j) => j.plan === "free" && (j.appCount || 0) >= PLANS.free.maxApplicants;
 const digits = (v) => String(v || "").replace(/[^\d+]/g, "");
 const safeUrl = (v) => { try { const u = new URL(v); return /^https?:$/.test(u.protocol) ? u.href : null; } catch { return null; } };
 
@@ -655,7 +668,8 @@ function authError(err) {
   const map = {
     "auth/invalid-email": "That email address doesn't look right.",
     "auth/missing-password": "Enter your password.",
-    "auth/weak-password": "Use a password with at least 6 characters.",
+    "auth/weak-password": "Use a password with at least 8 characters.",
+    "auth/password-does-not-meet-requirements": "Use a password with at least 8 characters.",
     "auth/email-already-in-use": "An account with this email already exists. Sign in instead.",
     "auth/invalid-credential": "Wrong email or password.",
     "auth/wrong-password": "Wrong email or password.",
@@ -699,6 +713,7 @@ const PATH_ROUTES = [
   [/^\/jobs\/([A-Za-z0-9_-]{1,64})\/?$/, (m) => ["job", m[1]]],
   [/^\/jobs\/?$/, () => [""]],
   [/^\/employers\/?$/, () => ["employers"]],
+  [/^\/pricing\/?$/, () => ["pricing"]],
   [/^\/safety\/?$/, () => ["safety"]],
 ];
 const isHashRoute = () => location.hash.startsWith("#/");
@@ -886,6 +901,7 @@ function renderGear() {
         <div><strong>${esc(name)}</strong><span>${esc(user.email || "")}${profile ? ` · ${profile.role === "employer" ? "Employer" : "Jobseeker"}` : ""}</span></div></div>
       <div class="set-group">
         <a class="set-item" href="#/profile">${GI.user}${profile ? "My profile" : "Set up profile"}</a>
+        ${profile?.role === "employer" ? `<a class="set-item" href="#/plan">${GI.doc}My plan &amp; payments</a>` : ""}
         ${isAdmin ? `<a class="set-item" href="#/admin">${GI.admin}Admin${pendingForAdmin ? `<span class="dot">${pendingForAdmin}</span>` : ""}</a>` : ""}
       </div>
       <div class="set-group">
@@ -1054,9 +1070,9 @@ async function viewList() {
       <div class="empty empty-hero">
         <div class="empty-art" aria-hidden="true">${ICON.home}</div>
         <h2>Be the first to post a job here</h2>
-        <p class="muted">Job Search PH just opened in Negros Occidental. Hiring a kasambahay, yaya, driver or cook? Post it free and reach local jobseekers.</p>
+        <p class="muted">Job Search PH just opened in Negros Occidental. Hiring a kasambahay, yaya, driver or cook? Your first post is free, and local jobseekers can apply the same day.</p>
         <p class="empty-actions">
-          ${!u || pr?.role === "employer" ? `<a class="btn btn-primary" href="#/post" ${u ? "" : `data-action="gosignin" data-intent="employer" data-purpose="Sign in to post a job"`}>Post a job for free</a>` : ""}
+          ${!u || pr?.role === "employer" ? `<a class="btn btn-primary" href="#/post" ${u ? "" : `data-action="gosignin" data-intent="employer" data-purpose="Sign in to post a job"`}>Post a job</a>` : ""}
           ${!u ? `<a class="btn btn-ghost" href="#/signin" data-action="gosignin" data-intent="jobseeker" data-purpose="Create your free profile">I'm looking for work</a>` : pr?.role === "jobseeker" ? `<a class="btn btn-ghost" href="#/profile">Complete my profile</a>` : ""}
         </p>
         ${pr?.role === "jobseeker" ? `<p class="small muted">New jobs are added every week. Your profile is ready, so you can apply as soon as one fits.</p>` : ""}
@@ -1172,7 +1188,7 @@ async function viewList() {
 
   try {
     const [jobs, apps] = await Promise.all([jobsCache ? jobsCache : store.listPublic(), getMyApps()]);
-    jobsCache = jobs; applied = new Set(apps.map((a) => a.jobId));
+    jobsCache = jobs.filter((j) => !isFull(j)); applied = new Set(apps.map((a) => a.jobId));
     if (!$("#results")) return;
     draw();
     const live = jobsCache.filter(isLive);
@@ -1341,6 +1357,7 @@ async function renderApplyPanel(j, isOwner) {
     return;
   }
   if (!isLive(j)) { panel.innerHTML = `<p class="muted">This job is not accepting applications.</p>`; return; }
+  if (isFull(j)) { panel.innerHTML = `<h2>Not taking applications</h2><p class="muted">This post already has all the applicants it can take. <a href="/jobs/">See other jobs</a></p>`; return; }
   if (employed && isFullTime(j.schedule || j.employmentType, j.arrangement)) {
     panel.innerHTML = `
       <h2>You're employed full-time</h2>
@@ -1400,8 +1417,8 @@ function viewSignIn() {
     app.innerHTML = `
       <div class="auth-wrap">
         <div class="auth-card ${up ? "signup" : ""}">
-          <h1>${up ? "Create your free account" : esc(signInPurpose || "Sign in")}</h1>
-          <p class="muted">${up ? "For jobseekers and employers. It's free." : "Sign in to apply for jobs or manage your posts."}</p>
+          <h1>${up ? "Create your account" : esc(signInPurpose || "Sign in")}</h1>
+          <p class="muted">${up ? "Always free for jobseekers. Employers: your first job post is free." : "Sign in to apply for jobs or manage your posts."}</p>
           ${up ? `<div class="su-role" role="radiogroup" aria-label="I'm…">
             ${["jobseeker", "employer"].map((k) => `<label class="su-opt"><input type="radio" name="su-role" value="${k}" ${su.role === k ? "checked" : ""}>
               <span>${ROLE_ICONS[k]}<strong>${k === "jobseeker" ? "I'm looking for work" : "I'm hiring"}</strong><em>${k === "jobseeker" ? "Kasambahay, yaya, driver, cook…" : "Household or business"}</em></span></label>`).join("")}
@@ -1418,14 +1435,14 @@ function viewSignIn() {
           <div class="divider"><span>or use email</span></div>
           <form id="email-form" class="auth-form" novalidate>
             <label for="s-email">Email</label><input id="s-email" name="email" type="email" autocomplete="email" required value="${esc(su.email)}">
-            <label for="s-pw">Password</label><input id="s-pw" name="pw" type="password" autocomplete="${up ? "new-password" : "current-password"}" required minlength="6">
-            ${up ? `<p class="hint">At least 6 characters.</p>
-            <label for="s-pw2">Confirm password</label><input id="s-pw2" name="pw2" type="password" autocomplete="new-password" required minlength="6">
+            <label for="s-pw">Password</label><input id="s-pw" name="pw" type="password" autocomplete="${up ? "new-password" : "current-password"}" required minlength="${up ? 8 : 6}">
+            ${up ? `<p class="hint">At least 8 characters.</p>
+            <label for="s-pw2">Confirm password</label><input id="s-pw2" name="pw2" type="password" autocomplete="new-password" required minlength="8">
             <p class="pw-match" id="pw-match" aria-live="polite"></p>` : `<button type="button" class="linkbtn" id="forgot">Forgot password?</button>`}
             <p id="auth-error" class="error" hidden></p>
             <button class="btn btn-primary btn-block" type="submit">${up ? "Create account" : "Sign in"}</button>
           </form>
-          <p class="switch">${up ? `Already have an account? <button class="linkbtn" id="toggle">Sign in</button>` : `New here? <button class="linkbtn" id="toggle">Create a free account</button>`}</p>
+          <p class="switch">${up ? `Already have an account? <button class="linkbtn" id="toggle">Sign in</button>` : `New here? <button class="linkbtn" id="toggle">Create an account</button>`}</p>
         </div>
       </div>`;
     const err = (m) => { const el = $("#auth-error"); el.textContent = m; el.hidden = !m; if (m) el.scrollIntoView({ block: "nearest", behavior: "smooth" }); };
@@ -1472,7 +1489,7 @@ function viewSignIn() {
         if (!su.role) return bad("Choose \u201cI'm looking for work\u201d or \u201cI'm hiring\u201d at the top.");
       }
       if (!email) return bad("Enter your email.", f.email);
-      if (pw.length < 6) return bad("Use a password with at least 6 characters.", f.pw);
+      if (pw.length < (up ? 8 : 6)) return bad(`Use a password with at least ${up ? 8 : 6} characters.`, f.pw);
       if (up && f.pw2.value !== pw) return bad(f.pw2.value ? "The two passwords don't match." : "Type your password again to confirm it.", f.pw2);
       btn.disabled = true;
       try {
@@ -1688,6 +1705,8 @@ function viewProfile(focus) {
           <span>Email me when new jobs match the jobs I picked above</span></label>
         <div id="alerts-scope" ${p.alerts ? "" : "hidden"}><span class="label">Where</span>${choicePills("alertsScope", [["city", "Only in my city / town"], ["all", "Anywhere in Negros Occidental"]], p.alertsScope === "all" ? "all" : "city", { optional: false })}
           <span class="hint">We'll keep you posted when a job opportunity that fits you opens up ;) At most one email a day${user.email ? `, to <strong>${esc(user.email)}</strong>` : ""}, and you can stop them anytime.${getAuthState().mustConfirmEmail ? " Alerts start once you confirm your email (see the top of this page)." : ""}</span></div>
+        <label class="check"><input type="checkbox" name="emailNotify" ${p.emailNotify === false ? "" : "checked"}>
+          <span>Email me when an employer messages me, shortlists me or offers me a job</span></label>
       </fieldset>
       <fieldset>
         <legend>Experience &amp; resume</legend>
@@ -1859,7 +1878,7 @@ function viewProfile(focus) {
   const ICONS = ROLE_ICONS;
   const ROLES = {
     jobseeker: { title: "I'm looking for work", sub: "For kasambahay, yaya, drivers, cooks and other workers", points: ["Apply to any job in one tap", "Message employers right here", "Track replies in My applications"] },
-    employer: { title: "I'm hiring", sub: "For households and local businesses", points: ["Post jobs for free", "Get applicants with their full profile", "Call, text or message them directly"] },
+    employer: { title: "I'm hiring", sub: "For households and local businesses", points: ["Your first job post is free", "Get applicants with their full profile", "Call, text or message them directly"] },
   };
   const roleCard = (k) => `
     <button type="button" class="role ${role === k ? "on" : ""}" data-role="${k}" role="radio" aria-checked="${role === k}">
@@ -1916,7 +1935,7 @@ function viewProfile(focus) {
             <button type="button" class="linkbtn" data-role="${role === "employer" ? "jobseeker" : "employer"}">${role === "employer" ? "Looking for work instead?" : "Hiring instead?"}</button></div>`
           : `${!isNew ? `<p class="label">Profile type</p>` : ""}
         <div class="role-pick ${isNew ? "" : "compact"}" role="radiogroup" aria-label="Profile type">${roleCard("jobseeker")}${roleCard("employer")}</div>`}
-        ${role ? formHtml() : `<div class="trust"><span>Free to use</span><span>No fees for jobseekers, ever</span><span>Your details are shared only when you apply</span></div>`}
+        ${role ? formHtml() : `<div class="trust"><span>First job post free</span><span>No fees for jobseekers, ever</span><span>Your details are shared only when you apply</span></div>`}
       </div>`;
     app.querySelectorAll("[data-role]").forEach((b) => b.addEventListener("click", async () => {
       const target = b.dataset.role;
@@ -2199,11 +2218,13 @@ function bindConfirmEmail(onDone) {
 }
 
 let phoneSkip = false; // texts couldn't be sent this visit, so posting isn't blocked
-async function viewPost(editId = null) {
-  document.title = `${editId ? "Edit post" : "Post a job"} | Job Search PH`;
+async function viewPost(editId = null, { assist = false, similar = null } = {}) {
+  assist = assist && !editId && getAuthState().isAdmin;
+  const DK = assist ? "assist" : "post"; // admins preparing a post keep a separate draft from their own posts
+  document.title = `${assist ? "Post for an employer" : editId ? "Edit post" : "Post a job"} | Job Search PH`;
   const { user, profile } = getAuthState();
   if (!user) {
-    app.innerHTML = `<div class="empty"><h1>Post a job for free</h1><p class="muted">Create a free employer account to post jobs and review applicants in one place.</p><p><a class="btn btn-primary" href="#/signin" data-action="gosignin" data-intent="employer" data-purpose="Sign in to post a job">Sign in to post a job</a></p></div>`;
+    app.innerHTML = `<div class="empty"><h1>Post a job</h1><p class="muted">Your first post is free. Make an employer account to post jobs and review applicants in one place. <a href="/pricing/">See prices</a></p><p><a class="btn btn-primary" href="#/signin" data-action="gosignin" data-intent="employer" data-purpose="Sign in to post a job">Sign in to post a job</a></p></div>`;
     return;
   }
   if (!profile) { returnTo = "#/post"; location.hash = "#/profile"; return; }
@@ -2215,7 +2236,7 @@ async function viewPost(editId = null) {
   // Employers confirm their mobile number once (text message code) before their first post.
   if (!editId && smsEnabled && profile.role === "employer" && !getAuthState().isAdmin && !phoneSkip) {
     const st = await store.phoneStatus();
-    if (location.hash !== "#/post") return;
+    if (!location.hash.startsWith("#/post")) return;
     if (!phoneOk(st, profile)) {
       app.innerHTML = `<div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1></div></div><section class="phone-card" id="phone-gate"></section>`;
       phoneBox($("#phone-gate"), { why: "We ask every employer to do this once, so jobseekers know posts come from real people.", onDone: () => viewPost(), onSkip: () => { phoneSkip = true; viewPost(); } });
@@ -2228,13 +2249,31 @@ async function viewPost(editId = null) {
     return;
   }
   // Editing an existing post: load it and check it's theirs and still editable.
-  let editJob = null, editContact = null;
+  let editJob = null, editContact = null, copyJob = null, copyContact = null;
+  // "Post a similar job" (Pro): start a new post from one of their own posts.
+  if (similar) {
+    [copyJob, copyContact] = await Promise.all([store.getJob(similar), store.getContact(similar)]);
+    if (!copyJob || copyJob.ownerUid !== user.uid) copyJob = copyContact = null;
+  }
   if (editId) {
     app.innerHTML = `<div class="empty"><p class="muted">Loading your post…</p></div>`;
     [editJob, editContact] = await Promise.all([store.getJob(editId), store.getContact(editId)]);
     if (!editJob || editJob.ownerUid !== user.uid) { app.innerHTML = `<div class="empty"><h1>Post not found</h1><p class="muted">You can only edit your own posts.</p><p><a class="btn btn-primary" href="#/my">Go to My posts</a></p></div>`; return; }
     if (editJob.status === "closed") { app.innerHTML = `<div class="empty"><h1>This post is closed</h1><p class="muted">Closed posts can't be edited. Post a new job instead.</p><p><a class="btn btn-primary" href="#/post">Post a job</a></p></div>`; return; }
   }
+  // Which plan this new post will use (see PLANS in store.js).
+  const isAdm = getAuthState().isAdmin;
+  const myPlan = !editJob && !assist && !isAdm ? await store.myPlan().catch(() => ({ freeUsed: true, sub: null })) : { freeUsed: true, sub: null };
+  if (!editJob && !assist && !location.hash.startsWith("#/post")) return;
+  const planCard = editJob || assist || isAdm ? "" : myPlan.sub
+    ? `<section class="pcard plan-card"><p class="plan-on">${ICON.check}<span><strong>${esc(PLANS[myPlan.sub.plan]?.name || "Pro")} is on</strong> until ${new Date(myPlan.sub.until).toLocaleDateString("en-PH", { month: "long", day: "numeric" })}. This post is Pro: unlimited applicants and shown at the top.</span></p></section>`
+    : `<section class="pcard plan-card"><header><span class="num">9</span><div><h2>Choose your plan</h2><p>${myPlan.freeUsed ? "You've used your free post." : "Your first post is free."} <a href="/pricing/" target="_blank">Compare plans</a></p></div></header>
+        <div class="plan-pick" role="radiogroup">
+          ${myPlan.freeUsed ? "" : `<label><input type="radio" name="planPick" value="free" checked><span><strong>Free</strong><em>₱0</em><small>Stops taking applications at ${PLANS.free.maxApplicants} applicants. Up to 3 openings.</small></span></label>`}
+          <label><input type="radio" name="planPick" value="post" ${myPlan.freeUsed ? "checked" : ""}><span><b class="pp-flag">Recommended</b><strong>Pro post</strong><em>₱${PLANS.post.price}</em><small><strong>Unlimited applicants</strong>, shown at the top for 30 days, up to 10 openings.</small></span></label>
+          <label><input type="radio" name="planPick" value="monthly"><span><strong>Pro monthly</strong><em>₱${PLANS.monthly.price}<i>/month</i></em><small>Every post Pro, up to ${PLANS.monthly.postsPerMonth} a month (from ₱${Math.round(PLANS.monthly.price / PLANS.monthly.postsPerMonth)} each).</small></span></label>
+        </div>
+        <p class="hint">Pay with GCash, Maya or any bank app using InstaPay after you submit. Hiring a lot? <a href="#/support" data-enterprise>Ask about Enterprise</a>.</p></section>`;
   const cityList = CITIES.filter((c) => c !== "Other");
   const radioPills = (name, list, sel, cls = "") => `<div class="pills ${cls}" role="radiogroup">${list.map(([v, l]) => `<label class="pill"><input type="radio" name="${name}" value="${esc(v)}" ${String(sel) === String(v) ? "checked" : ""}><span>${esc(l)}</span></label>`).join("")}</div>`;
   const stepper = (name, val, min, max) => `<div class="stepper"><button type="button" data-step="-1" data-for="${name}" aria-label="Less">−</button><input name="${name}" type="number" inputmode="numeric" min="${min}" max="${max}" value="${val}"><button type="button" data-step="1" data-for="${name}" aria-label="More">+</button></div>`;
@@ -2242,9 +2281,14 @@ async function viewPost(editId = null) {
   app.innerHTML = `
     ${editJob ? `<p><a href="#/my" class="back">← My posts</a></p>
     <div class="page-head"><div><p class="kicker">Edit post</p><h1>${esc(editJob.title)}</h1><p class="muted">${editJob.status === "approved" ? "Saving sends your post back for a quick review. It's hidden from jobseekers until we approve the changes, usually within a day. It keeps its original expiry date, and your applicants and chats stay." : "Saving sends your post for review again."}</p></div></div>`
-    : `<div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1><p class="muted">Free to post. Reviewed within a day, then live for 30 days.</p><p class="usage" id="post-usage"></p></div></div>`}
+    : assist ? `<p><a href="#/admin/invites" class="back">← Post for an employer</a></p>
+    <div class="page-head"><div><p class="kicker">Admin</p><h1>Post for an employer</h1><p class="muted">Fill in the job for them. You get a link to send them. They sign in, check it, add their contact, confirm the pledges and post it from their own account.</p></div></div>`
+    : `<div class="page-head"><div><p class="kicker">New job post</p><h1>Post a job</h1><p class="muted">Reviewed within a day, then live for 30 days.</p><p class="usage" id="post-usage"></p></div></div>`}
     <div class="post-layout">
       <form id="post-form" class="form post-form" novalidate>
+        ${assist ? `<section class="pcard assist-card">
+          <label class="fld">Who is this for? *<input name="inviteFor" required maxlength="80" placeholder="e.g. DB Uy, clinic on Lacson St"><span class="hint">Only admins see this, so you can find the link later.</span></label>
+        </section>` : ""}
         <section class="pcard">
           <header><span class="num">1</span><div><h2>Who's hiring?</h2><p>This sets the right pay rules and job options.</p></div></header>
           <div class="seg" role="radiogroup">
@@ -2307,7 +2351,7 @@ async function viewPost(editId = null) {
           <div class="row row-3">
             <div class="fld" id="daysoff-fld"><span class="label">Days off per month</span>${stepper("daysOff", 4, 2, 15)}</div>
             <div class="fld" id="dpw-fld" hidden><span class="label">Days a week</span>${stepper("daysPerWeek", 6, 1, 7)}</div>
-            <div class="fld"><span class="label">Openings (max 3)</span>${stepper("openings", 1, 1, 3)}</div>
+            <div class="fld"><span class="label">Openings</span>${stepper("openings", 1, 1, 10)}<span class="hint">More than 3 is a Pro feature.</span></div>
             <label class="fld">Start date (optional)<input name="startDate" type="date"></label>
           </div>
           <div class="fld"><span class="label">Benefits</span>
@@ -2330,21 +2374,22 @@ async function viewPost(editId = null) {
           <button type="button" class="link-btn" id="desc-tpl">Start from an example</button>
         </section>
 
-        <section class="pcard">
+        <section class="pcard" id="contact-sec" ${assist ? "hidden" : ""}>
           <header><span class="num">8</span><div><h2>Your contact for the person you hire</h2><p>Applicants talk to you through Messages here. These are only shown to the person who accepts your job offer. We filled them in from your profile; change or remove any.</p></div></header>
           <div id="contact-rows" class="contact-rows"></div>
           <button type="button" class="btn btn-ghost btn-sm" id="add-contact">+ Add another contact</button>
         </section>
 
-        <section class="pcard agree-box">
+        <section class="pcard agree-box" ${assist ? "hidden" : ""}>
           <p class="label">Before you post, confirm that you will:</p>
           <label class="check"><input type="checkbox" name="agreeWage" required><span>Pay at least the legal minimum wage</span></label>
           <label class="check"><input type="checkbox" name="agreeFee" required><span>Never charge applicants any fee, deposit or deduction</span></label>
           <label class="check"><input type="checkbox" name="agreeAge" required><span>Only hire workers aged 18 or older</span></label>
           <label class="check"><input type="checkbox" name="agreeTerms" required><span>Follow Philippine labor law, including the Kasambahay Law, and the <a href="#/terms" target="_blank">Terms</a></span></label>
         </section>
+        ${planCard}
         <p id="form-error" class="error" hidden></p>
-        <button class="btn btn-primary btn-lg" type="submit">${editJob ? "Save changes" : "Submit for review"}</button>
+        <button class="btn btn-primary btn-lg" type="submit">${assist ? "Create the link" : editJob ? "Save changes" : "Submit for review"}</button>
       </form>
       <aside class="post-side">
         <p class="label">Preview</p>
@@ -2354,8 +2399,10 @@ async function viewPost(editId = null) {
       </aside>
     </div>`;
 
-  if (!editJob && !getAuthState().isAdmin) store.usage().then((u) => { const el = $("#post-usage"); if (el) el.textContent = `${u.postsM || 0} of ${LIMITS.posts} posts used this month`; }).catch(() => {});
+  if (!editJob && !getAuthState().isAdmin) Promise.all([store.usage(), store.postCap()]).then(([u, cap]) => { const el = $("#post-usage"); if (el) el.textContent = `${u.postsM || 0} of ${cap} posts used this month`; }).catch(() => {});
+  $("[data-enterprise]")?.addEventListener("click", () => { supportPrefill = { topic: "Enterprise plan", message: "Hi! We'd like to ask about the Enterprise plan. We hire about ___ people a month, for these jobs: ___.\n" }; });
   const f = $("#post-form");
+  if (assist) { f.querySelectorAll(".agree-box input").forEach((i) => (i.required = false)); f.employerName.value = ""; }
   const val = (n) => f.querySelector(`[name=${n}]:checked`)?.value ?? "";
   const workplace = () => val("workplace");
   let touchedBenefits = false;
@@ -2397,7 +2444,7 @@ async function viewPost(editId = null) {
       daysOff: wp === "business" || g("daysOff") === "" ? null : Math.max(2, Math.min(15, Number(g("daysOff")))), daysOffPer: "month",
       daysPerWeek: wp === "business" ? Math.max(1, Math.min(7, Number(g("daysPerWeek")) || 6)) : null,
       shiftType: f.hours.value ? val("shiftType") || "fixed" : "", shiftNote: f.hours.value && (val("shiftType") || "fixed") !== "fixed" ? g("shiftNote") : "",
-      openings: Math.max(1, Math.min(3, Number(g("openings")) || 1)), startDate: g("startDate"),
+      openings: Math.max(1, Math.min(10, Number(g("openings")) || 1)), startDate: g("startDate"),
       benefits: [...f.querySelectorAll("[name=benefits]:checked")].map((i) => i.value),
       reqExperience: Number(val("reqExperience") || 0), reqEducation: val("reqEducation") || "Any",
       reqList: [...f.querySelectorAll("[name=reqList]:checked")].map((i) => i.value),
@@ -2502,9 +2549,9 @@ async function viewPost(editId = null) {
   $("#add-contact").addEventListener("click", () => { if (f.querySelectorAll(".crow").length >= 4) return toast("Up to 4 contacts"); $("#contact-rows").insertAdjacentHTML("beforeend", contactRow("phone", "")); refresh(); $("#contact-rows .crow:last-child input").focus(); });
   $("#contact-rows").addEventListener("click", (e) => { const x = e.target.closest(".crow-x"); if (!x) return; x.closest(".crow").remove(); refresh(); });
   renderOptions();
-  // Edit mode: fill the form from the saved post.
-  if (editJob) {
-    const j = editJob, c = editContact || {};
+  // Edit mode (or "Post a similar job"): fill the form from the saved post.
+  if (editJob || copyJob) {
+    const j = editJob || copyJob, c = (editJob ? editContact : copyContact) || {};
     const setRadio = (n, v) => { const r = [...f.querySelectorAll(`[name=${n}]`)].find((i) => i.value === String(v)); if (r) r.checked = true; };
     const setVal = (n, v) => { if (f[n] && v != null) f[n].value = v; };
     touchedBenefits = true;
@@ -2522,13 +2569,16 @@ async function viewPost(editId = null) {
     if (hm) { f.hLen.value = hm[1]; f.hStart.value = (Number(hm[2]) % 12) + (hm[3].toUpperCase() === "PM" ? 12 : 0); }
     autoTitle = "";
   }
-  const draft = editJob ? null : loadDraft("post");
+  const draft = editJob || copyJob ? null : loadDraft(DK);
+  const invited = !assist && !editJob && inviteToken();
   if (draft) {
     applyDraft(f, draft); touchedBenefits = true; renderOptions(); applyDraft(f, draft);
-    f.insertAdjacentHTML("afterbegin", draftNote());
-    f.querySelector("[data-draft-clear]").addEventListener("click", () => { clearDraft("post"); viewPost(); });
+    (invited ? $(".post-layout") : f).insertAdjacentHTML(invited ? "beforebegin" : "afterbegin", invited
+      ? `<div class="invite-note">${ICON.check}<div><strong>Job Search PH prepared this post for you.</strong><span>Check everything, change anything you like, add how the person you hire can reach you, tick the four boxes at the end, then tap Submit for review.</span></div></div>`
+      : draftNote());
+    f.querySelector("[data-draft-clear]")?.addEventListener("click", () => { clearDraft(DK); viewPost(null, { assist }); });
   }
-  else if (!editJob && profile.employerKind) {
+  else if (!editJob && !assist && profile.employerKind) {
     const wpIn = f.querySelector(`[name=workplace][value="${profile.employerKind}"]`);
     if (wpIn) { wpIn.checked = true; wpIn.dispatchEvent(new Event("change", { bubbles: true })); renderOptions(); }
     const need = (profile.needs || [])[0];
@@ -2539,7 +2589,7 @@ async function viewPost(editId = null) {
     }
     if (catIn) { catIn.checked = true; catIn.dispatchEvent(new Event("change", { bubbles: true })); }
   }
-  if (!editJob) autosave("post", f);
+  if (!editJob) autosave(DK, f);
   refresh();
 
   f.addEventListener("submit", async (e) => {
@@ -2571,6 +2621,21 @@ async function viewPost(editId = null) {
     if (/_{3,}/.test(data.description)) return fail("Fill in the blanks (___) in the job description, or delete the lines you don't need.", f.description);
     { const floor = payFloor({ ...data, workplace: workplace() }); if (floor?.blocked) return fail(floor.blockMsg, f.salaryMin); }
     if (data.workplace !== "business" && !(data.daysOff >= 2)) return fail("The minimum is 2 days off per month.", f.daysOff);
+    const pick = editJob || assist || isAdm ? "" : myPlan.sub ? "pro" : val("planPick") || "post";
+    const proPost = isAdm || assist || ["pro", "post", "monthly"].includes(pick) || (editJob && ["pro", "unpaid"].includes(editJob.plan));
+    if (data.openings > 3 && !proPost) return fail(editJob ? "More than 3 openings is a Pro feature. Upgrade this post to Pro from My posts first." : "More than 3 openings is a Pro feature. Choose Pro post or Pro monthly below.", f.openings);
+    if (assist) {
+      const d = formValues(f); INVITE_SKIP.forEach((k) => delete d[k]);
+      const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Creating…";
+      try {
+        const token = await store.createInvite({ label: f.inviteFor.value.trim().slice(0, 80), title: data.title.slice(0, 100), d });
+        clearDraft(DK);
+        return showInviteLink(token, f.inviteFor.value.trim(), data.title);
+      } catch (ex) {
+        console.error(ex); btn.disabled = false; btn.textContent = "Create the link";
+        return fail(ex.code === "permission-denied" ? "The database rejected this. Publish the latest database rules in Firebase, then try again." : `Could not create the link (${ex.code || ex.message}).`);
+      }
+    }
     const rows = [...f.querySelectorAll(".crow")].map((r) => ({ el: r.querySelector("[name=cValue]"), contactMethod: r.querySelector("[name=cMethod]").value, contactValue: r.querySelector("[name=cValue]").value.trim() })).filter((c) => c.contactValue);
     if (!rows.length) return fail("Add at least one way for the person you hire to reach you.", $("#add-contact"));
     for (const r of rows) {
@@ -2596,10 +2661,13 @@ async function viewPost(editId = null) {
         app.innerHTML = `<div class="empty"><h1>Changes saved</h1><p class="muted">Your post is back in review. We'll check the changes soon${editJob.status === "approved" ? " and it will be live again with its original expiry date" : ""}. Your applicants and chats are unchanged.</p><p><a class="btn btn-primary" href="#/my">Go to My posts</a></p></div>`;
         return;
       }
-      await store.createJob(data, contact);
+      const plan = isAdm || pick === "pro" ? "pro" : pick === "free" ? "free" : "unpaid";
+      const made = await store.createJob(data, contact, plan);
       track("Lead", { content_name: "job_post", content_category: data.category });
       clearDraft("post");
+      if (invited) { await store.useInvite(invited, made.id).catch((e) => console.warn("invite", e)); setInviteToken(""); }
       jobsCache = null;
+      if (plan === "unpaid") { go(pick === "monthly" ? `#/pay/monthly/${made.id}` : `#/pay/post/${made.id}`); return; }
       app.innerHTML = `<div class="empty next-steps"><h1>Thanks! Your post is in review.</h1>
         <ol class="next-list">
           <li><strong>We check it,</strong> usually within a day, so jobseekers can trust what they see.</li>
@@ -2607,6 +2675,7 @@ async function viewPost(editId = null) {
           <li><strong>Applicants come to My posts.</strong> The post stays up for 30 days, and each evening we email you your best new applicants.</li>
           <li><strong>Need a change?</strong> Edit it anytime from My posts. Edits are checked again before they show.</li>
         </ol>
+        ${plan === "free" ? `<p class="plan-upsell">Your free post takes up to ${PLANS.free.maxApplicants} applicants. Want more people to choose from? <a href="#/pay/post/${encodeURIComponent(made.id)}">Make it Pro for ₱${PLANS.post.price}</a></p>` : ""}
         <p><a class="btn btn-primary" href="#/my">Go to My posts</a> <a class="btn btn-ghost" href="#/post" id="again">Post another</a></p></div>`;
       $("#again").addEventListener("click", (ev) => { ev.preventDefault(); viewPost(); });
     } catch (ex) {
@@ -2618,6 +2687,113 @@ async function viewPost(editId = null) {
   });
 }
 
+/* ---------------- Pay for Pro (InstaPay QR, an admin confirms) ---------------- */
+async function viewPay(kind, jobId) {
+  document.title = "Pay for Pro | Job Search PH";
+  const { user, profile } = getAuthState();
+  if (!user) return goSignIn("Sign in to pay for Pro");
+  if (!profile || profile.role !== "employer") { location.hash = "#/profile"; return; }
+  if (!["post", "monthly"].includes(kind)) { go("/pricing/"); return; }
+  app.innerHTML = `<div class="empty"><p class="muted">Loading…</p></div>`;
+  const [job, pays, plan] = await Promise.all([jobId ? store.getJob(jobId) : null, store.myPayments().catch(() => []), store.myPlan().catch(() => ({}))]);
+  if (!location.hash.startsWith("#/pay")) return;
+  if (kind === "post" && (!job || job.ownerUid !== user.uid)) { app.innerHTML = `<div class="empty"><h1>Post not found</h1><p><a class="btn btn-primary" href="#/my">Go to My posts</a></p></div>`; return; }
+  const P = PLANS[kind], back = `<p><a href="#/my" class="back">← My posts</a></p>`;
+  if (kind === "post" && job.plan === "pro") { app.innerHTML = `${back}<div class="empty"><h1>This post is already Pro</h1><p class="muted">${esc(job.title)} has unlimited applicants${job.status === "approved" ? " and is shown at the top" : " and goes to the top once it's approved"}.</p></div>`; return; }
+  const waiting = pays.find((x) => x.status === "pending" && x.kind === kind && (kind === "monthly" || x.jobId === jobId));
+  const what = kind === "post" ? `Pro post: <strong>${esc(job.title)}</strong>` : `Pro monthly: every post for 30 days${plan.sub ? ` (adds 30 days after ${new Date(plan.sub.until).toLocaleDateString("en-PH", { month: "long", day: "numeric" })})` : ""}`;
+  if (waiting) {
+    app.innerHTML = `${back}<div class="empty pay-wait"><h1>We're checking your payment</h1><p class="muted">You sent reference number <strong>${esc(waiting.ref)}</strong> for ₱${P.price} ${ago(waiting.createdAt)}. We confirm payments by hand, usually within a few hours (8 AM to 9 PM). You'll get a notification when it's done.</p><p class="muted small">Wrong number? <a href="#/support" data-payhelp>Tell us</a>.</p></div>`;
+    $("[data-payhelp]")?.addEventListener("click", () => { supportPrefill = { topic: "Payments and plans", message: `About my payment (reference ${waiting.ref}, ₱${P.price}):\n` }; });
+    return;
+  }
+  track("InitiateCheckout", { content_name: kind === "post" ? "pro_post" : "pro_monthly", value: P.price, currency: "PHP" });
+  app.innerHTML = `${back}
+    <div class="page-head"><div><p class="kicker">Go Pro</p><h1>Pay ₱${P.price}</h1><p class="muted">${what}</p></div></div>
+    <div class="pay-layout">
+      <section class="pcard pay-qr">
+        <img src="/assets/instapay-qr.png?v=2" alt="InstaPay QR code for Job Search PH" width="382" height="360">
+        <a class="btn btn-ghost btn-sm" href="/assets/instapay-qr.png?v=2" download="JobSearchPH-InstaPay-QR.png">Save QR image</a>
+      </section>
+      <section class="pcard pay-steps">
+        <ol class="next-list">
+          <li><strong>Open GCash, Maya or your bank app</strong> and choose <em>Scan QR</em> (InstaPay).</li>
+          <li><strong>Scan the code.</strong> On this same phone? Tap <em>Save QR image</em>, then in your app choose <em>Upload QR</em> or <em>Scan from gallery</em>.</li>
+          <li><strong>Enter exactly ₱${P.price}</strong> and pay. Your app may add a small transfer fee.</li>
+          <li><strong>Type the reference number</strong> from your receipt below.</li>
+        </ol>
+        <form id="pay-form" class="form" novalidate>
+          <label class="fld">Reference number *<input name="ref" required minlength="4" maxlength="40" autocomplete="off" inputmode="text" placeholder="e.g. 1234 567 890"></label>
+          <label class="fld">Name on your GCash, Maya or bank account<input name="payerName" maxlength="80" value="${esc(profile.fullName || "")}"><span class="hint">Helps us find your payment faster.</span></label>
+          <p id="form-error" class="error" hidden></p>
+          <button class="btn btn-primary btn-lg" type="submit">I've paid ₱${P.price}</button>
+          <p class="muted small">We confirm payments by hand, usually within a few hours (8 AM to 9 PM). ${kind === "post" ? "Your post becomes Pro as soon as we confirm, and goes live once it's approved." : "Pro turns on for all your posts as soon as we confirm."} If we can't approve your post, we refund you.</p>
+        </form>
+      </section>
+    </div>`;
+  const f = $("#pay-form");
+  const fail = (m) => { const e = $("#form-error"); e.textContent = m; e.hidden = false; };
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const ref = f.ref.value.replace(/\s+/g, " ").trim();
+    if (ref.replace(/\D/g, "").length < 4) return fail("Type the reference number from your receipt (at least 4 digits).");
+    const btn = f.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Sending…";
+    try {
+      await store.createPayment({ kind, job, ref, payerName: f.payerName.value.trim(), src: profile.src || "" });
+      track("AddPaymentInfo", { content_name: kind === "post" ? "pro_post" : "pro_monthly", value: P.price, currency: "PHP" });
+      viewPay(kind, jobId);
+    } catch (ex) {
+      console.error(ex); btn.disabled = false; btn.textContent = `I've paid ₱${P.price}`;
+      fail(ex.code === "limit-reached" ? "You've sent several payments today. Contact support if something went wrong." : `Could not send (${ex.code || ex.message}). Please try again.`);
+    }
+  });
+}
+/* ---------------- My plan & payments (employers) ---------------- */
+async function viewPlan() {
+  document.title = "My plan | Job Search PH";
+  const { user, profile } = getAuthState();
+  if (!user) return goSignIn("Sign in to see your plan");
+  if (!profile || profile.role !== "employer") { location.hash = "#/profile"; return; }
+  app.innerHTML = `<div class="page-head"><div><p class="kicker">Employer</p><h1>My plan &amp; payments</h1></div></div><div id="plan-body">${SK.rows(3)}</div>`;
+  const [plan, pays, jobs, usage, cap] = await Promise.all([trackPurchases().then(() => store.myPlan()).catch(() => ({})), store.myPayments().catch(() => []), store.myJobs().catch(() => []), store.usage().catch(() => ({})), store.postCap().catch(() => LIMITS.posts)]);
+  if (!$("#plan-body")) return;
+  const fmtD = (t) => new Date(t).toLocaleDateString("en-PH", { month: "long", day: "numeric", year: "numeric" });
+  const sub = plan.sub, P = sub ? PLANS[sub.plan] : null;
+  const daysLeft = sub ? Math.max(0, Math.ceil((sub.until - Date.now()) / 864e5)) : 0;
+  const pro = jobs.filter((j) => j.plan === "pro"), free = jobs.find((j) => j.plan === "free"), unpaid = jobs.filter((j) => j.plan === "unpaid");
+  const pendingPay = pays.find((x) => x.status === "pending");
+  const current = sub
+    ? `<div class="plan-now pro"><div><span class="plan-chip pro">${esc(P?.name || "Pro")}</span><h2>${esc(P?.name || "Pro")} is on</h2>
+        <p>Until <strong>${fmtD(sub.until)}</strong> · ${daysLeft} day${daysLeft === 1 ? "" : "s"} left. Every new post is Pro: unlimited applicants, shown at the top, up to 10 openings.</p>
+        <p class="muted small">${usage.postsM || 0} of ${cap} posts used this month.</p></div>
+        <div class="plan-now-act">${sub.plan === "monthly" ? `<a class="btn ${daysLeft <= 7 ? "btn-primary" : "btn-ghost"}" href="#/pay/monthly">Add 30 days · ₱${PLANS.monthly.price}</a>` : `<a class="btn btn-ghost" href="#/support" data-enterprise>Contact us</a>`}</div></div>`
+    : `<div class="plan-now"><div><span class="plan-chip">${plan.freeUsed ? "Pay per post" : "Free"}</span><h2>${plan.freeUsed ? "You're on pay per post" : "Your first post is free"}</h2>
+        <p>${plan.freeUsed ? `Each new post is ₱${PLANS.post.price} for Pro, or get <strong>Pro monthly</strong> for ₱${PLANS.monthly.price} and make up to ${PLANS.monthly.postsPerMonth} posts a month Pro.` : `Post your first job free (up to ${PLANS.free.maxApplicants} applicants). Go Pro for unlimited applicants and a spot at the top.`}</p>
+        ${plan.lastSub && plan.lastSub.until <= Date.now() ? `<p class="muted small">Your ${esc(PLANS[plan.lastSub.plan]?.name || "plan")} ended on ${fmtD(plan.lastSub.until)}.</p>` : ""}</div>
+        <div class="plan-now-act"><a class="btn btn-primary" href="#/pay/monthly">Get Pro monthly · ₱${PLANS.monthly.price}</a><a class="btn btn-ghost" href="/pricing/">Compare plans</a></div></div>`;
+  const postRow = (j) => `<li><a href="/jobs/${encodeURIComponent(j.id)}/">${esc(j.title)}</a> ${planBadge(j)}<span class="muted small">${j.plan === "pro" ? (j.status === "approved" && j.expiresAt ? `top of the list until ${fmtD(j.expiresAt)}` : "goes to the top once approved") : j.plan === "free" ? `${j.appCount || 0} of ${PLANS.free.maxApplicants} applicants` : "waiting for payment"}</span>
+    ${j.plan === "free" || (j.plan === "unpaid" && !pays.some((x) => x.status === "pending" && x.jobId === j.id)) ? `<a class="btn btn-ghost btn-sm" href="#/pay/post/${encodeURIComponent(j.id)}">${j.plan === "free" ? "Make it Pro" : "Pay"} · ₱${PLANS.post.price}</a>` : ""}</li>`;
+  const status = (x) => (x.status === "approved" ? `<span class="badge badge-approved">Paid</span>` : x.status === "pending" ? `<span class="badge badge-app-shortlisted">Checking</span>` : `<span class="badge badge-rejected">Not found</span>`);
+  $("#plan-body").innerHTML = `
+    ${current}
+    ${pendingPay ? `<div class="plan-banner muted-banner"><span>We're checking your payment of <strong>₱${pendingPay.amount}</strong> (ref. ${esc(pendingPay.ref)}), usually within a few hours.</span></div>` : ""}
+    <section class="pcard"><h2 class="h3">Your posts</h2>${[...pro, ...(free ? [free] : []), ...unpaid].length ? `<ul class="plan-posts">${[...unpaid, ...pro, ...(free ? [free] : [])].map(postRow).join("")}</ul>` : `<p class="muted">No posts yet. <a href="#/post">Post a job</a></p>`}</section>
+    <section class="pcard"><h2 class="h3">Payments</h2>${pays.length ? `<table class="pay-table"><thead><tr><th>Date</th><th>For</th><th>Amount</th><th>Reference</th><th>Status</th></tr></thead><tbody>${pays.map((x) => `<tr><td>${fmtD(x.createdAt)}</td><td>${x.kind === "post" ? `Pro post${x.jobTitle ? `: ${esc(x.jobTitle)}` : ""}` : "Pro monthly (30 days)"}</td><td>₱${fmtN(x.amount)}</td><td>${esc(x.ref)}</td><td>${status(x)}${x.status === "rejected" && x.reason ? `<div class="muted small">${esc(x.reason)}</div>` : ""}</td></tr>`).join("")}</tbody></table>
+      <p class="muted small">Questions about a payment? <a href="#/support" data-payhelp>Contact support</a>.</p>` : `<p class="muted">No payments yet.</p>`}</section>`;
+  $("[data-enterprise]")?.addEventListener("click", () => { supportPrefill = { topic: "Enterprise plan", message: "Hi! About our Enterprise plan:\n" }; });
+  $("[data-payhelp]")?.addEventListener("click", () => { supportPrefill = { topic: "Payments and plans", message: "About my payment:\n" }; });
+}
+// Tell the ad Pixel about a confirmed payment, once per payment (the admin confirms it later, so we check on My posts).
+async function trackPurchases() {
+  const pays = await store.myPayments().catch(() => []);
+  for (const x of pays.filter((x) => x.status === "approved")) {
+    const k = `jsph-paid-${x.id}`;
+    try { if (localStorage.getItem(k)) continue; localStorage.setItem(k, "1"); } catch { continue; }
+    track("Purchase", { content_name: x.kind === "post" ? "pro_post" : "pro_monthly", value: x.amount, currency: "PHP" });
+  }
+  return pays;
+}
+
 /* ---------------- Employer: my posts + applicants ---------------- */
 async function viewMy() {
   document.title = "My posts | Job Search PH";
@@ -2625,29 +2801,71 @@ async function viewMy() {
   if (!user) return goSignIn("Sign in to manage your posts");
   if (!profile) { location.hash = "#/profile"; return; }
   app.innerHTML = `<div class="page-head"><h1>My posts</h1><a class="btn btn-primary" href="#/post">Post a job</a></div><div id="mine">${SK.rows(4)}</div>`;
+  let jobsById = {}, appsBy = {};
   const draw = async () => {
-    const [list, apps] = await Promise.all([store.myJobs(), store.applicationsForEmployer().catch(() => [])]);
+    const [list, apps, pays, plan] = await Promise.all([store.myJobs(), store.applicationsForEmployer().catch(() => []), trackPurchases(), store.myPlan().catch(() => ({}))]);
     if (!$("#mine")) return;
+    const payFor = (j) => pays.find((x) => x.status === "pending" && (x.jobId === j.id || x.kind === "monthly"));
+    const paidFor = (j) => pays.find((x) => x.status === "approved" && x.jobId === j.id);
+    // A soft, benefit-first nudge (a link, not a loud button): what they get first, the price small.
+    const nudge = (j, text) => `<a class="pro-nudge" href="#/pay/post/${encodeURIComponent(j.id)}"><span class="pn-icon" aria-hidden="true">↑</span><span>${text}</span><span class="pn-price">₱${PLANS.post.price}</span></a>`;
+    const proBtn = (j, label, primary) => `<a class="btn ${primary ? "btn-primary" : "btn-ghost"} btn-sm" href="#/pay/post/${encodeURIComponent(j.id)}">${label} · ₱${PLANS.post.price}</a>`;
+    // One plan line on every post, so the employer always knows where they stand.
+    const planLine = (j, n) => {
+      if (j.plan === "pro") {
+        const how = j.paidAt || paidFor(j) ? `<span class="plan-chip ok">Payment confirmed</span>` : plan.sub ? `<span class="plan-chip ok">Included in ${esc(PLANS[plan.sub.plan]?.name || "your plan")}</span>` : "";
+        return `<div class="plan-line pro"><span class="plan-chip pro">Pro</span>${how} Unlimited applicants${j.status === "approved" ? " · shown at the top" : ""}${j.status !== "closed" ? ` <a class="btn btn-ghost btn-sm" href="#/post/similar/${encodeURIComponent(j.id)}">Post a similar job</a>` : ""}</div>`;
+      }
+      if (j.plan === "unpaid") return payFor(j)
+        ? `<div class="plan-line wait"><span class="plan-chip pro">Pro</span><span class="plan-chip">Payment sent</span> We're checking it, usually within a few hours.</div>`
+        : `<div class="plan-line due"><span class="plan-chip due">Not paid yet</span> We'll review this post after you pay. ${proBtn(j, "Pay", true)}</div>`;
+      if (j.plan === "free") {
+        const used = Math.max(n, j.appCount || 0), cap = PLANS.free.maxApplicants, full = used >= cap, near = used >= cap - 2;
+        if (payFor(j)) return `<div class="plan-line wait"><span class="plan-chip">Free · ${used} of ${cap} applicants</span><span class="plan-chip">Payment sent</span> We're checking it.</div>`;
+        if (j.status === "closed") return `<div class="plan-line"><span class="plan-chip">Free · ${used} of ${cap} applicants</span></div>`;
+        return `<div class="plan-line ${full ? "due" : ""}"><span class="plan-chip ${near ? "due" : ""}">Free · ${used} of ${cap} applicants</span>${full ? ` <strong>Full.</strong> It stopped taking applications. ${proBtn(j, "Reopen with Pro", true)}` : near ? ` Almost full. ${nudge(j, "Keep applicants coming: unlimited + top of the list")} <a class="small" href="/pricing/">See plans</a>` : ""}</div>`;
+      }
+      // Posts from before plans existed: no applicant limit.
+      return `<div class="plan-line"><span class="plan-chip">Free · ${n} applicant${n === 1 ? "" : "s"}</span>${isLive(j) ? ` ${nudge(j, "Get more applicants: show it first for 30 days")}` : ""}</div>`;
+    };
+    const subLine = plan.sub ? `<div class="plan-banner">${ICON.check}<span><strong>${esc(PLANS[plan.sub.plan]?.name || "Pro")} is on</strong> until ${new Date(plan.sub.until).toLocaleDateString("en-PH", { month: "long", day: "numeric" })}. Every new post is Pro.</span> <a class="btn btn-ghost btn-sm" href="#/plan">My plan</a></div>` : "";
     list.sort((a, b) => b.createdAt - a.createdAt);
-    const by = {}; apps.forEach((a) => { (by[a.jobId] ||= []).push(a); });
-    $("#mine").innerHTML = list.length ? `<div class="table">${list.map((j) => {
-      const a = by[j.id] || []; const fresh = a.filter((x) => x.status === "new").length;
+    jobsById = Object.fromEntries(list.map((j) => [j.id, j]));
+    appsBy = {}; apps.forEach((a) => { (appsBy[a.jobId] ||= []).push(a); });
+    $("#mine").innerHTML = (list.length ? subLine : "") + (list.length ? `<div class="table">${list.map((j) => {
+      const a = appsBy[j.id] || []; const fresh = a.filter((x) => x.status === "new").length;
+      const reviewing = j.status === "pending" && j.plan !== "unpaid" && !j.infoNote;
       return `
       <div class="trow">
-        <div><a href="/jobs/${encodeURIComponent(j.id)}/"><strong>${esc(j.title)}</strong></a> ${statusBadge(j)}
+        <div><a href="/jobs/${encodeURIComponent(j.id)}/"><strong>${esc(j.title)}</strong></a> ${statusBadge(j)}${j.status === "closed" && j.closedReason === "filled" ? ` <span class="badge badge-approved">Hired</span>` : ""}
           <div class="muted small">${esc(j.city)} · posted ${ago(j.createdAt)}${j.expiresAt ? ` · ${isLive(j) ? "expires" : "expired"} ${new Date(j.expiresAt).toLocaleDateString("en-PH")}` : ""}</div>
+          ${reviewing ? `<p class="review-note">We check posts within a day. We'll email you when it's live.</p>` : ""}
           ${j.status === "rejected" ? `<div class="info-ask"><strong>Not approved${j.rejectReason ? ":" : "."}</strong> ${j.rejectReason ? `${esc(j.rejectReason)}.` : ""}<span class="small muted"> Edit the post to fix it, and we'll check it again.</span></div>` : ""}
+          ${planLine(j, a.length)}
           ${j.status === "pending" && j.infoNote ? `<div class="info-ask"><strong>We need a bit more before approving this post:</strong> ${esc(j.infoNote)}.<span class="small muted"> Add your Facebook link or permit on your <a href="#/profile">profile</a>, or send the rest to us.</span><a class="btn btn-primary btn-sm" href="#/support" data-reply-info="${esc(j.id)}">Reply to Job Search PH</a></div>` : ""}</div>
-        <div><a class="btn btn-ghost btn-sm" href="#/applicants/${encodeURIComponent(j.id)}">${a.length} applicant${a.length === 1 ? "" : "s"}${fresh ? ` <span class="dot">${fresh} new</span>` : ""}</a></div>
-        <div class="actions">${j.status !== "closed" ? `<a class="btn btn-ghost btn-sm" href="#/post/edit/${encodeURIComponent(j.id)}">Edit</a>` : ""}${j.status === "approved" || j.status === "pending" ? `<button class="btn btn-ghost btn-sm" data-close="${esc(j.id)}">Mark filled / close</button>` : ""}</div>
-      </div>`; }).join("")}</div>` : `<div class="empty"><p>You haven't posted any jobs yet.</p></div>`;
+        <div><a class="btn ${fresh ? "btn-primary" : "btn-ghost"} btn-sm" href="#/applicants/${encodeURIComponent(j.id)}">View applicants (${a.length})${fresh ? ` <span class="dot">${fresh} new</span>` : ""}</a></div>
+        <div class="actions">${j.status !== "closed" ? `<a class="btn btn-ghost btn-sm" href="#/post/edit/${encodeURIComponent(j.id)}">Edit</a>` : ""}${j.status === "approved" || j.status === "pending" ? `<button class="btn btn-ghost btn-sm" data-hired="${esc(j.id)}">Hired someone</button><button class="btn btn-ghost btn-sm" data-close="${esc(j.id)}">Close post</button>` : ""}</div>
+      </div>`; }).join("")}</div>` : `<div class="empty"><p>You haven't posted any jobs yet. Your first post is free.</p></div>`);
+  };
+  const closeJob = async (id, reason) => {
+    try { await store.updateJob(id, { status: "closed", closedReason: reason }); jobsCache = null; toast(reason === "filled" ? "Congrats on the hire! Post closed." : "Post closed"); draw(); }
+    catch { toast("Could not close post"); }
   };
   $("#mine").addEventListener("click", async (e) => {
     const r = e.target.closest("[data-reply-info]");
     if (r) { const t = e.target.closest(".trow")?.querySelector("strong")?.textContent || ""; supportPrefill = { topic: "A job post or employer", message: `About my post "${t}" (ID ${r.dataset.replyInfo}):\n`, page: `/jobs/${r.dataset.replyInfo}/` }; return; }
+    const h = e.target.closest("[data-hired]");
+    if (h) {
+      const id = h.dataset.hired, n = (appsBy[id] || []).length;
+      const pick = await showDialog({ title: "Who did you hire?", body: n ? "If you hired someone who applied here, send them the job offer. When they accept, it goes on their work history and the post closes." : "We'll close the post so jobseekers stop applying.",
+        actions: [...(n ? [{ label: "Someone who applied here", value: "app", primary: true }] : []), { label: n ? "Someone else" : "Close the post", value: "other", primary: !n }, { label: "Cancel", value: null }] });
+      if (pick === "app") { toast("Tap “Offer the job” on the person you hired"); go(`#/applicants/${encodeURIComponent(id)}`); }
+      else if (pick === "other") closeJob(id, "filled");
+      return;
+    }
     const b = e.target.closest("[data-close]"); if (!b) return;
     if (!confirmInline(b, "Click again to close")) return;
-    try { await store.updateJob(b.dataset.close, { status: "closed" }); jobsCache = null; toast("Post closed"); draw(); } catch { toast("Could not close post"); }
+    closeJob(b.dataset.close, "closed");
   });
   draw().catch((e) => { console.error(e); $("#mine").innerHTML = `<p class="error">Could not load your posts (${esc(e.code || e.message)}).</p>`; });
 }
@@ -3182,18 +3400,62 @@ async function viewChat(appId) {
   if (!CAN_SMS && !adminView) input.focus();
 }
 
+/* ---------------- Post for an employer (invite links) ---------------- */
+const inviteUrl = (token) => `${location.origin}/#/invite/${token}`;
+function showInviteLink(token, who, title) {
+  const url = inviteUrl(token);
+  app.innerHTML = `<div class="empty next-steps invite-done"><h1>Link ready</h1>
+    <p class="muted">Send this to <strong>${esc(who)}</strong> for <strong>${esc(title)}</strong>. It works once and expires in 30 days.</p>
+    <div class="invite-link"><input readonly value="${esc(url)}" aria-label="Invite link"><button type="button" class="btn btn-primary" id="inv-copy">Copy link</button></div>
+    <ol class="next-list">
+      <li><strong>They open the link</strong> and sign in. "Continue with Google" is quickest.</li>
+      <li><strong>They check the post,</strong> add their contact and confirm the pledges.</li>
+      <li><strong>It comes to Pending posts</strong> like any other post, under their account.</li>
+    </ol>
+    <p><a class="btn btn-ghost" href="#/admin/invites">See all links</a> <a class="btn btn-ghost" href="#/post/assist" id="inv-again">Prepare another</a></p></div>`;
+  $("#inv-copy").addEventListener("click", () => copyText(url));
+  $("#inv-again").addEventListener("click", (e) => { e.preventDefault(); viewPost(null, { assist: true }); });
+}
+async function copyText(t) { try { await navigator.clipboard.writeText(t); toast("Link copied"); } catch { const i = $(".invite-link input"); i?.select(); toast("Press Copy on your keyboard"); } }
+
+async function viewInvite(token) {
+  document.title = "Your job post | Job Search PH";
+  const { user, profile } = getAuthState();
+  if (!user) {
+    app.innerHTML = `<div class="empty"><h1>Your job post is ready</h1><p class="muted">Job Search PH prepared a job post for you. Sign in to check it and post it.</p>
+      <p><a class="btn btn-primary" href="#/signin" data-action="gosignin" data-intent="employer" data-purpose="Sign in to see your job post">Sign in to see it</a></p>
+      <p class="small muted">Tip: "Continue with Google" is the quickest.</p></div>`;
+    return;
+  }
+  app.innerHTML = `<div class="empty"><p class="muted">Opening your job post…</p></div>`;
+  const inv = await store.getInvite(token);
+  const stop = (h, p) => { app.innerHTML = `<div class="empty"><h1>${h}</h1><p class="muted">${p}</p><p><a class="btn btn-primary" href="#/support">Contact support</a></p></div>`; };
+  if (!inv || inv.status === "cancelled") return stop("This link doesn't work", "It may have been cancelled or typed wrong. Ask Job Search PH for a new link.");
+  if (inv.status === "used") return inv.usedBy === user.uid
+    ? (app.innerHTML = `<div class="empty"><h1>You already posted this job</h1><p class="muted">Find it in My posts.</p><p><a class="btn btn-primary" href="#/my">Go to My posts</a></p></div>`)
+    : stop("This link was already used", "Each link works once. Ask Job Search PH for a new one.");
+  if (inv.expiresAt && inv.expiresAt < Date.now()) return stop("This link has expired", "Links work for 30 days. Ask Job Search PH for a new one.");
+  if (profile?.role !== "employer") { returnTo = `#/invite/${token}`; return (app.innerHTML = `<div class="empty"><h1>This is a job post for an employer</h1><p class="muted">Your profile is set to "I'm looking for work". Switch it to "I'm hiring" to post this job.</p><p><a class="btn btn-primary" href="#/profile">Change profile type</a></p></div>`); }
+  try { localStorage.setItem(draftKey("post"), JSON.stringify({ t: Date.now(), d: inv.d || {} })); } catch {}
+  setInviteToken(token);
+  go("#/post");
+}
+
 /* ---------------- Admin ---------------- */
 let adminTab = "analytics";
 let adminCounts = {};
 const ADMIN_GROUPS = [["overview", "Overview"], ["review", "To review"], ["manage", "Manage"]];
 const ADMIN_SECTIONS = [
   { k: "analytics", g: "overview", label: "Analytics", icon: "chart", title: "Analytics", desc: "Visitors, sign-ups, applications and hires, and which links and ads bring people in." },
+  { k: "funnel", g: "overview", label: "Funnel", icon: "funnel", title: "Funnel", desc: "Of the people who made an account, how many reached each step. The biggest drop is where we're losing people." },
   { k: "pending", g: "review", queue: true, label: "Pending posts", icon: "inbox", title: "Pending posts", desc: "New job posts waiting for approval. Check the employer before you approve." },
+  { k: "payments", g: "review", queue: true, label: "Payments", icon: "peso", title: "Payments", desc: "Employers who say they paid. Check your GCash, Maya or bank app for the reference number and amount, then approve. Pro turns on right away." },
   { k: "reports", g: "review", queue: true, label: "Reports", icon: "flag", title: "Reports", desc: "Job posts that users reported. Close the post or dismiss the report." },
   { k: "flags", g: "review", queue: true, label: "Chat flags", icon: "alert", title: "Chat flags", desc: "Chat messages that look like a scam: money, fees, one-time codes, ID numbers or odd links. Checked automatically. Open the chat to see the whole conversation." },
   { k: "verify", g: "review", queue: true, label: "ID checks", icon: "id", title: "ID checks", desc: "Check that the ID looks real, the name matches their profile, and the face matches the selfie. Photos are deleted as soon as you decide." },
   { k: "disputes", g: "review", queue: true, label: "Disputes", icon: "alert", title: "Work history disputes", desc: "Someone asked you to review what the other side said about how a job ended. Remove it from the history if it isn't fair or accurate, or keep it." },
   { k: "support", g: "review", queue: true, label: "Support", icon: "help", title: "Support", desc: "Messages sent through Contact support." },
+  { k: "invites", g: "manage", label: "Post for an employer", icon: "inbox", title: "Post for an employer", desc: "Fill in a job for an employer, then send them the link. They sign in, check it and post it from their own account." },
   { k: "users", g: "manage", label: "Users", icon: "users", title: "Users", desc: "Everyone with a profile. Open someone to see their details, verify or ban them." },
   { k: "approved", g: "manage", label: "Live posts", icon: "check", title: "Live posts", desc: "Jobs showing on the site now." },
   { k: "rejected", g: "manage", label: "Rejected", icon: "x", title: "Rejected posts", desc: "Posts you didn't approve. You can re-publish them." },
@@ -3203,6 +3465,8 @@ const IS_STAGING_SITE = /staging\./.test(location.hostname);
 const _i = (d) => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ADMIN_ICONS = {
   chart: _i('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'),
+  peso: _i('<path d="M7 20V4h6a4 4 0 0 1 0 8H7M4 8h14M4 11h14"/>'),
+  funnel: _i('<path d="M3 4h18l-7 8v6l-4 2v-8z"/>'),
   inbox: _i('<path d="M3 13h5l2 3h4l2-3h5"/><path d="M5 5h14l2 8v6H3v-6z"/>'),
   flag: _i('<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>'),
   alert: _i('<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17h.01"/>'),
@@ -3284,18 +3548,18 @@ async function viewAuthAction() {
     try { email = await store.checkResetCode(code); }
     catch { card(`<h1>This link didn't work</h1><p class="muted">Password links work for 1 hour and only once. Ask for a new one from the sign-in page (tap <strong>Forgot password?</strong>).</p><div class="ce-actions"><a class="btn btn-primary" href="#/signin">Go to sign in</a></div>`); return; }
     card(`<h1>Choose a new password</h1><p class="muted">For <strong>${esc(email)}</strong></p>
-      <form id="rp-form" class="auth-form" novalidate><label for="rp1">New password</label><input id="rp1" type="password" autocomplete="new-password" minlength="6" required>
-      <label for="rp2">Type it again</label><input id="rp2" type="password" autocomplete="new-password" minlength="6" required><p class="hint">At least 6 characters.</p>
+      <form id="rp-form" class="auth-form" novalidate><label for="rp1">New password</label><input id="rp1" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="rp2">Type it again</label><input id="rp2" type="password" autocomplete="new-password" minlength="8" required><p class="hint">At least 8 characters.</p>
       <p class="error" id="ce-msg" hidden></p><button class="btn btn-primary btn-block" type="submit">Save new password</button></form>`);
     $("#rp-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const m = $("#ce-msg"), a = $("#rp1").value, b = $("#rp2").value, btn = e.target.querySelector("button");
       const fail = (t) => { m.textContent = t; m.hidden = false; };
-      if (a.length < 6) return fail("Use at least 6 characters.");
+      if (a.length < 8) return fail("Use at least 8 characters.");
       if (a !== b) return fail("The two passwords don't match.");
       btn.disabled = true;
       try { await store.confirmReset(code, a); await store.signInEmail(email, a).catch(() => {}); toast("Password changed. You're signed in."); location.hash = "#/"; route(); }
-      catch (ex) { btn.disabled = false; fail(ex.code === "auth/weak-password" ? "Choose a stronger password." : "That didn't work. The link may have expired. Ask for a new one."); }
+      catch (ex) { btn.disabled = false; fail(/weak-password|password-does-not-meet/.test(ex.code || "") ? "Choose a stronger password." : "That didn't work. The link may have expired. Ask for a new one."); }
     });
     return;
   }
@@ -3592,6 +3856,140 @@ function anRank(rows, { title, sub, unit = "" }) {
     ${rows.length ? `<ul class="an-rank">${rows.map((r) => `<li data-tip="${esc(`${r.label}: ${r.tipV ?? fmtN(r.v)}${unit}`)}"><span class="an-rl">${esc(r.label)}</span><span class="an-rb"><i style="width:${(r.v / max) * 100}%"></i></span><span class="an-rv">${r.show ?? fmtN(r.v)}${unit}</span></li>`).join("")}</ul>` : `<p class="muted small">No data yet.</p>`}</div>`;
 }
 
+/* ---------------- Admin payments ---------------- */
+async function renderPayments(body) {
+  const [pending, approved, subs, all] = await Promise.all([store.listPayments("pending").catch(() => null), store.listPayments("approved").catch(() => []), store.listSubs().catch(() => []), store.adminAll().catch(() => null)]);
+  if (pending == null) { body.innerHTML = `<p class="error">Couldn't load payments. Publish the latest database rules, then refresh.</p>`; return; }
+  const users = Object.fromEntries((all?.users || []).map((u) => [u.id, u]));
+  const who = (id) => { const u = users[id] || {}; return `<a href="#/admin/user/${encodeURIComponent(id)}">${esc(u.fullName || "Employer")}</a>${u.companyName ? ` · ${esc(u.companyName)}` : ""}${u.phone ? ` · <span class="copyable">${esc(u.phone)}</span>` : ""}`; };
+  const when = (t) => (t ? new Date(t).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+  const what = (x) => (x.kind === "post" ? `Pro post${x.jobTitle ? `: <a href="/jobs/${encodeURIComponent(x.jobId)}/">${esc(x.jobTitle)}</a>` : ""}` : "Pro monthly (30 days)");
+  const monthStart = new Date(new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 7) + "-01T00:00:00+08:00").getTime();
+  const monthRev = approved.filter((x) => (x.decidedAt || x.createdAt) >= monthStart).reduce((n, x) => n + (x.amount || 0), 0);
+  const allRev = approved.reduce((n, x) => n + (x.amount || 0), 0);
+  const activeSubs = subs.filter((x) => x.until > Date.now());
+  body.innerHTML = `
+    <div class="an-tiles">${anTile("Waiting", fmtN(pending.length), "to check")}${anTile("This month", `₱${fmtN(monthRev)}`, "confirmed")}${anTile("All time", `₱${fmtN(allRev)}`, `${approved.length} payment${approved.length === 1 ? "" : "s"}`)}${anTile("On a plan", fmtN(activeSubs.length), "monthly or enterprise")}</div>
+    <h2 class="an-h">To check</h2>
+    ${pending.length ? `<div class="adm-list">${pending.map((x) => `<article class="adm-card"><div class="adm-card-main">
+        <div class="adm-tags"><span class="adm-tag amber">₱${fmtN(x.amount)}</span></div>
+        <h3 class="adm-title">Ref. <span class="copyable">${esc(x.ref)}</span>${x.payerName ? ` · from ${esc(x.payerName)}` : ""}</h3>
+        <p class="adm-meta">${what(x)} · ${who(x.uid)} · sent ${when(x.createdAt)}${x.src ? ` · came from <strong>${esc(x.src)}</strong>` : ""}</p>
+      </div><div class="adm-card-actions"><button class="btn btn-primary btn-sm" data-pay-ok="${esc(x.id)}">Payment received</button><button class="btn btn-ghost btn-sm" data-pay-no="${esc(x.id)}">Can't find it</button></div></article>`).join("")}</div>`
+      : `<div class="adm-empty">${ADMIN_ICONS.archive}<p><strong>All clear.</strong> No payments to check.</p></div>`}
+    <h2 class="an-h">Give a plan by hand <span class="an-sub">for Enterprise, or a payment made another way</span></h2>
+    <form class="an-card give-plan" id="give-plan">
+      <label class="small">Employer's email<input name="email" type="email" required placeholder="owner@business.com"></label>
+      <label class="small">Plan<select name="plan"><option value="enterprise">Enterprise (30 posts a month)</option><option value="monthly">Pro monthly (5 posts a month)</option></select></label>
+      <label class="small">Days<input name="days" type="number" min="1" max="366" value="30"></label>
+      <button class="btn btn-primary btn-sm" type="submit">Give plan</button><p class="small muted" id="give-msg"></p>
+    </form>
+    <h2 class="an-h">On a plan now</h2>
+    <div class="an-card">${activeSubs.length ? `<ul class="an-att">${activeSubs.map((x) => `<li><span class="an-why">${esc(PLANS[x.plan]?.name || x.plan)}</span>${who(x.id)}<span class="muted small">until ${new Date(x.until).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })} <button class="linkbtn" data-sub-end="${esc(x.id)}">End now</button></span></li>`).join("")}</ul>` : `<p class="muted small">Nobody yet.</p>`}</div>
+    <h2 class="an-h">Confirmed payments</h2>
+    <div class="an-card">${approved.length ? `<ul class="an-att">${approved.slice(0, 30).map((x) => `<li><span class="an-why">₱${fmtN(x.amount)}</span><span>${what(x)} · ${who(x.uid)}</span><span class="muted small">ref ${esc(x.ref)} · ${when(x.decidedAt)}</span></li>`).join("")}</ul>` : `<p class="muted small">None yet.</p>`}</div>`;
+  const byId = Object.fromEntries(pending.map((x) => [x.id, x]));
+  body.querySelectorAll("[data-pay-ok]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirmInline(b, `Click again: ₱${byId[b.dataset.payOk].amount} received?`)) return;
+    b.disabled = true;
+    try { await store.approvePayment(byId[b.dataset.payOk]); toast("Approved. Pro is on."); jobsCache = null; renderPayments(body); } catch (e) { console.error(e); b.disabled = false; toast(`Couldn't approve (${e.code || e.message})`); }
+  }));
+  body.querySelectorAll("[data-pay-no]").forEach((b) => b.addEventListener("click", async () => {
+    const reason = await pickDialog({ title: "Why can't you approve it?", body: "The employer sees this in a notification.", options: ["We couldn't find this reference number", "The amount was less than the price", "This payment was already used"], other: "Anything else? (optional)", confirm: "Send" });
+    if (!reason) return;
+    try { await store.rejectPayment(byId[b.dataset.payNo], reason.join(". ")); toast("Sent"); renderPayments(body); } catch (e) { toast(`Couldn't update (${e.code || e.message})`); }
+  }));
+  body.querySelectorAll("[data-sub-end]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirmInline(b, "Click again to end it")) return;
+    await store.endSub(b.dataset.subEnd).catch(() => toast("Couldn't end it")); renderPayments(body);
+  }));
+  $("#give-plan").addEventListener("submit", async (e) => {
+    e.preventDefault(); const f = e.target, msg = $("#give-msg");
+    const email = f.email.value.trim().toLowerCase();
+    const u = (all?.users || []).find((x) => (x.email || "").toLowerCase() === email);
+    if (!u) { msg.textContent = "No account with that email. Ask them to make an employer account first."; return; }
+    if (u.role !== "employer") { msg.textContent = `${u.fullName} has a jobseeker profile. They need to switch to "I'm hiring" first.`; return; }
+    try { await store.giveSub(u.id, f.plan.value, Math.max(1, Math.min(366, Number(f.days.value) || 30))); toast(`${PLANS[f.plan.value].name} given to ${u.fullName}`); renderPayments(body); }
+    catch (ex) { msg.textContent = `Couldn't save (${ex.code || ex.message}).`; }
+  });
+}
+
+/* ---------------- Admin funnel ----------------
+   Cohort view: people who made an account in the chosen period, and the furthest step each one reached.
+   Every step counts the same people, so each % is "of the step before". */
+const FUNNEL_FIX = {
+  "Profile ready": "Many jobseekers stop before their profile is ready. Make setup shorter or remind them by email.",
+  "Applied to a job": "Ready jobseekers aren't applying. We may need more jobs in the types and towns they want.",
+  "Got a reply": "Employers aren't answering applicants. Nudge employers to reply, or follow up with them on Messenger.",
+  "Shortlisted or offered": "Employers reply but don't move people forward. Check if applicants match what the posts ask for.",
+  "Hired": "People get shortlisted or offered, but no hire is recorded. Ask employers to mark the hire, or find out why offers fall through.",
+  "Posted a job": "Employers make an account but don't post. Offer to post for them (Post for an employer) or message them.",
+  "Post went live": "Posts aren't getting approved. Review pending posts faster, or help employers fix rejected ones.",
+  "Got an applicant": "Live posts get no applicants. We need more jobseekers in those job types and towns.",
+  "Replied to an applicant": "Employers have applicants but don't answer. Remind them to open their applicants.",
+  "Hired someone": "Employers talk to applicants but don't hire. Ask them what's missing.",
+};
+async function renderFunnel(body) {
+  body.innerHTML = `<div class="an-grid">${SK.rows(3)}</div>`;
+  let data;
+  try { data = await store.adminAll(); } catch (e) { console.error(e); body.innerHTML = `<div class="empty"><p>Couldn't load the funnel (${esc(e.code || e.message)}).</p></div>`; return; }
+  let src = "";
+  const draw = () => {
+    const now = Date.now(), R = anRange, from = R ? now - R * DAYMS : 0;
+    const { users, jobs, apps } = data;
+    const cohort = users.filter((u) => (!R || (u.createdAt && u.createdAt >= from)) && (!src || (src === "(none)" ? !u.src : u.src === src)));
+    const by = (key) => { const m = new Map(); apps.forEach((a) => { const k = a[key]; if (!m.has(k)) m.set(k, []); m.get(k).push(a); }); return m; };
+    const appsOf = by("applicantUid"), appsTo = by("employerUid");
+    const postsOf = new Map(); jobs.forEach((j) => { if (!postsOf.has(j.ownerUid)) postsOf.set(j.ownerUid, []); postsOf.get(j.ownerUid).push(j); });
+    const FWD = ["shortlisted", "offered", "hired", "offer_declined"];
+    const seekers = cohort.filter((u) => u.role === "jobseeker"), employers = cohort.filter((u) => u.role === "employer");
+    const seekSteps = [
+      ["Made an account", () => true],
+      ["Profile ready", (u) => profileStrength(u).score >= 40],
+      ["Applied to a job", (u) => (appsOf.get(u.id) || []).length > 0],
+      ["Got a reply", (u) => (appsOf.get(u.id) || []).some((a) => a.status !== "new")],
+      ["Shortlisted or offered", (u) => (appsOf.get(u.id) || []).some((a) => FWD.includes(a.status))],
+      ["Hired", (u) => (appsOf.get(u.id) || []).some((a) => a.status === "hired")],
+    ];
+    const empSteps = [
+      ["Made an account", () => true],
+      ["Posted a job", (u) => (postsOf.get(u.id) || []).length > 0],
+      ["Post went live", (u) => (postsOf.get(u.id) || []).some((j) => j.approvedAt)],
+      ["Got an applicant", (u) => (appsTo.get(u.id) || []).length > 0],
+      ["Replied to an applicant", (u) => (appsTo.get(u.id) || []).some((a) => a.status !== "new")],
+      ["Hired someone", (u) => (appsTo.get(u.id) || []).some((a) => a.status === "hired")],
+    ];
+    // A person counts at a step only if they also reached every step before it.
+    const run = (people, steps) => { let left = people; return steps.map(([label, ok]) => { left = left.filter(ok); return { label, n: left.length }; }); };
+    const sRows = run(seekers, seekSteps), eRows = run(employers, empSteps);
+    const paidBy = new Map(); (data.payments || []).filter((x) => x.status === "approved").forEach((x) => paidBy.set(x.uid, (paidBy.get(x.uid) || 0) + (x.amount || 0)));
+    const payers = employers.filter((u) => paidBy.has(u.id)), posted = eRows[1].n;
+    const paidLine = `<p class="fn-paid"><strong>Paid for Pro:</strong> ${fmtN(payers.length)} employer${payers.length === 1 ? "" : "s"} (${posted ? `${pct(payers.length, posted)}% of those who posted` : "none posted yet"}) · ₱${fmtN(payers.reduce((n, u) => n + paidBy.get(u.id), 0))}</p>`;
+    const worst = (rows) => rows.slice(1).map((r, i) => ({ ...r, prev: rows[i].n, lost: rows[i].n - r.n, keep: pct(r.n, rows[i].n) })).filter((r) => r.prev >= 3).sort((a, b) => a.keep - b.keep || b.lost - a.lost)[0];
+    const card = (title, rows, who) => {
+      const top = rows[0].n || 1, w = worst(rows);
+      return `<div class="an-card fn-card"><h3>${title}</h3><p class="an-sub">${fmtN(rows[0].n)} ${who} made an account ${R ? `in the last ${R} days` : "so far"}</p>
+        ${rows[0].n ? `<ol class="fn-steps">${rows.map((r, i) => {
+          const keep = i ? pct(r.n, rows[i - 1].n) : 100, isWorst = w && w.label === r.label;
+          return `<li class="${isWorst ? "fn-worst" : ""}"><span class="fn-l">${esc(r.label)}</span><span class="fn-b"><i style="width:${Math.max(r.n ? 2 : 0, (r.n / top) * 100)}%"></i></span><span class="fn-n">${fmtN(r.n)}</span><span class="fn-p">${i ? `${keep}%` : ""}</span></li>`;
+        }).join("")}</ol>
+        ${w ? `<div class="fn-fix"><strong>Biggest drop: ${esc(w.label)}</strong> · only ${w.keep}% made it (${fmtN(w.lost)} of ${fmtN(w.prev)} stopped here).<br>${esc(FUNNEL_FIX[w.label] || "")}</div>` : `<p class="muted small">Not enough people yet to point out the biggest drop (needs 3 or more at a step).</p>`}`
+        : `<p class="muted small">No ${who} made an account in this period.</p>`}</div>`;
+    };
+    const srcs = [...new Set(users.map((u) => u.src).filter(Boolean))].sort();
+    body.innerHTML = `
+      <div class="an-bar">
+        <div class="seg-mini" role="radiogroup" aria-label="Time range">${[[7, "7 days"], [30, "30 days"], [90, "90 days"], [0, "All time"]].map(([v, l]) => `<button type="button" role="radio" aria-checked="${R === v}" class="${R === v ? "on" : ""}" data-range="${v}">${l}</button>`).join("")}</div>
+        <label class="small fn-src">Came from <select id="fn-src"><option value="">Anywhere</option>${srcs.map((x) => `<option value="${esc(x)}" ${src === x ? "selected" : ""}>${esc(x)}</option>`).join("")}<option value="(none)" ${src === "(none)" ? "selected" : ""}>No tracked link</option></select></label>
+      </div>
+      <div class="an-grid two">${card("Jobseekers", sRows, "jobseekers")}${card("Employers", eRows, "employers").replace(/<\/div>$/, `${paidLine}</div>`)}</div>
+      <p class="an-sub fn-note">Each % is how many of the step before made it. Counts are from our own database, so they include everyone (not just people who allowed cookies). Visits before sign-up are under Analytics → tracked links.</p>`;
+    body.querySelectorAll("[data-range]").forEach((b) => b.addEventListener("click", () => { anRange = Number(b.dataset.range); draw(); }));
+    $("#fn-src").addEventListener("change", (e) => { src = e.target.value; draw(); });
+  };
+  draw();
+}
+
 const CHANNELS = { "fb-ad": "Facebook ad", "fb-group": "Facebook group post", "fb-page": "Facebook page post", tiktok: "TikTok", flyer: "Flyer / QR code", messenger: "Messenger / text", other: "Other" };
 const AUDIENCE = { jobseekers: "jobseekers", employers: "employers", both: "everyone" };
 function loadScript(src) {
@@ -3680,6 +4078,13 @@ async function renderAnalytics(body) {
     const linkVisits = sources.reduce((n, r) => n + r.visits, 0);
     const spendOf = (r) => Number(camps[r.src]?.spend) || 0;
     const totalSpend = sources.reduce((n, r) => n + spendOf(r), 0);
+    // Money from employers (confirmed Pro payments), credited to the link they first came from.
+    const userSrc = Object.fromEntries(users.map((u) => [u.id, u.src || ""]));
+    const paid = (data.payments || []).filter((x) => x.status === "approved" && (!R || (x.decidedAt || x.createdAt) >= from));
+    const revOf = (src) => paid.filter((x) => (x.src || userSrc[x.uid] || "") === src).reduce((n, x) => n + (x.amount || 0), 0);
+    const totalRev = paid.reduce((n, x) => n + (x.amount || 0), 0);
+    const adRev = sources.filter((r) => spendOf(r)).reduce((n, r) => n + revOf(r.src), 0);
+    const roas = (rev, sp) => (sp ? `${(rev / sp).toFixed(1)}×` : "–");
     const paidSignups = sources.filter((r) => spendOf(r)).reduce((n, r) => n + r.users, 0);
     const cheapest = sources.filter((r) => spendOf(r) && r.users).sort((a, b) => spendOf(a) / a.users - spendOf(b) / b.users)[0]?.src;
 
@@ -3755,6 +4160,8 @@ async function renderAnalytics(body) {
         ${anTile("Sign-ups from links", tracked, newUsers.length ? `${pct(tracked, newUsers.length)}% of all new sign-ups` : "")}
         ${anTile("Visit → sign-up", linkVisits ? `${pct(tracked, linkVisits)}%` : "–", "of link visitors made an account")}
         ${anTile("Ad spend", totalSpend ? peso(totalSpend) : "–", totalSpend && paidSignups ? `${peso(Math.round(totalSpend / paidSignups))} per sign-up` : "add spend to a link below")}
+        ${anTile("Revenue", peso(totalRev), `${paid.length} Pro payment${paid.length === 1 ? "" : "s"} confirmed`)}
+        ${anTile("Return on ad spend", roas(adRev, totalSpend), totalSpend ? `${peso(adRev)} earned from links with spend` : "revenue ÷ spend, per link below")}
       </div>
       <div class="cmp-list">${sources.length ? sources.map((r) => {
         const c = camps[r.src] || {}, sp = spendOf(r);
@@ -3769,6 +4176,7 @@ async function renderAnalytics(body) {
             ${stat("Jobseekers", r.seekers, r.seekers ? `${r.applied} applied` : "")}
             ${stat("Employers", r.employers, r.employers ? `${r.posted} posted · ${r.live} live` : "")}
             ${stat("Hired", r.hires)}
+            ${stat("Revenue", peso(revOf(r.src)), r.src && spendOf(r) ? `${roas(revOf(r.src), spendOf(r))} return` : "")}
             ${r.src ? `<div class="cmp-stat"><span>Spend ₱</span><input class="cmp-spend" type="number" min="0" step="50" inputmode="numeric" data-spend="${esc(r.src)}" value="${sp || ""}" placeholder="0"></div>
             ${stat("Per sign-up", sp && r.users ? peso(Math.round(sp / r.users)) : "–", sp && r.employers ? `${peso(Math.round(sp / r.employers))} per employer` : sp && r.seekers ? `${peso(Math.round(sp / r.seekers))} per jobseeker` : "")}` : ""}
           </div></article>`; }).join("") : `<div class="an-card"><p class="muted">No tracked links yet. Make one below.</p></div>`}</div>
@@ -3856,7 +4264,7 @@ async function viewAdmin() {
       <span class="adm-ico">${ADMIN_ICONS[x.icon]}</span><span class="adm-label">${x.label}</span>${n ? `<span class="adm-count">${n > 99 ? "99+" : n}</span>` : ""}</a>`;
   };
   const groupsHtml = () => {
-    const waiting = ["pending", "reports", "flags", "verify", "support"].reduce((t, k) => t + (adminCounts[k] || 0), 0);
+    const waiting = ["pending", "payments", "reports", "flags", "verify", "support"].reduce((t, k) => t + (adminCounts[k] || 0), 0);
     return ADMIN_GROUPS.map(([g, label]) => `<nav class="adm-group"><p class="adm-group-label">${label}${g === "review" && waiting ? `<span class="adm-waiting">${waiting} waiting</span>` : ""}</p>${ADMIN_SECTIONS.filter((x) => x.g === g).map(navItem).join("")}</nav>`).join("");
   };
   const bindNav = () => app.querySelectorAll(".adm-side [data-tab]").forEach((b) => b.addEventListener("click", (e) => {
@@ -3893,8 +4301,21 @@ async function viewAdmin() {
 
   const body = $("#admin-body");
   if (adminTab === "analytics") return renderAnalytics(body);
+  if (adminTab === "funnel") return renderFunnel(body);
   if (adminTab === "users") return renderUsers(body);
-  if (adminTab === "support") {
+  if (adminTab === "payments") return renderPayments(body);
+  if (adminTab === "invites") {
+    const list = await store.listInvites().catch((e) => { console.error(e); return null; });
+    const tag = (i) => i.status === "used" ? `<span class="adm-tag green">Posted</span>` : i.status === "cancelled" ? `<span class="adm-tag">Cancelled</span>` : i.expiresAt && i.expiresAt < Date.now() ? `<span class="adm-tag">Expired</span>` : `<span class="adm-tag amber">Waiting for them</span>`;
+    body.innerHTML = `<p><a class="btn btn-primary" href="#/post/assist">+ New post for an employer</a></p>` + (list == null ? `<p class="error">Couldn't load the links. Publish the latest database rules, then refresh.</p>`
+      : list.length ? `<div class="adm-list">${list.map((i) => `<article class="adm-card"><div class="adm-card-main">
+          <div class="adm-tags">${tag(i)}</div>
+          <h3 class="adm-title">${esc(i.title)} · for ${esc(i.label)}</h3>
+          <p class="adm-meta">Made ${i.createdAt ? new Date(i.createdAt).toLocaleDateString("en-PH", { month: "short", day: "numeric" }) : "just now"}${i.status === "used" && i.jobId ? ` · <a href="/jobs/${esc(i.jobId)}/">Their post</a> · <a href="#/admin/user/${encodeURIComponent(i.usedBy)}">Their account</a>` : ""}</p>
+          ${i.status === "open" ? `<div class="invite-link"><input readonly value="${esc(inviteUrl(i.id))}" aria-label="Invite link"></div>` : ""}
+        </div>${i.status === "open" ? `<div class="adm-card-actions"><button class="btn btn-primary btn-sm" data-act="invitecopy" data-id="${esc(i.id)}">Copy link</button><button class="btn btn-ghost btn-sm" data-act="invitecancel" data-id="${esc(i.id)}">Cancel link</button></div>` : ""}</article>`).join("")}</div>`
+      : `<div class="adm-empty">${ADMIN_ICONS.inbox}<p><strong>No links yet.</strong> Prepare a post for an employer who asked you to post for them.</p></div>`);
+  } else if (adminTab === "support") {
     const items = await store.listSupport();
     const open = items.filter((m) => m.status !== "done"), done = items.filter((m) => m.status === "done");
     const list = supportView === "done" ? done : supportView === "all" ? items : open;
@@ -4019,7 +4440,7 @@ async function viewAdmin() {
     };
     body.innerHTML = list.length ? list.map((j) => `
       <div class="admin-item">
-        <div><strong>${esc(j.title)}</strong> ${statusBadge(j)} ${j.featured ? `<span class="badge badge-featured">Featured</span>` : ""}${j.infoNote && j.status === "pending" ? ` <span class="badge badge-app-shortlisted">Waiting for employer</span>` : ""}${j.editedAt && j.status === "pending" ? ` <span class="badge badge-app-shortlisted">Edited ${ago(j.editedAt)}${j.approvedAt ? " · was live" : ""}</span>` : ""}
+        <div><strong>${esc(j.title)}</strong> ${statusBadge(j)} ${planBadge(j)} ${j.featured ? `<span class="badge badge-featured">Featured</span>` : ""}${j.infoNote && j.status === "pending" ? ` <span class="badge badge-app-shortlisted">Waiting for employer</span>` : ""}${j.editedAt && j.status === "pending" ? ` <span class="badge badge-app-shortlisted">Edited ${ago(j.editedAt)}${j.approvedAt ? " · was live" : ""}</span>` : ""}
           <div class="muted small">${esc(j.employerName)} · ${esc(j.city)} · ${esc(j.category)}${j.categoryOther ? ` (${esc(j.categoryOther)})` : ""} · ${esc(j.employmentType)} · ${salaryText(j)} · submitted ${ago(j.createdAt)}</div></div>
         ${adminTab === "pending" ? empPanel(j) : ""}
         <details data-contact="${esc(j.id)}" ${adminTab === "pending" ? "open" : ""}><summary>${adminTab === "pending" ? "Job details" : "View details"}</summary>
@@ -4027,7 +4448,8 @@ async function viewAdmin() {
           ${adminTab !== "pending" ? `<p class="small contact-line"><strong>Contact:</strong> <span>loading…</span></p>${empPanel(j)}` : ""}
         </details>
         <div class="actions">
-          ${j.status !== "approved" ? `<button class="btn btn-primary btn-sm" data-act="approve" data-id="${esc(j.id)}">${j.status === "pending" ? "Approve" : "Re-publish"}</button>` : `<button class="btn btn-ghost btn-sm" data-act="approve" data-id="${esc(j.id)}">Renew 30 days</button>`}
+          ${j.plan === "unpaid" && j.status !== "approved" ? `<span class="small muted">Approve after the payment is confirmed (Payments).</span>` : ""}
+          ${j.status !== "approved" ? `<button class="btn ${j.plan === "unpaid" ? "btn-ghost" : "btn-primary"} btn-sm" data-act="approve" data-id="${esc(j.id)}">${j.status === "pending" ? "Approve" : "Re-publish"}</button>` : `<button class="btn btn-ghost btn-sm" data-act="approve" data-id="${esc(j.id)}">Renew 30 days</button>`}
           ${j.status === "pending" ? `<button class="btn btn-ghost btn-sm" data-act="askinfo" data-id="${esc(j.id)}">Ask for more info</button><button class="btn btn-ghost btn-sm" data-act="reject" data-id="${esc(j.id)}">Reject</button>` : ""}
           ${VERIFIED[j.ownerUid] ? "" : `<button class="btn btn-ghost btn-sm" data-act="verify" data-id="${esc(j.id)}">Verify employer</button>`}
           ${j.status === "approved" ? `<button class="btn btn-ghost btn-sm" data-act="feature" data-id="${esc(j.id)}" data-on="${j.featured ? 1 : 0}">${j.featured ? "Unfeature" : "Feature"}</button><button class="btn btn-ghost btn-sm" data-act="closejob" data-id="${esc(j.id)}">Close</button>` : ""}
@@ -4044,8 +4466,10 @@ async function viewAdmin() {
   body.addEventListener("click", async (e) => {
     const b = e.target.closest("[data-act]"); if (!b) return;
     const { act, id } = b.dataset;
-    if ((act === "delete" || act === "closejob") && !confirmInline(b)) return;
+    if ((act === "delete" || act === "closejob" || act === "invitecancel") && !confirmInline(b)) return;
     try {
+      if (act === "invitecopy") return copyText(inviteUrl(id));
+      if (act === "invitecancel") { await store.cancelInvite(id); toast("Link cancelled"); return viewAdmin(); }
       const aj = adminJobs[id];
       if (act === "verify") {
         if (!aj) return;
@@ -4064,6 +4488,7 @@ async function viewAdmin() {
         toast("Request sent"); return viewAdmin();
       }
       if (act === "approve") {
+        if (aj?.plan === "unpaid" && !(await showDialog({ title: "Not paid yet", body: "This employer chose Pro but we haven't confirmed a payment. Approve it anyway?", actions: [{ label: "Wait for payment", value: false, primary: true }, { label: "Approve anyway", value: true }] }))) return;
         const wasLive = aj && aj.approvedAt && aj.expiresAt && aj.expiresAt > Date.now();
         await store.approve(id, aj);
         if (aj) store.notify(aj.ownerUid, wasLive
@@ -4101,7 +4526,7 @@ function viewSupport() {
   document.title = "Contact support | Job Search PH";
   const pre = supportPrefill; supportPrefill = null;
   const { user, profile } = getAuthState();
-  const topics = ["Problem with my account", "A job post or employer", "An applicant", "Something isn't working", "Suggestion", "Other"];
+  const topics = ["Problem with my account", "A job post or employer", "An applicant", "Payments and plans", "Enterprise plan", "Something isn't working", "Suggestion", "Other"];
   app.innerHTML = `
     <div class="page-head"><div><p class="kicker">Help</p><h1>Contact support</h1><p class="muted">We usually reply within a day. Reach us the way that's easiest for you.</p></div></div>
     <div class="contact-cards">
@@ -4148,6 +4573,13 @@ function legalPage(title, intro, sections) {
       ${sections.map(([h, body], i) => `<section id="s${i + 1}"><h2><span class="sec-n">${String(i + 1).padStart(2, "0")}</span>${h}</h2>${body}</section>`).join("")}
       <div class="legal-contact"><strong>Questions?</strong> Email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>, message us on <a href="${SUPPORT_MESSENGER}" target="_blank" rel="noopener">Messenger</a> (<a href="${SUPPORT_FACEBOOK}" target="_blank" rel="noopener">facebook.com/thejobsearchph</a>), or use <a href="#/support">Contact support</a>. We're based in Bacolod City and serve Negros Occidental.</div>
     </article>`;
+}
+function viewPricing() {
+  const { user, profile } = getAuthState();
+  document.title = PRICING_TITLE;
+  const cta = !user ? 'href="/#/join/employer"' : profile?.role === "jobseeker" ? 'href="#/profile"' : 'href="#/post"';
+  app.innerHTML = `<div class="emp-page">${pricingHtml(cta, 'href="#/support" data-enterprise')}</div>`;
+  $("[data-enterprise]")?.addEventListener("click", () => { supportPrefill = { topic: "Enterprise plan", message: "Hi! We'd like to ask about the Enterprise plan. We hire about ___ people a month, for these jobs: ___.\n" }; });
 }
 function viewEmployers() {
   const { user, profile } = getAuthState();
@@ -4196,7 +4628,7 @@ function viewStatic(page) {
         </div>
         <div class="notice"><strong>In danger or being forced to work?</strong> Call <strong>911</strong> or the PNP right away. For labor complaints, contact DOLE Negros Occidental, or the DOLE hotline <strong>1349</strong>.</div>
         <h2 class="faq-h">Frequently asked questions</h2>
-        ${faq("Is Job Search PH free?", "Yes. Creating a profile, searching and applying are free for jobseekers, always. Posting a job is free for employers.")}
+        ${faq("Is Job Search PH free?", `For jobseekers, yes: making a profile, searching and applying are free, always. For employers, your first job post is free (up to 5 applicants). After that, a Pro post is ₱${PLANS.post.price}, or ₱${PLANS.monthly.price} a month for up to 5 posts. <a href="/pricing/">See prices</a>.`)}
         ${faq("Is Job Search PH a recruitment agency?", "No. We're an online job listing board. Employers post their own jobs and hire directly. We don't recruit, screen, place or employ anyone, and we never charge placement fees.")}
         ${faq("How do I know a job is real?", "Every post is reviewed by our team before it goes live. Still, trust your instincts: if an employer asks for money, pushes you to leave the site quickly, or the details keep changing, stop and report the post.")}
         ${faq("Why can't I see the employer's phone number?", "To protect both sides from spam and scams, you talk to employers through Messages here on Job Search PH. The employer's own contact is shared with you once you accept their job offer.")}
@@ -4216,7 +4648,7 @@ function viewStatic(page) {
       html: legalPage("Terms of use", "Please read these terms before using Job Search PH. By creating an account or using the site, you agree to them and to our <a href=\"#/privacy\">Privacy policy</a>.", [
         ["What Job Search PH is", `<p>Job Search PH ("JSPH", "we", "us") is an online job listing board that connects employers and jobseekers in Negros Occidental, Philippines. Employers post jobs, jobseekers apply with their profiles, and both sides talk directly.</p>
           <div class="callout"><strong>We are not an agency or an employer.</strong> We don't recruit, screen, endorse, place, employ, supervise or manage anyone, and we're not a party to any job agreement made between users.</div>`],
-        ["Free to use", `<ul><li>Searching and applying for jobs is free for jobseekers. <strong>We never charge jobseekers</strong>, in line with the Domestic Workers Act (RA 10361).</li><li>Posting a job is currently free for employers.</li><li>If we add optional paid features for employers later (for example, featured posts), the price will be shown clearly before you pay, and nothing already free will become paid without notice.</li><li>We don't charge placement fees.</li></ul>`],
+        ["Prices and payments", `<ul><li>Searching and applying for jobs is free for jobseekers. <strong>We never charge jobseekers</strong>, in line with the Domestic Workers Act (RA 10361).</li><li><strong>Employers:</strong> your first job post is free and takes up to ${PLANS.free.maxApplicants} applicants. After that you choose a paid plan: <strong>Pro post</strong> (₱${PLANS.post.price} per post: unlimited applicants, shown at the top for 30 days, up to 10 openings), <strong>Pro monthly</strong> (₱${PLANS.monthly.price} for 30 days, up to ${PLANS.monthly.postsPerMonth} Pro posts) or <strong>Enterprise</strong> (price agreed with us). Prices are shown on the <a href="/pricing/">Prices page</a> before you pay.</li><li>You pay by InstaPay (GCash, Maya or a bank app) and send us the reference number. We confirm payments by hand, usually within a few hours. Pro starts when we confirm.</li><li>You pay for the job post only. <strong>We don't charge placement fees</strong> or any fee when you hire, and we don't recruit, screen or place workers.</li><li>Refunds: if we don't approve a paid post and you can't fix it, or we can't find your payment, we refund it. Plans don't renew by themselves; nothing is charged without you paying again. Ending a post early, or a post that gets few applicants, isn't refunded.</li><li>One free post per employer. Making extra accounts to get more free posts isn't allowed, and we may close those posts.</li></ul>`],
         ["Your account", `<ul><li>You must be at least 18 years old.</li><li>Give true, current information. Use your real name and a mobile number you can be reached on.</li><li>Use one account per person. Don't create accounts to get around limits or restrictions.</li><li>Keep your password safe. You're responsible for what happens on your account.</li></ul>`],
         ["Job post rules", `<p>Employers agree that every post:</p><ul><li>Is a real, current job they will hire for directly;</li><li>Pays at least the legal minimum wage and states the pay honestly;</li><li>Never asks applicants for any fee, deposit or deduction to apply or be hired;</li><li>Is only for workers aged 18 and older;</li><li>Has accurate duties, hours, days off and benefits, and isn't changed in a misleading way after people apply;</li><li>Doesn't include discriminatory requirements, such as age limits (Anti-Age Discrimination Act, RA 10911);</li><li>Isn't posted on behalf of a recruitment agency or for work abroad unless the agency is licensed by DOLE or DMW and the license number is included.</li></ul><p>Posts are reviewed before going live and stay up for 30 days. We may reject, edit, close or remove any post.</p>`],
         ["Employer responsibilities", `<ul><li>Interview applicants and make your own hiring decisions;</li><li>Follow Philippine labor law, including the Kasambahay Law: minimum wage, weekly rest day, 13th month pay, a written contract, and SSS, PhilHealth and Pag-IBIG registration;</li><li>Provide safe, humane and respectful working conditions;</li><li>Use applicants' personal details only to consider them for your job, and don't share them.</li></ul><p>JSPH isn't responsible for employer decisions, pay disputes, working conditions or private agreements.</p>`],
@@ -4302,8 +4734,11 @@ async function route() {
     if (id && (isHashRoute() || id !== raw)) history.replaceState(null, "", `/jobs/${id}/${location.search}`);
     return viewJob(id);
   }
-  if ((page === "safety" || page === "employers") && isHashRoute()) history.replaceState(null, "", `/${page}/${location.search}`);
+  if (["safety", "employers", "pricing"].includes(page) && isHashRoute()) history.replaceState(null, "", `/${page}/${location.search}`);
   if (page === "employers") return viewEmployers();
+  if (page === "pricing") return viewPricing();
+  if (page === "plan") return viewPlan();
+  if (page === "pay") return viewPay(arg, arg2 ? decodeURIComponent(arg2) : "");
   if (page === "join") { // tracked links for ads: open sign-up, already set as jobseeker or employer
     if (user) { location.hash = profile ? (arg === "employer" ? "#/post" : "#/") : "#/profile"; return; }
     signupIntent = arg === "employer" ? "employer" : "jobseeker"; startSignup = true;
@@ -4315,7 +4750,8 @@ async function route() {
   if (page === "delete-account") return viewDeleteAccount();
   if (page === "profile") return viewProfile(arg === "emails" ? "emails" : "");
   if (page === "verify") return viewVerify();
-  if (page === "post") return viewPost(arg === "edit" && arg2 ? decodeURIComponent(arg2) : null);
+  if (page === "post") return viewPost(arg === "edit" && arg2 ? decodeURIComponent(arg2) : null, { assist: arg === "assist", similar: arg === "similar" && arg2 ? decodeURIComponent(arg2) : null });
+  if (page === "invite" && arg) return viewInvite(decodeURIComponent(arg).replace(/[^a-z0-9]/g, "").slice(0, 40));
   if (page === "my") return viewMy();
   if (page === "applicants" && arg) return viewApplicants(decodeURIComponent(arg));
   if (page === "applications") return viewApplications();
@@ -4323,7 +4759,7 @@ async function route() {
   if (page === "support") return viewSupport();
   if (page === "chat" && arg) return viewChat(decodeURIComponent(arg));
   if (page === "admin" && arg === "user" && arg2) return viewAdminUser(decodeURIComponent(arg2));
-  if (page === "admin") { if (["analytics", "users", "pending", "approved", "reports", "flags", "verify", "disputes", "support", "rejected", "closed"].includes(arg)) adminTab = arg; return viewAdmin(); }
+  if (page === "admin") { if (["analytics", "funnel", "payments", "invites", "users", "pending", "approved", "reports", "flags", "verify", "disputes", "support", "rejected", "closed"].includes(arg)) adminTab = arg; return viewAdmin(); }
   if (["safety", "terms", "privacy"].includes(page)) return viewStatic(page);
   go("/");
 }
@@ -4332,7 +4768,7 @@ window.addEventListener("hashchange", route);
 // 404.html sends addresses that have no page file here as ?p=/jobs/<id>/ (brand-new jobs, and every job on the test site).
 { const q = new URLSearchParams(location.search); const p = q.get("p");
   if (p !== null) { q.delete("p"); const qs = q.toString();
-    const ok = /^\/(jobs\/[A-Za-z0-9_-]{1,64}|employers|safety|jobs)\/?$/.test(p);
+    const ok = /^\/(jobs\/[A-Za-z0-9_-]{1,64}|employers|pricing|safety|jobs)\/?$/.test(p);
     history.replaceState(null, "", (ok ? p : "/") + (qs ? `?${qs}` : "") + location.hash); } }
 initPixel();
 setTheme(getTheme());
